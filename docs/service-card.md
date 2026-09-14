@@ -1,0 +1,77 @@
+---
+title: Care Service — Service Card
+owner: care-team
+service: care-service
+status: draft
+last_verified: 2026-09-14
+tags: [service-card, catalog, care]
+related: [index, system-design, runbook, integration, data-model]
+sync_to_hub: catalog/care-service.card.md
+---
+
+# Service Card — care-service
+
+> The cross-cutting summary the hub syncs into `../vcare-hub/catalog/care-service.card.md`
+> (via `../vcare-hub/scripts/sync-from-spoke.sh` — never hand-copy). Keep it short and current.
+
+| Field | Value |
+|---|---|
+| **Name** | care-service |
+| **Repo** | `vcare-care-api` |
+| **Owner** | care-team |
+| **Status** | design (no code yet) |
+| **Tier** | 1 (booking and consultations are on the synchronous patient path) |
+| **Runtime** | Node.js 24 LTS + TypeScript (strict), Express 5, two listeners: public `PORT=3001` (`/api/*`), internal `INTERNAL_PORT=3101` (`/internal/*`) |
+| **Datastores** | PostgreSQL 16 (own `care` database, `btree_gist` extension) · Redis 7 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private, signed URLs only) |
+
+## Responsibilities
+The medical marketplace: doctor profiles and credentialing, specialties, working hours, schedule
+exceptions and consultation types, computed availability (slots are never stored), booking and the
+consultation lifecycle (waiting room, session join, no-show), patient profiles, medical records with a
+24 h lock and amendments, help articles (the Phase-2 RAG corpus), and the audit log for all of it.
+
+## Data owned
+`specialties`, `doctor_profiles`, `doctor_specialties`, `doctor_languages`, `verification_documents`,
+`working_hours`, `schedule_exceptions`, `consultation_types`, `consultations`, `patient_profiles`,
+`medical_records`, `medical_record_amendments`, `record_attachments`, `help_articles`, `audit_logs`,
+`identity_sync_jobs`. Identity accounts are referenced only by `*_user_id BIGINT` (no cross-database FK).
+Detail: [architecture/data-model.md](./architecture/data-model.md).
+
+## Depends on
+| Dependency | Interface | For | Failure policy |
+|---|---|---|---|
+| identity-service | `GET /.well-known/jwks.json` (public, port 3000) | local verification of user access tokens (cached; refresh on unknown `kid` ≤ 1/min) | cached keys keep working; no matching key → `401 Unauthorized` |
+| identity-service | `POST /internal/auth/token` (internal, port 3100) | client-credentials service token, scopes `users:read users:status:write` | retry per call; needed by the cases below |
+| identity-service | `PATCH /internal/users/:id/status` → `active` / `rejected` / `pending` — **Case 1** | verification decision, re-open, resubmission | **retry-report-pending**: 3 attempts, then 202 `identitySync: pending` + durable job; Identity 409 → `failed` + alert |
+| identity-service | `GET /internal/users?ids=` — **Case 2** | display name (`fullName` → `displayName`), avatar on search and lists | **degrade**: cache 300 s, 1 retry, misses render `profileHydrated: false`, never 5xx |
+| identity-service | `PATCH /internal/users/:id/status` → `suspended` — **Case 3** | revoke all sessions of a suspended doctor | **must-not-degrade**: ~6 s inline, durable job until success, 503 `IdentityUnavailable` until confirmed, page after 3 failures |
+| video room provider | video port (`lib/video`) | room creation and per-participant join tokens | join fails with 5xx-free retry by the client; bookings unaffected |
+| email provider | email port (`lib/email`), async | booking confirmation, reminder, reschedule, cancellation, "doctor joined" | async; delivery failure never blocks or rolls back a booking |
+| object storage | storage port (`lib/storage`) | verification documents, record attachments | upload fails with an error; reads use viewer-bound signed URLs (TTL ≤ 10 min) |
+
+## Called by
+| Caller | Interface | Notes |
+|---|---|---|
+| patient, doctor, and admin web clients | public `/api/*` with a user bearer token | see the contract |
+| admin tooling / future ai-service | `GET /internal/doctors/{userId}/summary` (service token, scope `doctors:read`) | no MVP service client holds `doctors:read` yet |
+
+## Endpoint families
+`/api/health` · `/api/specialties` · `/api/doctors/apply`, `/api/doctors/me`, `/api/doctors/me/documents`,
+`/api/doctors/me/application` · `/api/doctors`, `/api/doctors/{doctorUserId}`, `/api/doctors/{doctorUserId}/slots` ·
+`/api/doctors/me/working-hours`, `/api/doctors/me/exceptions`, `/api/doctors/me/consultation-types` ·
+`/api/admin/applications` (approve, reject, reopen) · `/api/admin/doctors/{doctorUserId}/suspend` ·
+`/api/patients/me`, `/api/patients/{patientUserId}`, `/api/patients/{patientUserId}/records` ·
+`/api/consultations` (book, list, waiting-room, calendar, get, reschedule, cancel, join, start, complete, no-show, record) ·
+`/api/records/{id}` (+ attachments) · `/api/help-articles` · `/api/audit-logs` · `/internal/doctors/{userId}/summary` · `/internal/health`.
+
+## Events
+None in MVP (HTTP-only). Future candidates (no AsyncAPI yet): `consultation.booked`,
+`consultation.rescheduled`, `consultation.cancelled`, `doctor.verified`, `doctor.suspended`.
+
+## Contract
+- HTTP: [`contracts/openapi.yaml`](../contracts/openapi.yaml) — source of truth.
+
+## Key links
+- Docs index: [INDEX.md](./INDEX.md)
+- System design: [system-design.md](./system-design.md)
+- Runbook: [runbook.md](./runbook.md)

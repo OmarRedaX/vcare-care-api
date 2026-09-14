@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "registry": "mindrally/skills",
+  "registryCommit": "97184105b5daa3a6860a2aeb8e7e7fd1c42da40a",
+  "hashMethod": "sha256-file",
+  "installDir": ".claude/skills",
+  "skills": {
+    "ci-cd-best-practices": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/ci-cd-best-practices/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/ci-cd-best-practices/SKILL.md",
+      "computedHash": "9f80e7d340592448f97ef96aabb1cdbd916cdacda9aef3ac41531e3570eb3271"
+    },
+    "clean-architecture": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/clean-architecture/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/clean-architecture/SKILL.md",
+      "computedHash": "2abc22a3ee955df525a8c139538d8f28f529b01c238059532855b29f4b81937d"
+    },
+    "docker": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/docker/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/docker/SKILL.md",
+      "computedHash": "0a5e5fe6a7ee4631c0c5b92f89ae5faf919c650e135bdff35eb57dcf2e84303b"
+    },
+    "express-typescript": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/express-typescript/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/express-typescript/SKILL.md",
+      "computedHash": "83a6e760ac2fa9d1e4cfc12b9cb6736398572c2a60162234b959becac1e8d547"
+    },
+    "git-workflow": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/git-workflow/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/git-workflow/SKILL.md",
+      "computedHash": "e435ede1efb32fdc1c63e47778e235dcc527ee4110c90d7376cfcad1f0c736d9"
+    },
+    "jest": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/jest/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/jest/SKILL.md",
+      "computedHash": "fdbb97f2122002e280a8df902855e00b706486373d53b9c33d476d8c0f2c2a1e"
+    },
+    "jwt-security": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/jwt-security/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/jwt-security/SKILL.md",
+      "computedHash": "5cfbabf70e09039be4cfc1d9c749dd0621ad3d7c7523e98c789018cbef6c2114"
+    },
+    "microservices": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/microservices/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/microservices/SKILL.md",
+      "computedHash": "501e9e3d0c06559273cc249d1e0b4b65d15aaafdda93a4045b0f3e53a04a35f1"
+    },
+    "nodejs-development": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/nodejs-development/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/nodejs-development/SKILL.md",
+      "computedHash": "fe2d3f14357ddfdd259a13f318ce1c8637ede5f56d958624d2446002ac75a67d"
+    },
+    "observability-guidelines": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/observability-guidelines/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/observability-guidelines/SKILL.md",
+      "computedHash": "e881dc3c43bd16dc6208cec78455e94df2290d3bcc229293568d77a2998100cb"
+    },
+    "performance-optimization": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/performance-optimization/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/performance-optimization/SKILL.md",
+      "computedHash": "c9a2f350c65f20640ea5ba4f6f46047940813ffd93d6dc5dc80d5f6cbc60df23"
+    },
+    "postgresql-best-practices": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/postgresql-best-practices/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/postgresql-best-practices/SKILL.md",
+      "computedHash": "ca01bf3739a5de5db0e00277d06eaddc18175c9f5387587cac02b9aec51dbe5c"
+    },
+    "rabbitmq-development": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/rabbitmq-development/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/rabbitmq-development/SKILL.md",
+      "computedHash": "120d699bcfe309c34baa01140a4304804b0c71772014368184b939b84218bf6e"
+    },
+    "redis-best-practices": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/redis-best-practices/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/redis-best-practices/SKILL.md",
+      "computedHash": "3aaf5277d188d95947b70b317d22d2cb89881a56bf83b491688d3b79a13d1a2f"
+    },
+    "security-best-practices": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/security-best-practices/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/security-best-practices/SKILL.md",
+      "computedHash": "36682b40a93ed63207af8726f0743d012f8aca257067e719294904871906f852"
+    },
+    "sql-best-practices": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/sql-best-practices/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/sql-best-practices/SKILL.md",
+      "computedHash": "36181b0065bc25791190049e6c6cd727fc997c410c0706021dc650e41b9f876a"
+    },
+    "testing": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/testing/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/testing/SKILL.md",
+      "computedHash": "1c0f369562c39cb45d049f7d4d0406db3b06c072445259bc39ba1c876491a46b"
+    },
+    "typescript": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/typescript/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/typescript/SKILL.md",
+      "computedHash": "1d5137a8bef21193d79be2e870b396766bb823de449957376eb44b0712377e70"
+    },
+    "zod-schema-validation": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/zod-schema-validation/SKILL.md",
+      "sourceUrl": "https://github.com/mindrally/skills/blob/97184105b5daa3a6860a2aeb8e7e7fd1c42da40a/zod-schema-validation/SKILL.md",
+      "computedHash": "b18a2bdb12d14e964993c5b8abfafb0202316867cc5ce590356837e9c1be831d"
+    }
+  }
+}

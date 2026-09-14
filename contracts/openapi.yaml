@@ -1,0 +1,4799 @@
+# SOURCE OF TRUTH for the care-service HTTP API (public /api/* and network-isolated /internal/*).
+# Human view: docs/architecture/api.md (derived from this file; on disagreement this file wins).
+# Hub sync copies this file to ../vcare-hub/contracts/care-service.openapi.yaml — never hand-edit the hub copy.
+# Change order: edit this contract first, then code (CLAUDE.md -> Build order for a new module).
+# Conventions: ids are BIGSERIAL numbers (int64); datetimes are ISO-8601 with offset; money is INT minor units + ISO-4217 currency;
+# every list is cursor-paginated; every error uses the one ErrorEnvelope shared with identity-service.
+openapi: 3.1.0
+info:
+  title: vcare Care Service API
+  version: 1.0.0
+  summary: The medical marketplace — doctors, verification, schedules, consultations, clinical records, help content, audit.
+  description: |
+    Care owns doctor profiles and credentialing, specialties, working hours and exceptions, consultation types,
+    consultations and their lifecycle, patient profiles, medical records (24 h lock + amendments), help articles,
+    and the audit log. It never stores passwords or issues tokens; it holds only Identity `user_id` references.
+
+    **Authentication.** User requests carry an EdDSA access token issued by identity-service and verified locally
+    against Identity's JWKS (`iss=vcare-identity`, `aud` contains `vcare-care`, `typ=user`). `/internal/*` accepts only
+    service tokens (`typ=service`, `aud` contains `vcare-care`, scope `doctors:read`); a user token there, even an
+    admin's, returns `401 ServiceTokenRequired`. Caller-supplied identity headers (`X-User-Id`, `X-Role`) are ignored.
+
+    **Vendor extensions on operations.**
+    - `x-roles` — roles allowed by the route policy (`patient`, `doctor`, `admin`, or `service`). Admin never appears on record routes.
+    - `x-ownership` — the ownership predicate resolved from the database (`none`, `self`, `participant`, `assigned-doctor`, `consulted-patient-or-self`, ...).
+    - `x-audit` — audit class forced by the policy (`clinical-read`, `clinical-write`, `admin-action`).
+    - `x-audit-actions` — the `audit_logs.action` values the operation writes (status changes are always audited).
+    - `x-integration-case` / `x-failure-policy` — the platform integration case with identity-service and its failure policy
+      (`retry-report-pending` for Case 1, `degrade` for Case 2, `must-not-degrade` for Case 3).
+
+    **Viewer-aware responses.** The same resource renders fewer fields for an admin: admin views of a consultation omit
+    `complaintText`, and admins are denied on every clinical-record route.
+
+    **Private resources.** Consultations, records, and patient profiles return `404 NotFound` to callers who are not
+    allowed to see them, so existence cannot be probed.
+
+    MVP is HTTP-only; no events are published (see `x-future-events`).
+  contact:
+    name: care-team
+  license:
+    name: Proprietary
+    identifier: LicenseRef-vcare-proprietary
+servers:
+  - url: http://localhost:3001
+    description: Public listener (PORT=3001). Paths start with /api.
+tags:
+  - name: health
+    description: Liveness and dependency checks.
+  - name: specialties
+    description: Medical specialties (admin-managed catalog).
+  - name: doctors-onboarding
+    description: A doctor's own profile, verification documents, and application.
+  - name: doctors-discovery
+    description: Patient and admin search, doctor profile, computed slots.
+  - name: schedules
+    description: A doctor's working hours, schedule exceptions, and consultation types.
+  - name: admin-verification
+    description: Application review (Integration Case 1).
+  - name: admin-doctors
+    description: Doctor suspension (Integration Case 3).
+  - name: patients
+    description: Patient profiles and the clinical timeline.
+  - name: consultations
+    description: Booking, lifecycle, waiting room, calendar.
+  - name: records
+    description: Medical records, amendments, attachments.
+  - name: help-articles
+    description: Help center content (Phase-2 RAG corpus).
+  - name: audit
+    description: Append-only audit log (metadata only).
+  - name: internal
+    description: Network-isolated service-to-service endpoints (INTERNAL_PORT=3101).
+
+x-future-events:
+  description: >-
+    MVP is HTTP-only; there is no AsyncAPI contract. These events are candidates for a future message bus
+    (RabbitMQ is the candidate transport, adopted only by an ADR). Names are reserved, payloads are not yet defined.
+  events:
+    - consultation.booked
+    - consultation.rescheduled
+    - consultation.cancelled
+    - doctor.verified
+    - doctor.suspended
+
+paths:
+  # ─────────────────────────────────────────────────────────────── health
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Public health check (Postgres, Redis, cached JWKS)
+      description: Unauthenticated. Returns 503 with `status=down` when Postgres or Redis is unreachable. Identity being down does not fail this check while a cached JWKS key exists.
+      security: []
+      x-roles: [public]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOk'
+        '503':
+          $ref: '#/components/responses/HealthDown'
+
+  /internal/health:
+    get:
+      operationId: getInternalHealth
+      tags: [health, internal]
+      summary: Internal listener health check
+      description: Served only on the internal listener. Unauthenticated; the network isolation is the protection.
+      servers:
+        - url: http://localhost:3101
+          description: Internal listener (INTERNAL_PORT=3101), network-isolated, never routed by the public ingress.
+      security: []
+      x-roles: [public]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOk'
+        '503':
+          $ref: '#/components/responses/HealthDown'
+
+  # ─────────────────────────────────────────────────────────────── specialties
+  /api/specialties:
+    get:
+      operationId: listSpecialties
+      tags: [specialties]
+      summary: List specialties
+      description: Non-admins see active specialties only; admins may pass `includeInactive=true`.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor, admin]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: includeInactive
+          in: query
+          required: false
+          description: Admin only; ignored for other roles.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: A page of specialties sorted by name.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Specialty'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createSpecialty
+      tags: [specialties]
+      summary: Create a specialty
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [specialty.created]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpecialtyCreate'
+      responses:
+        '201':
+          description: Specialty created.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/Specialty'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/specialties/{id}:
+    patch:
+      operationId: updateSpecialty
+      tags: [specialties]
+      summary: Update a specialty (name, slug, description, active flag)
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [specialty.updated]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpecialtyUpdate'
+      responses:
+        '200':
+          description: Specialty updated.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/Specialty'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── doctors: onboarding (own)
+  /api/doctors/apply:
+    post:
+      operationId: applyAsDoctor
+      tags: [doctors-onboarding]
+      summary: Create or update the caller's doctor application, optionally submitting it for review
+      description: |
+        Onboarding route: accepts a doctor token with `status` `pending`, `active`, or `rejected` (a doctor applies before approval; a rejected doctor can fix and resubmit).
+        Creates the caller's doctor profile in `draft` (201) or updates an existing `draft`/`rejected` profile (200).
+        With `submit=true` the application moves to `submitted`; this requires at least one live `license` and one
+        live `id` verification document (else `400 ValidationFailed` with `details[].field = "documents"`).
+        A profile already `submitted` or `approved` returns `409 Conflict`.
+        Upload documents with `POST /api/doctors/me/documents` after the draft exists.
+
+        **Resubmission** (`rejected → submitted`) follows the Integration Case 1 path with Identity status `pending`, so the
+        account returns to `pending` alongside the application: 200 when Identity confirmed, 202 with
+        `identitySync: "pending"` (or `"failed"` on a non-retryable `409 InvalidStatusTransition` from Identity) otherwise.
+        `draft → submitted` makes no Identity call.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status in (pending, active, rejected)'
+      x-audit-actions: [verification.submitted, identity_sync.synced]
+      x-integration-case: 1
+      x-failure-policy: retry-report-pending
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DoctorApplyRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/DoctorProfileOwnOk'
+        '201':
+          $ref: '#/components/responses/DoctorProfileOwnCreated'
+        '202':
+          $ref: '#/components/responses/ApprovalPendingSync'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me:
+    get:
+      operationId: getMyDoctorProfile
+      tags: [doctors-onboarding]
+      summary: Get the caller's own doctor profile (full own view)
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status in (pending, active, rejected)'
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/DoctorProfileOwnOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateMyDoctorProfile
+      tags: [doctors-onboarding]
+      summary: Update the caller's profile fields, timezone, and accepting-patients toggle
+      description: |
+        Changing `timezone` or `isAcceptingPatients` invalidates the doctor's slot and next-available caches.
+        Turning `isAcceptingPatients` off never cancels existing consultations. A locally suspended doctor gets `403 Forbidden`.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status in (pending, active, rejected); not locally suspended'
+      x-audit-actions: [doctor.profile_updated]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DoctorProfileUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/DoctorProfileOwnOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/documents:
+    post:
+      operationId: uploadVerificationDocument
+      tags: [doctors-onboarding]
+      summary: Upload a verification document (license, id, degree)
+      description: |
+        `multipart/form-data`. MIME allowlist `application/pdf`, `image/jpeg`, `image/png` (content-sniffed), 10 MB cap,
+        random object key (the client filename is never used in the key). Allowed only while the application is
+        `draft` or `rejected`. Rate limit 20 uploads/hour per user.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status in (pending, active, rejected)'
+      x-audit-actions: [verification.document_uploaded]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/VerificationDocumentUpload'
+      responses:
+        '201':
+          description: Document stored. The response carries a signed download URL bound to the caller.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/VerificationDocument'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/application:
+    get:
+      operationId: getMyApplication
+      tags: [doctors-onboarding]
+      summary: Track the caller's verification application
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status in (pending, active, rejected)'
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationApplicationOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── schedules (own)
+  /api/doctors/me/working-hours:
+    get:
+      operationId: getMyWorkingHours
+      tags: [schedules]
+      summary: Get the caller's recurring weekly hours (doctor-local wall clock)
+      description: Bounded collection (at most 7 weekdays with their shifts); not paginated.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/WorkingHoursOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: replaceMyWorkingHours
+      tags: [schedules]
+      summary: Replace the caller's weekly hours (split shifts allowed)
+      description: |
+        Replaces the full weekly set. Intervals on the same weekday must not overlap. If the new hours would leave any
+        future non-terminal consultation outside working hours, the call returns `409 ScheduleConflictsUnconfirmed`
+        listing the affected consultation ids; resubmit with `confirmConflicts=true` to apply, flag those consultations
+        `needs_admin_followup`, and queue patient notifications. Consultations are never moved or cancelled automatically.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      x-audit: admin-action
+      x-audit-actions: [schedule.hours_replaced, schedule.conflicts_confirmed]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkingHoursReplace'
+      responses:
+        '200':
+          $ref: '#/components/responses/WorkingHoursOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ScheduleConflictsUnconfirmed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/exceptions:
+    get:
+      operationId: listMyExceptions
+      tags: [schedules]
+      summary: List the caller's schedule exceptions (day off, custom hours)
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: fromDate
+          in: query
+          required: false
+          description: Inclusive doctor-local date. Defaults to today in the doctor's timezone.
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          required: false
+          description: Inclusive doctor-local date.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: A page of exceptions ordered by date ascending.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ScheduleException'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createMyException
+      tags: [schedules]
+      summary: Block a date or date range (leave) or override hours for one date
+      description: |
+        `day_off` may cover a range (`date`..`endDate`, at most 60 days) and creates one row per doctor-local date.
+        `custom_hours` covers exactly one date and replaces (does not add to) that weekday's hours.
+        A date that already has a live exception returns `409 Conflict`. Intersecting existing non-terminal consultations
+        without `confirmConflicts=true` returns `409 ScheduleConflictsUnconfirmed` (flow F).
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      x-audit: admin-action
+      x-audit-actions: [schedule.exception_created, schedule.conflicts_confirmed]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleExceptionCreate'
+      responses:
+        '201':
+          description: Exception rows created (one per date).
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ScheduleException'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ScheduleConflictsUnconfirmed'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/exceptions/{id}:
+    delete:
+      operationId: deleteMyException
+      tags: [schedules]
+      summary: Remove a schedule exception (soft delete)
+      description: Sets `deleted_at`. An id not belonging to the caller's profile returns `404 NotFound`.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      x-audit-actions: [schedule.exception_deleted]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/consultation-types:
+    get:
+      operationId: listMyConsultationTypes
+      tags: [schedules]
+      summary: List the caller's consultation types
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: isActive
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: A page of consultation types ordered by id.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConsultationType'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createMyConsultationType
+      tags: [schedules]
+      summary: Define a consultation type (duration + price)
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      x-audit-actions: [consultation_type.created]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsultationTypeCreate'
+      responses:
+        '201':
+          description: Consultation type created.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/ConsultationType'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/consultation-types/{id}:
+    patch:
+      operationId: updateMyConsultationType
+      tags: [schedules]
+      summary: Update a consultation type (name, duration, price, active flag)
+      description: |
+        Changes apply to future bookings only; existing consultations keep their `starts_at`/`ends_at` and price snapshot.
+        Deactivating the last active type removes the doctor from search (Domain rule 6).
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      x-audit-actions: [consultation_type.updated]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsultationTypeUpdate'
+      responses:
+        '200':
+          description: Consultation type updated.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/ConsultationType'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── doctors: discovery
+  /api/doctors:
+    get:
+      operationId: searchDoctors
+      tags: [doctors-discovery]
+      summary: Search bookable doctors
+      description: |
+        Returns only bookable doctors (Domain rule 6): `verification_status='approved'`, `identity_sync_status='synced'`,
+        not suspended, accepting patients, at least one active consultation type. Filters run on indexed columns;
+        `sort=earliest_availability` uses the derived per-doctor `next-available` Redis cache, never full slot computation per row.
+        Display names and avatars are hydrated with **one** batched Identity call per page (Case 2): if Identity is slow or down,
+        results are still returned with `displayName=null`, `avatarUrl=null`, `profileHydrated=false` — never a 5xx.
+        Budget: p95 < 400 ms. Rate limit 60/min per IP and 120/min per user.
+      security:
+        - bearerUser: []
+      x-roles: [patient, admin]
+      x-ownership: none
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/SpecialtyFilter'
+        - $ref: '#/components/parameters/LanguageFilter'
+        - $ref: '#/components/parameters/NameFilter'
+        - $ref: '#/components/parameters/MinFee'
+        - $ref: '#/components/parameters/MaxFee'
+        - $ref: '#/components/parameters/AvailableFrom'
+        - $ref: '#/components/parameters/AvailableTo'
+        - $ref: '#/components/parameters/SearchSort'
+      responses:
+        '200':
+          description: A page of doctors (public view).
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DoctorProfile'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/{doctorUserId}:
+    get:
+      operationId: getDoctor
+      tags: [doctors-discovery]
+      summary: Public doctor profile with next available slots preview
+      description: |
+        Patients see only bookable doctors (a non-bookable doctor returns `404 NotFound`); admins see any doctor.
+        Name/avatar hydration follows Case 2 (degrade).
+      security:
+        - bearerUser: []
+      x-roles: [patient, admin]
+      x-ownership: none
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/DoctorUserIdPath'
+        - name: timezone
+          in: query
+          required: false
+          description: IANA zone used to render `nextAvailableSlots`. Defaults to the caller's patient profile timezone, else UTC.
+          schema:
+            type: string
+            examples: [Africa/Cairo]
+      responses:
+        '200':
+          description: The doctor's public profile.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/DoctorProfile'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/{doctorUserId}/slots:
+    get:
+      operationId: getDoctorSlots
+      tags: [doctors-discovery]
+      summary: Compute free slots for a consultation type in a window
+      description: |
+        Slots are never stored. Computed as working hours − exceptions − busy consultations, sliced by the type's
+        duration, evaluated in the doctor's timezone, clipped to `[now, now + 60 days]`, returned in UTC and rendered in
+        `timezone`. Window at most 14 days (else `400 ValidationFailed`). Budget: p95 < 300 ms for 14 days.
+        Rate limit 60/min per IP and 120/min per user.
+      security:
+        - bearerUser: []
+      x-roles: [patient, admin]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/DoctorUserIdPath'
+        - $ref: '#/components/parameters/SlotTypeId'
+        - $ref: '#/components/parameters/SlotFrom'
+        - $ref: '#/components/parameters/SlotTo'
+        - $ref: '#/components/parameters/SlotTimezone'
+      responses:
+        '200':
+          description: Free slots ascending by `startsAt`. Bounded window, not paginated.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Slot'
+                  meta:
+                    $ref: '#/components/schemas/SlotWindowMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── admin: verification (Case 1)
+  /api/admin/applications:
+    get:
+      operationId: listApplications
+      tags: [admin-verification]
+      summary: Verification queue
+      description: Defaults to `status=submitted`, oldest first. Doctor names are hydrated per Case 2 (degrade).
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/VerificationStatus'
+      responses:
+        '200':
+          description: A page of applications (documents listed without download URLs).
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VerificationApplication'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/applications/{id}:
+    get:
+      operationId: getApplication
+      tags: [admin-verification]
+      summary: View one application with signed document URLs
+      description: The application id is the doctor profile id (one application per doctor). Issuing document URLs is audited.
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [verification.documents_viewed]
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationApplicationOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/applications/{id}/approve:
+    patch:
+      operationId: approveApplication
+      tags: [admin-verification]
+      summary: Approve a submitted application (Integration Case 1)
+      description: |
+        1. One transaction: `verification_status='approved'`, `reviewed_by`, `review_note`, `decided_at`,
+           `identity_sync_status='pending'`, audit row.
+        2. `PATCH /internal/users/{id}/status` on Identity → `active`, up to 3 attempts (2 s timeout each, backoff).
+        3. Identity confirmed → `identity_sync_status='synced'`, **200**. Still failing → decision kept, **202** with
+           `identitySync: "pending"`; a durable `identity_sync_jobs` retrier continues and alerts after 15 minutes unsynced.
+        4. A `409 InvalidStatusTransition` from Identity is non-retryable: `identity_sync_status='failed'`, alert
+           `IdentitySyncTransitionRejected`, **202** with `identitySync: "failed"`, surfaced in the admin console.
+        The doctor is not bookable until `approved` **and** `synced`. Only `submitted` applications are reviewable.
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [verification.approved, identity_sync.synced]
+      x-integration-case: 1
+      x-failure-policy: retry-report-pending
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationApprove'
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationApplicationOk'
+        '202':
+          $ref: '#/components/responses/ApprovalPendingSync'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ApplicationNotReviewable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/applications/{id}/reject:
+    patch:
+      operationId: rejectApplication
+      tags: [admin-verification]
+      summary: Reject a submitted application with a reason (Integration Case 1)
+      description: Same sequence as approve with `verification_status='rejected'` and Identity status `rejected`. `reason` is required.
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [verification.rejected, identity_sync.synced]
+      x-integration-case: 1
+      x-failure-policy: retry-report-pending
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationReject'
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationApplicationOk'
+        '202':
+          $ref: '#/components/responses/ApprovalPendingSync'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ApplicationNotReviewable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/admin/applications/{id}/reopen:
+    patch:
+      operationId: reopenApplication
+      tags: [admin-verification]
+      summary: Re-open a rejected application (Integration Case 1, Identity status pending)
+      description: |
+        PRD 7.2. `rejected → submitted` (else `409 ApplicationNotReviewable`). One transaction records the transition,
+        `identity_sync_status='pending'`, and the audit row; then `PATCH /internal/users/{id}/status` → `pending` with the
+        Case 1 policy: 200 when confirmed, 202 `identitySync: "pending"` while retrying, 202 `identitySync: "failed"` on a
+        non-retryable `409 InvalidStatusTransition` from Identity.
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [verification.reopened, identity_sync.synced]
+      x-integration-case: 1
+      x-failure-policy: retry-report-pending
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationReject'
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationApplicationOk'
+        '202':
+          $ref: '#/components/responses/ApprovalPendingSync'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ApplicationNotReviewable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── admin: suspension (Case 3)
+  /api/admin/doctors/{doctorUserId}/suspend:
+    patch:
+      operationId: suspendDoctor
+      tags: [admin-doctors]
+      summary: Suspend a doctor and revoke their sessions (Integration Case 3)
+      description: |
+        0. Precondition: only an approved, synced, not-suspended doctor can be suspended, else `409 InvalidTransition`.
+           Suspending an already-suspended doctor is a **200 no-op** that returns the current state (its
+           `identitySyncStatus` shows whether revocation is still pending).
+        1. One transaction: `suspended_at`, `suspension_reason`, `identity_sync_status='pending'`; every future non-terminal
+           consultation flagged `needs_admin_followup=true`; audit rows. From this commit Care blocks new bookings and all
+           doctor actions.
+        2. `PATCH /internal/users/{id}/status` on Identity → `suspended` (Identity revokes all refresh tokens), inline attempts
+           for about 6 s, then a durable retry job with backoff capped at 60 s and no attempt limit for transient failures
+           (network, timeout, 429, 5xx, one token refresh on 401). Alert `IdentitySuspensionSyncFailing` after 3 consecutive
+           failures. A `409 InvalidStatusTransition` from Identity is not transient: retries stop, the local suspension stays,
+           `identity_sync_status='failed'`, and on-call is paged immediately (`IdentitySyncTransitionRejected`).
+        3. **200 only when Identity confirmed.** Otherwise **503 `IdentityUnavailable`** with
+           `suspension: "applied-locally, session-revocation-pending"` (`data.identitySyncStatus` is `pending` or `failed`).
+           This policy must not degrade. Reinstatement is out of scope for MVP.
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [doctor.suspended, consultation.flagged_for_followup, identity_sync.synced]
+      x-integration-case: 3
+      x-failure-policy: must-not-degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/DoctorUserIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuspendDoctor'
+      responses:
+        '200':
+          description: Suspension applied locally and confirmed by Identity (sessions revoked).
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/SuspensionResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/SuspensionPending'
+
+  # ─────────────────────────────────────────────────────────────── patients
+  /api/patients/me:
+    get:
+      operationId: getMyPatientProfile
+      tags: [patients]
+      summary: Get the caller's patient profile (incl. allergies and chronic conditions)
+      description: Returns `404 NotFound` until the profile is created with `PATCH /api/patients/me`. Every read is audited.
+      security:
+        - bearerUser: []
+      x-roles: [patient]
+      x-ownership: self
+      x-audit: clinical-read
+      x-audit-actions: [patient_profile.read]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/PatientProfileOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: upsertMyPatientProfile
+      tags: [patients]
+      summary: Create or update the caller's demographics, allergies, chronic conditions, timezone
+      description: Creates the profile on first call (`timezone` then required). Patients never write medical-record fields.
+      security:
+        - bearerUser: []
+      x-roles: [patient]
+      x-ownership: self
+      x-audit: clinical-write
+      x-audit-actions: [patient_profile.updated]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatientProfileUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/PatientProfileOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/patients/{patientUserId}:
+    get:
+      operationId: getPatientProfile
+      tags: [patients]
+      summary: Get a patient profile (the patient themself, or a doctor who has consulted them)
+      description: |
+        Doctor access requires a `completed` or current (`booked`/`waiting`/`in_progress`) consultation with this patient
+        (`EXISTS` on `consultations`). Anyone else gets `404 NotFound`. Admins are not allowed. Every successful call is audited.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor]
+      x-ownership: consulted-patient-or-self
+      x-audit: clinical-read
+      x-audit-actions: [patient_profile.read]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/PatientUserIdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/PatientProfileOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/patients/{patientUserId}/records:
+    get:
+      operationId: listPatientRecords
+      tags: [patients, records]
+      summary: Patient clinical timeline (records newest first, plus allergies and chronic conditions)
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor]
+      x-ownership: consulted-patient-or-self
+      x-audit: clinical-read
+      x-audit-actions: [patient_records.listed]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/PatientUserIdPath'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of the timeline. `data.patient` is repeated on every page.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/PatientTimeline'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── consultations
+  /api/consultations:
+    post:
+      operationId: bookConsultation
+      tags: [consultations]
+      summary: Book a consultation (patient)
+      description: |
+        `Idempotency-Key` is **required** (missing → `400 ValidationFailed`). `patient_user_id` is the caller; duration
+        and `endsAt` come from the consultation type, never from the client. Inside one transaction the service re-validates:
+        doctor bookable (`409 DoctorNotBookable`), start in the future (`422 BookingInPast`), within 60 days
+        (`422 BeyondBookingHorizon`), inside the doctor's open hours for that doctor-local date and on the slot grid
+        (`422 OutsideWorkingHours`), then inserts; an exclusion violation (SQLSTATE 23P01) maps to `409 SlotUnavailable`.
+        Same key + same body replays the original 201; same key + different body → `422 IdempotencyConflict`.
+        The confirmation email is queued asynchronously and never blocks or rolls back the booking.
+        Budget p95 < 200 ms. Rate limit 10 booking writes/min per user.
+      security:
+        - bearerUser: []
+      x-roles: [patient]
+      x-ownership: self
+      x-account-state: 'status active; emailVerified true'
+      x-audit-actions: [consultation.booked]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsultationCreate'
+      responses:
+        '201':
+          description: Consultation booked (or the replay of the original booking for the same key and body).
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/Consultation'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/BookingForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/BookingConflict'
+        '422':
+          $ref: '#/components/responses/BookingUnprocessable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listConsultations
+      tags: [consultations]
+      summary: List consultations visible to the caller
+      description: |
+        Patients see their own, doctors their own, admins all (admin view omits `complaintText`). Names/avatars of the
+        counterpart are hydrated with one batched Identity call per page (Case 2, degrade).
+        Default sort: `startsAt` ascending for `scope=upcoming`, descending for `scope=past`.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor, admin]
+      x-ownership: participant-or-admin
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: scope
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [upcoming, past, all]
+            default: upcoming
+        - name: status
+          in: query
+          required: false
+          style: form
+          explode: false
+          description: Comma-separated statuses.
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ConsultationStatus'
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: doctorUserId
+          in: query
+          required: false
+          description: Admin only.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: patientUserId
+          in: query
+          required: false
+          description: Admin only.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: needsAdminFollowup
+          in: query
+          required: false
+          description: Admin only; the follow-up queue after suspensions and schedule blocks.
+          schema:
+            type: boolean
+        - name: timezone
+          in: query
+          required: false
+          description: IANA zone for `*Local` fields. Defaults to the viewer's own timezone (see Consultation).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of consultations (viewer-aware).
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Consultation'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/waiting-room:
+    get:
+      operationId: getWaitingRoom
+      tags: [consultations]
+      summary: The caller's (doctor) waiting room — consultations whose session window is open
+      description: |
+        Literal path; it is matched before `/api/consultations/{id}` (whose `id` is an integer). Returns consultations of the
+        calling doctor with status `booked` or `waiting` whose window `[starts_at − 10 min, ends_at + 15 min]` contains now.
+        Bounded set; not paginated. Patient names hydrated per Case 2 (degrade).
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Waiting-room entries ordered by `startsAt`.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Consultation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/calendar:
+    get:
+      operationId: getCalendar
+      tags: [consultations]
+      summary: The caller's (doctor) day or week calendar
+      description: |
+        Literal path; matched before `/api/consultations/{id}`. Window at most 7 days (else `400 ValidationFailed`), bounded
+        and not paginated. Includes non-terminal and terminal consultations plus schedule exceptions in the window,
+        rendered in `timezone` (defaults to the doctor's timezone). Budget p95 < 200 ms. Patient names hydrated per Case 2.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self
+      x-account-state: 'status active; not locally suspended'
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: timezone
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Calendar view.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/CalendarView'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/{id}:
+    get:
+      operationId: getConsultation
+      tags: [consultations]
+      summary: Get one consultation (participant, or admin without clinical fields)
+      description: |
+        Participants receive `complaintText` and the read is audited as a clinical read. Admins receive the admin view
+        (no `complaintText`). Anyone else → `404 NotFound`.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor, admin]
+      x-ownership: participant-or-admin
+      x-audit: clinical-read
+      x-audit-actions: [consultation.read]
+      x-integration-case: 2
+      x-failure-policy: degrade
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+        - name: timezone
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsultationOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/{id}/reschedule:
+    patch:
+      operationId: rescheduleConsultation
+      tags: [consultations]
+      summary: Move a booked consultation to a new start (patient outside the policy window, or admin with a reason)
+      description: |
+        `Idempotency-Key` is **required**. Status stays `booked`; only a `booked` consultation can be rescheduled
+        (else `409 InvalidTransition`). Patients: not within 120 minutes of the **current** start (`409 PolicyWindowViolation`).
+        Admins: any time, `reason` required. The new interval passes Domain rules 1–5 inside one transaction that updates
+        the same row, releasing the old interval atomically.
+      security:
+        - bearerUser: []
+      x-roles: [patient, admin]
+      x-ownership: patient-owner-or-admin
+      x-audit: admin-action
+      x-audit-actions: [consultation.rescheduled]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Reschedule'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsultationOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RescheduleConflict'
+        '422':
+          $ref: '#/components/responses/BookingUnprocessable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/{id}/cancel:
+    patch:
+      operationId: cancelConsultation
+      tags: [consultations]
+      summary: Cancel a booked or waiting consultation
+      description: |
+        `Idempotency-Key` is **required**. `booked`/`waiting` → `cancelled`. Patients only outside the policy window
+        (`409 PolicyWindowViolation`); the assigned doctor with a `reason`; admins any time with a `reason`.
+        Terminal consultations → `409 InvalidTransition`. The interval is released by the status change; both parties are
+        notified asynchronously.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor, admin]
+      x-ownership: participant-or-admin
+      x-audit: admin-action
+      x-audit-actions: [consultation.cancelled]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Cancel'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsultationOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/CancelConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/{id}/join:
+    patch:
+      operationId: joinConsultation
+      tags: [consultations]
+      summary: Join the session (patient enters the waiting room; either participant gets a video join token)
+      description: |
+        Allowed only inside the session window `[starts_at − 10 min, ends_at + 15 min]` (`409 RoomNotOpen`).
+        Patient on a `booked` consultation → `waiting` (sets `joined_at`). A participant re-joining a `waiting` or
+        `in_progress` consultation receives a fresh token without a transition. Terminal → `409 InvalidTransition`.
+        The join token is short-lived and valid for this participant only.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor]
+      x-ownership: participant
+      x-account-state: 'status active; doctor not locally suspended'
+      x-audit-actions: [consultation.waiting]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionJoinOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/SessionConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/{id}/start:
+    patch:
+      operationId: startConsultation
+      tags: [consultations]
+      summary: Start the session (assigned doctor)
+      description: |
+        `booked`/`waiting` → `in_progress`, inside the session window (`409 RoomNotOpen`). Returns the doctor's join token.
+        Queues the "your doctor has joined" notification asynchronously.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: assigned-doctor
+      x-account-state: 'status active; not locally suspended'
+      x-audit-actions: [consultation.started]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionJoinOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/SessionConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/{id}/complete:
+    patch:
+      operationId: completeConsultation
+      tags: [consultations]
+      summary: End the session (assigned doctor)
+      description: '`in_progress` → `completed`. Any other state → `409 InvalidTransition`. The medical record can be written afterwards.'
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: assigned-doctor
+      x-account-state: 'status active; not locally suspended'
+      x-audit-actions: [consultation.completed]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsultationOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/consultations/{id}/no-show:
+    patch:
+      operationId: markNoShow
+      tags: [consultations]
+      summary: Mark a no-show (assigned doctor or admin) after start + grace
+      description: '`booked`/`waiting` → `no_show` when now ≥ `starts_at` + 10 minutes (`409 NoShowTooEarly`). Terminal → `409 InvalidTransition`.'
+      security:
+        - bearerUser: []
+      x-roles: [doctor, admin]
+      x-ownership: assigned-doctor-or-admin
+      x-audit: admin-action
+      x-audit-actions: [consultation.no_show]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoShow'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsultationOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/NoShowConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── records
+  /api/consultations/{id}/record:
+    post:
+      operationId: createMedicalRecord
+      tags: [records]
+      summary: Write the medical record for a completed consultation (assigned doctor)
+      description: |
+        Only for a `completed` consultation (`409 RecordRequiresCompleted`), only by its assigned doctor
+        (`403 NotAssignedDoctor`), one record per consultation (`409 Conflict`). `locked_at = created_at + 24 h`.
+        Record insert and audit row are one transaction.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: assigned-doctor
+      x-account-state: 'status active; not locally suspended'
+      x-audit: clinical-write
+      x-audit-actions: [record.created]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MedicalRecordCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/MedicalRecordCreated'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/RecordWriteForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RecordCreateConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/records/{id}:
+    get:
+      operationId: getMedicalRecord
+      tags: [records]
+      summary: Read a medical record with amendments and signed attachment URLs
+      description: |
+        The owning patient, the authoring doctor, or a doctor who has consulted the patient. Admins are never allowed
+        (`403 Forbidden`); other callers get `404 NotFound`. The audit row is written before the response; if it fails the read fails.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor]
+      x-ownership: consulted-patient-or-self
+      x-audit: clinical-read
+      x-audit-actions: [record.read, attachment.url_issued]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/MedicalRecordOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateMedicalRecord
+      tags: [records]
+      summary: Update a record before its lock, or append an amendment after it (authoring doctor)
+      description: |
+        Before `locked_at`: fields are updated in place → **200** with the record (each update audited).
+        After `locked_at`: the original is untouched and a `medical_record_amendments` row is created → **201** with the
+        amendment; `reason` is required for an amendment. Never a silent overwrite.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: assigned-doctor
+      x-account-state: 'status active; not locally suspended'
+      x-audit: clinical-write
+      x-audit-actions: [record.updated, record.amended]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MedicalRecordPatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/MedicalRecordOk'
+        '201':
+          description: The record was locked; an amendment was appended.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/MedicalRecordAmendment'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/RecordWriteForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/records/{id}/attachments:
+    post:
+      operationId: addRecordAttachment
+      tags: [records]
+      summary: Attach a file to a record (authoring doctor)
+      description: |
+        `multipart/form-data`; MIME allowlist `application/pdf`, `image/jpeg`, `image/png` (content-sniffed), 10 MB cap,
+        random object key. Allowed before and after the lock (adding is append-only). Rate limit 20 uploads/hour per user.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: assigned-doctor
+      x-account-state: 'status active; not locally suspended'
+      x-audit: clinical-write
+      x-audit-actions: [attachment.added]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RecordAttachmentUpload'
+      responses:
+        '201':
+          description: Attachment stored.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/RecordAttachment'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/RecordWriteForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/records/{id}/attachments/{attachmentId}:
+    delete:
+      operationId: deleteRecordAttachment
+      tags: [records]
+      summary: Remove an attachment before the record lock (soft delete)
+      description: After `locked_at` → `409 RecordLocked`.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: assigned-doctor
+      x-account-state: 'status active; not locally suspended'
+      x-audit: clinical-write
+      x-audit-actions: [attachment.removed]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+        - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/RecordWriteForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RecordLocked'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── help articles
+  /api/help-articles:
+    get:
+      operationId: listHelpArticles
+      tags: [help-articles]
+      summary: List help articles
+      description: Patients and doctors see published articles for their audience; admins see drafts too.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor, admin]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/HelpArticleCategory'
+        - name: audience
+          in: query
+          required: false
+          description: Admin only; other roles are filtered to their own audience.
+          schema:
+            $ref: '#/components/schemas/HelpArticleAudience'
+        - name: isPublished
+          in: query
+          required: false
+          description: Admin only.
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: A page of articles.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HelpArticle'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createHelpArticle
+      tags: [help-articles]
+      summary: Create a help article
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [help_article.created]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HelpArticleCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/HelpArticleCreated'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/help-articles/{id}:
+    get:
+      operationId: getHelpArticle
+      tags: [help-articles]
+      summary: Get a help article
+      description: Unpublished or other-audience articles return `404 NotFound` to non-admins.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor, admin]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          $ref: '#/components/responses/HelpArticleOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateHelpArticle
+      tags: [help-articles]
+      summary: Update or publish/unpublish a help article
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [help_article.updated]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HelpArticleUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/HelpArticleOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteHelpArticle
+      tags: [help-articles]
+      summary: Delete a help article (soft delete)
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      x-audit: admin-action
+      x-audit-actions: [help_article.deleted]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── audit
+  /api/audit-logs:
+    get:
+      operationId: listAuditLogs
+      tags: [audit]
+      summary: Read the audit log (metadata only, never clinical content)
+      description: Newest first. Reading the audit log is not itself a clinical read because entries carry no clinical text.
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: actorUserId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+            examples: [consultation.cancelled]
+        - name: entityType
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+            examples: [consultation]
+        - name: entityId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: A page of audit entries.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, meta]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLogEntry'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─────────────────────────────────────────────────────────────── internal
+  /internal/doctors/{userId}/summary:
+    get:
+      operationId: getDoctorSummaryInternal
+      tags: [internal]
+      summary: Verification state and specialties of a doctor, for admin tooling and future services
+      description: |
+        Internal listener only. Requires a service token (`typ=service`, `aud` contains `vcare-care`, scope `doctors:read`).
+        A user token, even an admin's → `401 ServiceTokenRequired`; missing scope → `403 InsufficientScope`.
+        No outbound calls on this path; p95 < 50 ms. No names, emails, or clinical data.
+        No MVP service client holds `doctors:read`; the endpoint serves admin tooling and the Phase-2 AI service once a
+        client with that scope is provisioned in Identity.
+      servers:
+        - url: http://localhost:3101
+          description: Internal listener (INTERNAL_PORT=3101), network-isolated, never routed by the public ingress.
+      security:
+        - serviceToken: []
+      x-roles: [service]
+      x-scope: doctors:read
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: userId
+          in: path
+          required: true
+          description: The doctor's Identity user id.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: Doctor summary.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    const: true
+                  data:
+                    $ref: '#/components/schemas/DoctorSummaryInternal'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/ServiceTokenRequired'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerUser:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        User access token issued by identity-service (EdDSA, 15 min). Verified locally against
+        `IDENTITY_JWKS_URL` (cached; refreshed on unknown `kid` at most once per minute). Required claims:
+        `iss=vcare-identity`, `aud` contains `vcare-care`, `typ=user`, `sub` (user id), `role`, `status`, `ev`.
+        If no cached key matches and JWKS cannot be fetched → `401 Unauthorized` (verification is never skipped).
+    serviceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Service token issued by identity-service `POST /internal/auth/token` (client credentials, 300 s):
+        `typ=service`, `aud` contains `vcare-care`, `scope` contains `doctors:read`. Accepted only on `/internal/*`.
+
+  headers:
+    XRequestId:
+      description: Request id (UUID) — the incoming `X-Request-Id` if it is a valid UUID, else generated. Echoed on every response.
+      schema:
+        type: string
+        format: uuid
+    CacheControlNoStore:
+      description: '`no-store` on every clinical and consultation response.'
+      schema:
+        type: string
+        const: no-store
+    RetryAfter:
+      description: Seconds until the limiter allows another request.
+      schema:
+        type: integer
+        minimum: 1
+
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Optional caller-supplied UUID; propagated to logs, audit rows, and every call to Identity.
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Required UUID. Stored 24 h in Redis keyed by (route, principal, key) with a body hash. Same key + same body → replay
+        of the original response; same key + different body → `422 IdempotencyConflict`. Missing → `400 ValidationFailed`.
+        Booking also persists the key on the consultation row (`uq_consultations_idempotency`).
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Optional UUID with the same replay semantics as on booking writes.
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque keyset cursor from `meta.nextCursor` (encodes the sort value and id).
+      schema:
+        type: string
+        maxLength: 512
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    IdPath:
+      name: id
+      in: path
+      required: true
+      description: Numeric id (BIGSERIAL). Non-numeric values never match, so literal sibling paths are unambiguous.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    DoctorUserIdPath:
+      name: doctorUserId
+      in: path
+      required: true
+      description: The doctor's Identity user id (the stable person id used across services).
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    PatientUserIdPath:
+      name: patientUserId
+      in: path
+      required: true
+      description: The patient's Identity user id.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    SpecialtyFilter:
+      name: specialty
+      in: query
+      required: false
+      description: Specialty slug.
+      schema:
+        type: string
+        maxLength: 100
+        examples: [dermatology]
+    LanguageFilter:
+      name: language
+      in: query
+      required: false
+      description: ISO 639-1 language code.
+      schema:
+        type: string
+        pattern: '^[a-z]{2}$'
+        examples: [ar]
+    NameFilter:
+      name: name
+      in: query
+      required: false
+      description: Case-insensitive prefix match on the doctor's display name (resolved via cached hydration) or headline.
+      schema:
+        type: string
+        minLength: 2
+        maxLength: 100
+    MinFee:
+      name: minFee
+      in: query
+      required: false
+      description: Minimum consultation fee in minor units (inclusive).
+      schema:
+        type: integer
+        minimum: 0
+    MaxFee:
+      name: maxFee
+      in: query
+      required: false
+      description: Maximum consultation fee in minor units (inclusive).
+      schema:
+        type: integer
+        minimum: 0
+    AvailableFrom:
+      name: availableFrom
+      in: query
+      required: false
+      description: Only doctors with a free slot starting at or after this instant (uses the derived next-available cache).
+      schema:
+        type: string
+        format: date-time
+    AvailableTo:
+      name: availableTo
+      in: query
+      required: false
+      description: Only doctors with a free slot starting before this instant. Window at most 14 days.
+      schema:
+        type: string
+        format: date-time
+    SearchSort:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [earliest_availability, price, experience]
+        default: earliest_availability
+    SlotTypeId:
+      name: typeId
+      in: query
+      required: true
+      description: Consultation type id; must belong to the doctor and be active.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    SlotFrom:
+      name: from
+      in: query
+      required: true
+      description: Window start (ISO-8601 with offset). Clipped to now.
+      schema:
+        type: string
+        format: date-time
+    SlotTo:
+      name: to
+      in: query
+      required: true
+      description: Window end (ISO-8601 with offset). At most 14 days after `from`; clipped to now + 60 days.
+      schema:
+        type: string
+        format: date-time
+    SlotTimezone:
+      name: timezone
+      in: query
+      required: false
+      description: IANA zone for `startsAtLocal`/`endsAtLocal`. Defaults to the caller's patient profile timezone, else UTC.
+      schema:
+        type: string
+        maxLength: 64
+        examples: [America/New_York]
+
+  responses:
+    NoContent:
+      description: No content.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+    HealthOk:
+      description: All required dependencies are reachable.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+    HealthDown:
+      description: A required dependency (Postgres or Redis) is down. Body is the health report with `status=down`.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+    DoctorProfileOwnOk:
+      description: The caller's own doctor profile.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/DoctorProfileOwn'
+    DoctorProfileOwnCreated:
+      description: The caller's doctor profile was created.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/DoctorProfileOwn'
+    VerificationApplicationOk:
+      description: A verification application with signed document URLs.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/VerificationApplication'
+    ApprovalPendingSync:
+      description: Decision recorded; Identity has not confirmed the account status yet. The doctor stays unbookable until synced.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApprovalPendingSync'
+    WorkingHoursOk:
+      description: The doctor's weekly hours.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/WorkingHours'
+    PatientProfileOk:
+      description: Patient profile including clinical fields (never served to admins).
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/PatientProfile'
+    ConsultationOk:
+      description: The consultation (viewer-aware).
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/Consultation'
+    SessionJoinOk:
+      description: Session join details for this participant only.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/SessionJoin'
+    MedicalRecordOk:
+      description: The medical record with amendments and signed attachment URLs.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/MedicalRecord'
+    MedicalRecordCreated:
+      description: Record created.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/MedicalRecord'
+    HelpArticleOk:
+      description: The help article.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/HelpArticle'
+    HelpArticleCreated:
+      description: Help article created.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success:
+                const: true
+              data:
+                $ref: '#/components/schemas/HelpArticle'
+
+    # ── errors (all bodies are the one ErrorEnvelope) ──
+    ValidationFailed:
+      description: '`ValidationFailed` — DTO validation failed, unknown properties, a missing required `Idempotency-Key`, or a window too large.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: ValidationFailed
+              message: Request validation failed
+              details:
+                - field: startsAt
+                  issue: must be an ISO-8601 date-time with offset
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    Unauthorized:
+      description: '`Unauthorized` (missing/invalid bearer token, unknown key) or `TokenExpired`.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: TokenExpired
+              message: Access token expired
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    ServiceTokenRequired:
+      description: '`ServiceTokenRequired` — `/internal/*` without a valid service token (a user token, even an admin''s, lands here).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: ServiceTokenRequired
+              message: A service token is required
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    Forbidden:
+      description: '`Forbidden` — role or ownership check failed, account state not allowed, or the doctor is locally suspended.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: Forbidden
+              message: You are not allowed to perform this action
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    InsufficientScope:
+      description: '`InsufficientScope` — the service token lacks `doctors:read`.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: InsufficientScope
+              message: The service token lacks the required scope
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    BookingForbidden:
+      description: '`EmailNotVerified` (token `ev=false`) or `Forbidden` (wrong role or non-active account).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: EmailNotVerified
+              message: Verify your email before booking
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    RecordWriteForbidden:
+      description: '`NotAssignedDoctor` (a doctor other than the consultation''s doctor) or `Forbidden` (wrong role, suspended doctor).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: NotAssignedDoctor
+              message: Only the assigned doctor can write this record
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    NotFound:
+      description: '`NotFound` — absent, soft-deleted, or not visible to the caller (existence is not revealed).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: NotFound
+              message: Resource not found
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    Conflict:
+      description: '`Conflict` — generic uniqueness or state conflict (e.g. duplicate slug, application already submitted).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: Conflict
+              message: The resource already exists
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    BookingConflict:
+      description: '`DoctorNotBookable` (not approved+synced, suspended, not accepting, or no active type) or `SlotUnavailable` (taken, incl. exclusion violation).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: SlotUnavailable
+              message: The selected slot is no longer available
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    RescheduleConflict:
+      description: '`PolicyWindowViolation`, `InvalidTransition`, `DoctorNotBookable`, or `SlotUnavailable`.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: PolicyWindowViolation
+              message: This consultation can no longer be changed by the patient
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    CancelConflict:
+      description: '`PolicyWindowViolation` (patient inside the window) or `InvalidTransition` (terminal or not cancellable).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: InvalidTransition
+              message: The consultation cannot change from its current status
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    SessionConflict:
+      description: '`RoomNotOpen` (outside the session window) or `InvalidTransition`.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: RoomNotOpen
+              message: The session room is not open
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    InvalidTransition:
+      description: '`InvalidTransition` — lifecycle transition not allowed (including any change to a terminal state).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: InvalidTransition
+              message: The consultation cannot change from its current status
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    NoShowConflict:
+      description: '`NoShowTooEarly` (before `starts_at` + grace) or `InvalidTransition`.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: NoShowTooEarly
+              message: A no-show can be marked only after the grace period
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    RecordCreateConflict:
+      description: '`RecordRequiresCompleted` (consultation not `completed`) or `Conflict` (a record already exists).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: RecordRequiresCompleted
+              message: A record can be written only for a completed consultation
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    RecordLocked:
+      description: '`RecordLocked` — attachments cannot be deleted after the 24 h lock.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: RecordLocked
+              message: The record is locked
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    ApplicationNotReviewable:
+      description: '`ApplicationNotReviewable` — the application is not in `submitted`.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: ApplicationNotReviewable
+              message: Only submitted applications can be reviewed
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    ScheduleConflictsUnconfirmed:
+      description: '`ScheduleConflictsUnconfirmed` (body lists the affected consultation ids; resubmit with `confirmConflicts=true`) or `Conflict` (a live exception already exists for a date).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ScheduleConflicts'
+    BookingUnprocessable:
+      description: '`OutsideWorkingHours`, `BookingInPast`, `BeyondBookingHorizon`, or `IdempotencyConflict`.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: OutsideWorkingHours
+              message: The requested time is outside the doctor's working hours
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    IdempotencyConflict:
+      description: '`IdempotencyConflict` — the same `Idempotency-Key` was used with a different body.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: IdempotencyConflict
+              message: The idempotency key was already used with a different request
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    RateLimited:
+      description: '`RateLimited` — Redis sliding-window limiter tripped.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: RateLimited
+              message: Too many requests
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    InternalError:
+      description: '`InternalError` — unhandled error (no internals in the body). Also returned when an audit write for a clinical read fails.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: InternalError
+              message: An unexpected error occurred
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    SuspensionPending:
+      description: '`IdentityUnavailable` — the suspension is applied locally (bookings and doctor actions blocked) but Identity has not confirmed session revocation. A durable job keeps retrying.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SuspensionPending'
+
+  schemas:
+    # ── envelopes ──
+    ErrorCode:
+      type: string
+      description: Stable error codes owned by care-service (CLAUDE.md → API conventions).
+      enum:
+        - ValidationFailed
+        - Unauthorized
+        - TokenExpired
+        - ServiceTokenRequired
+        - InsufficientScope
+        - Forbidden
+        - EmailNotVerified
+        - DoctorNotBookable
+        - SlotUnavailable
+        - OutsideWorkingHours
+        - BookingInPast
+        - BeyondBookingHorizon
+        - PolicyWindowViolation
+        - InvalidTransition
+        - NoShowTooEarly
+        - RoomNotOpen
+        - RecordRequiresCompleted
+        - NotAssignedDoctor
+        - RecordLocked
+        - ApplicationNotReviewable
+        - ScheduleConflictsUnconfirmed
+        - IdentityUnavailable
+        - IdempotencyConflict
+        - NotFound
+        - Conflict
+        - RateLimited
+        - InternalError
+    ErrorDetail:
+      type: object
+      required: [field, issue]
+      properties:
+        field:
+          type: string
+        issue:
+          type: string
+    ErrorEnvelope:
+      type: object
+      description: The one error envelope, identical to identity-service. Some errors add a sibling member next to `error` (see ScheduleConflicts, SuspensionPending).
+      required: [success, error]
+      properties:
+        success:
+          const: false
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                $ref: '#/components/schemas/ErrorDetail'
+            requestId:
+              type: string
+              format: uuid
+    ScheduleConflicts:
+      description: 409 body for `ScheduleConflictsUnconfirmed` — the envelope plus the affected consultations.
+      allOf:
+        - $ref: '#/components/schemas/ErrorEnvelope'
+        - type: object
+          required: [conflicts]
+          properties:
+            conflicts:
+              type: object
+              required: [consultationIds, count]
+              properties:
+                consultationIds:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+                count:
+                  type: integer
+                  minimum: 1
+      example:
+        success: false
+        error:
+          code: ScheduleConflictsUnconfirmed
+          message: The change affects existing consultations; resubmit with confirmConflicts=true
+          requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+        conflicts:
+          consultationIds: [1042, 1057]
+          count: 2
+    SuspensionPending:
+      description: 503 body for a suspension whose session revocation Identity has not yet confirmed.
+      allOf:
+        - $ref: '#/components/schemas/ErrorEnvelope'
+        - type: object
+          required: [suspension]
+          properties:
+            suspension:
+              type: string
+              const: applied-locally, session-revocation-pending
+            data:
+              $ref: '#/components/schemas/SuspensionResult'
+      example:
+        success: false
+        error:
+          code: IdentityUnavailable
+          message: Suspension applied locally; session revocation is pending
+          requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+        suspension: applied-locally, session-revocation-pending
+    ApprovalPendingSync:
+      type: object
+      description: 202 body for Case 1 when Identity has not confirmed yet.
+      required: [success, data]
+      properties:
+        success:
+          const: true
+        data:
+          allOf:
+            - $ref: '#/components/schemas/VerificationApplication'
+            - type: object
+              required: [identitySync]
+              properties:
+                identitySync:
+                  type: string
+                  enum: [pending, failed]
+                  description: '`pending` while the durable retrier works; `failed` after a non-retryable Identity 409.'
+    PaginationMeta:
+      type: object
+      required: [nextCursor, hasMore, count]
+      properties:
+        nextCursor:
+          type: [string, 'null']
+          description: Opaque cursor for the next page; null on the last page.
+        hasMore:
+          type: boolean
+        count:
+          type: integer
+          minimum: 0
+          description: Number of items in this page.
+    SlotWindowMeta:
+      type: object
+      required: [from, to, timezone, doctorTimezone, count]
+      properties:
+        from:
+          type: string
+          format: date-time
+          description: Effective window start after clipping to now.
+        to:
+          type: string
+          format: date-time
+          description: Effective window end after clipping to the horizon.
+        timezone:
+          type: string
+          description: Rendering timezone of the `*Local` fields.
+        doctorTimezone:
+          type: string
+        count:
+          type: integer
+          minimum: 0
+
+    HealthStatus:
+      type: object
+      required: [status, service, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        service:
+          type: string
+          const: care-service
+        checks:
+          type: object
+          required: [postgres, redis]
+          properties:
+            postgres:
+              type: string
+              enum: [up, down]
+            redis:
+              type: string
+              enum: [up, down]
+            identityJwks:
+              type: string
+              enum: [cached, stale, missing]
+              description: Informational; `degraded` when stale, never `down` on its own.
+
+    HydratedUserFields:
+      type: object
+      description: |
+        Borrowed from identity-service via batch hydration (Case 2, `GET /internal/users?ids=`). Never stored long-term
+        (Redis TTL 300 s); null when degraded. Identity's `status` is used only to hide non-active doctors from search,
+        never for authorization, and is not exposed here.
+      required: [displayName, avatarUrl, profileHydrated]
+      properties:
+        displayName:
+          type: [string, 'null']
+          description: Identity's `fullName`.
+        avatarUrl:
+          type: [string, 'null']
+          format: uri
+        profileHydrated:
+          type: boolean
+          description: false when Identity was unavailable and no cached entry existed.
+
+    # ── specialties ──
+    Specialty:
+      type: object
+      required: [id, name, slug, description, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 100
+        slug:
+          type: string
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          maxLength: 100
+        description:
+          type: [string, 'null']
+          maxLength: 2000
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    SpecialtyCreate:
+      type: object
+      additionalProperties: false
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        slug:
+          type: string
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 2000
+    SpecialtyUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        slug:
+          type: string
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          maxLength: 100
+        description:
+          type: [string, 'null']
+          maxLength: 2000
+        isActive:
+          type: boolean
+
+    # ── doctors ──
+    VerificationStatus:
+      type: string
+      enum: [draft, submitted, approved, rejected]
+    IdentitySyncStatus:
+      type: string
+      enum: [not_required, pending, synced, failed]
+      description: '`not_required` before any decision; `pending` after a Case 1/3 decision until Identity confirms; `synced` once confirmed; `failed` when Identity answered a non-retryable `409 InvalidStatusTransition` (alerted, needs an operator).'
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: integer
+          minimum: 0
+          description: Minor units (e.g. 25000 = 250.00).
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          examples: [EGP]
+    SpecialtyRef:
+      type: object
+      required: [id, slug, name, isPrimary]
+      properties:
+        id:
+          type: integer
+          format: int64
+        slug:
+          type: string
+        name:
+          type: string
+        isPrimary:
+          type: boolean
+    DoctorProfile:
+      description: Public view of a doctor (search results and profile). No verification internals, no suspension reason.
+      allOf:
+        - $ref: '#/components/schemas/HydratedUserFields'
+        - type: object
+          required: [userId, headline, bio, yearsExperience, languages, specialties, consultationFee, timezone, isAcceptingPatients, nextAvailableAt, consultationTypes]
+          properties:
+            userId:
+              type: integer
+              format: int64
+              description: The doctor's Identity user id (path key for /api/doctors/{doctorUserId}).
+            headline:
+              type: string
+              maxLength: 160
+            bio:
+              type: [string, 'null']
+              maxLength: 4000
+            yearsExperience:
+              type: integer
+              minimum: 0
+              maximum: 70
+            languages:
+              type: array
+              items:
+                type: string
+                pattern: '^[a-z]{2}$'
+            specialties:
+              type: array
+              items:
+                $ref: '#/components/schemas/SpecialtyRef'
+            consultationFee:
+              $ref: '#/components/schemas/Money'
+            timezone:
+              type: string
+              examples: [Africa/Cairo]
+            isAcceptingPatients:
+              type: boolean
+            nextAvailableAt:
+              type: [string, 'null']
+              format: date-time
+              description: Derived from the next-available cache (14-day look-ahead); null when none or not yet computed.
+            consultationTypes:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConsultationType'
+            nextAvailableSlots:
+              type: array
+              description: Present only on GET /api/doctors/{doctorUserId}; the first few free slots for the first active type.
+              items:
+                $ref: '#/components/schemas/Slot'
+            status:
+              type: string
+              enum: [bookable, not_bookable]
+              description: Admin view only.
+    DoctorProfileOwn:
+      description: The doctor's own full view, including verification and sync state.
+      type: object
+      required: [id, userId, headline, bio, yearsExperience, languages, specialties, consultationFee, defaultSlotMinutes, timezone, isAcceptingPatients, verificationStatus, identitySyncStatus, isSuspended, suspendedAt, isBookable, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Doctor profile id (also the application id).
+        userId:
+          type: integer
+          format: int64
+        headline:
+          type: string
+        bio:
+          type: [string, 'null']
+        yearsExperience:
+          type: integer
+        languages:
+          type: array
+          items:
+            type: string
+        specialties:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpecialtyRef'
+        consultationFee:
+          $ref: '#/components/schemas/Money'
+        defaultSlotMinutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+        timezone:
+          type: string
+        isAcceptingPatients:
+          type: boolean
+        verificationStatus:
+          $ref: '#/components/schemas/VerificationStatus'
+        reviewNote:
+          type: [string, 'null']
+        identitySyncStatus:
+          $ref: '#/components/schemas/IdentitySyncStatus'
+        isSuspended:
+          type: boolean
+        suspendedAt:
+          type: [string, 'null']
+          format: date-time
+        isBookable:
+          type: boolean
+          description: Domain rule 6 evaluated now.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    DoctorApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [headline, yearsExperience, languages, specialtyIds, primarySpecialtyId, consultationFee, defaultSlotMinutes, timezone, submit]
+      properties:
+        headline:
+          type: string
+          minLength: 5
+          maxLength: 160
+        bio:
+          type: string
+          maxLength: 4000
+        yearsExperience:
+          type: integer
+          minimum: 0
+          maximum: 70
+        languages:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z]{2}$'
+        specialtyIds:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items:
+            type: integer
+            format: int64
+        primarySpecialtyId:
+          type: integer
+          format: int64
+          description: Must be one of `specialtyIds`.
+        consultationFee:
+          $ref: '#/components/schemas/Money'
+        defaultSlotMinutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+        timezone:
+          type: string
+          maxLength: 64
+          description: IANA zone, validated with luxon.
+        submit:
+          type: boolean
+          description: true moves the application to `submitted` (requires license and id documents).
+    DoctorProfileUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        headline:
+          type: string
+          minLength: 5
+          maxLength: 160
+        bio:
+          type: [string, 'null']
+          maxLength: 4000
+        yearsExperience:
+          type: integer
+          minimum: 0
+          maximum: 70
+        languages:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z]{2}$'
+        specialtyIds:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items:
+            type: integer
+            format: int64
+        primarySpecialtyId:
+          type: integer
+          format: int64
+        consultationFee:
+          $ref: '#/components/schemas/Money'
+        defaultSlotMinutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+        timezone:
+          type: string
+          maxLength: 64
+        isAcceptingPatients:
+          type: boolean
+    DoctorSummaryInternal:
+      type: object
+      description: Minimal verification state for service callers. No names, contact data, or clinical data.
+      required: [userId, doctorProfileId, verificationStatus, identitySyncStatus, isSuspended, suspendedAt, isAcceptingPatients, isBookable, primarySpecialty, specialties, decidedAt]
+      properties:
+        userId:
+          type: integer
+          format: int64
+        doctorProfileId:
+          type: integer
+          format: int64
+        verificationStatus:
+          $ref: '#/components/schemas/VerificationStatus'
+        identitySyncStatus:
+          $ref: '#/components/schemas/IdentitySyncStatus'
+        isSuspended:
+          type: boolean
+        suspendedAt:
+          type: [string, 'null']
+          format: date-time
+        isAcceptingPatients:
+          type: boolean
+        isBookable:
+          type: boolean
+        primarySpecialty:
+          oneOf:
+            - $ref: '#/components/schemas/SpecialtyRef'
+            - type: 'null'
+        specialties:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpecialtyRef'
+        decidedAt:
+          type: [string, 'null']
+          format: date-time
+
+    # ── verification ──
+    VerificationDocumentType:
+      type: string
+      enum: [license, id, degree]
+    VerificationDocument:
+      type: object
+      required: [id, type, status, fileType, sizeBytes, uploadedAt, downloadUrl, downloadUrlExpiresAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        type:
+          $ref: '#/components/schemas/VerificationDocumentType'
+        status:
+          type: string
+          enum: [uploaded, accepted, rejected]
+        fileType:
+          type: string
+          enum: [application/pdf, image/jpeg, image/png]
+        sizeBytes:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        reviewNote:
+          type: [string, 'null']
+        uploadedAt:
+          type: string
+          format: date-time
+        downloadUrl:
+          type: [string, 'null']
+          format: uri
+          description: HMAC-signed URL bound to the viewer, TTL ≤ 10 minutes. Null in list views (no URL issued). Never logged.
+        downloadUrlExpiresAt:
+          type: [string, 'null']
+          format: date-time
+    VerificationDocumentUpload:
+      type: object
+      required: [type, file]
+      properties:
+        type:
+          $ref: '#/components/schemas/VerificationDocumentType'
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          description: PDF, JPEG, or PNG; at most 10 MB.
+    VerificationApplication:
+      type: object
+      description: A doctor's application — a view over the doctor profile's verification state plus its documents.
+      required: [id, doctorUserId, doctor, status, identitySyncStatus, submittedAt, decidedAt, reviewedBy, reviewNote, documents]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Application id = doctor profile id.
+        doctorUserId:
+          type: integer
+          format: int64
+        doctor:
+          $ref: '#/components/schemas/HydratedUserFields'
+        status:
+          $ref: '#/components/schemas/VerificationStatus'
+        identitySyncStatus:
+          $ref: '#/components/schemas/IdentitySyncStatus'
+        specialties:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpecialtyRef'
+        yearsExperience:
+          type: integer
+        submittedAt:
+          type: [string, 'null']
+          format: date-time
+        decidedAt:
+          type: [string, 'null']
+          format: date-time
+        reviewedBy:
+          type: [integer, 'null']
+          format: int64
+          description: Admin user id.
+        reviewNote:
+          type: [string, 'null']
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerificationDocument'
+        missingRequirements:
+          type: array
+          description: Present on the doctor's own view; e.g. `license_document`, `id_document`.
+          items:
+            type: string
+    ApplicationApprove:
+      type: object
+      additionalProperties: false
+      properties:
+        note:
+          type: string
+          maxLength: 2000
+    ApplicationReject:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 2000
+    SuspendDoctor:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 2000
+    SuspensionResult:
+      type: object
+      required: [doctorUserId, suspendedAt, identitySyncStatus, flaggedConsultationIds]
+      properties:
+        doctorUserId:
+          type: integer
+          format: int64
+        suspendedAt:
+          type: string
+          format: date-time
+        identitySyncStatus:
+          $ref: '#/components/schemas/IdentitySyncStatus'
+        flaggedConsultationIds:
+          type: array
+          description: Future non-terminal consultations flagged `needs_admin_followup`.
+          items:
+            type: integer
+            format: int64
+
+    # ── schedules ──
+    TimeOfDay:
+      type: string
+      pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$|^24:00$'
+      description: Doctor-local wall-clock time `HH:mm`; `24:00` allowed as an end time.
+      examples: ['09:00']
+    TimeInterval:
+      type: object
+      additionalProperties: false
+      required: [startTime, endTime]
+      properties:
+        startTime:
+          $ref: '#/components/schemas/TimeOfDay'
+        endTime:
+          $ref: '#/components/schemas/TimeOfDay'
+    WorkingHoursDay:
+      type: object
+      additionalProperties: false
+      description: One ISO weekday with one or more non-overlapping intervals (split shifts). A shift crossing midnight is two intervals on two weekdays.
+      required: [weekday, intervals]
+      properties:
+        weekday:
+          type: integer
+          minimum: 1
+          maximum: 7
+          description: ISO weekday, 1 = Monday.
+        intervals:
+          type: array
+          minItems: 1
+          maxItems: 6
+          items:
+            $ref: '#/components/schemas/TimeInterval'
+      example:
+        weekday: 1
+        intervals:
+          - startTime: '09:00'
+            endTime: '12:00'
+          - startTime: '14:00'
+            endTime: '18:00'
+    WorkingHours:
+      type: object
+      required: [timezone, days]
+      properties:
+        timezone:
+          type: string
+          description: The doctor's IANA timezone in which the hours are interpreted.
+        days:
+          type: array
+          maxItems: 7
+          items:
+            $ref: '#/components/schemas/WorkingHoursDay'
+    WorkingHoursReplace:
+      type: object
+      additionalProperties: false
+      required: [days]
+      properties:
+        days:
+          type: array
+          maxItems: 7
+          items:
+            $ref: '#/components/schemas/WorkingHoursDay'
+        confirmConflicts:
+          type: boolean
+          default: false
+    ScheduleExceptionType:
+      type: string
+      enum: [day_off, custom_hours]
+    ScheduleException:
+      type: object
+      required: [id, date, type, startTime, endTime, reason, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        date:
+          type: string
+          format: date
+          description: Doctor-local date.
+        type:
+          $ref: '#/components/schemas/ScheduleExceptionType'
+        startTime:
+          oneOf:
+            - $ref: '#/components/schemas/TimeOfDay'
+            - type: 'null'
+        endTime:
+          oneOf:
+            - $ref: '#/components/schemas/TimeOfDay'
+            - type: 'null'
+        reason:
+          type: [string, 'null']
+          maxLength: 500
+        createdAt:
+          type: string
+          format: date-time
+    ScheduleExceptionCreate:
+      type: object
+      additionalProperties: false
+      required: [type, date]
+      properties:
+        type:
+          $ref: '#/components/schemas/ScheduleExceptionType'
+        date:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+          description: '`day_off` only; inclusive; at most 60 days after `date`.'
+        startTime:
+          $ref: '#/components/schemas/TimeOfDay'
+        endTime:
+          $ref: '#/components/schemas/TimeOfDay'
+        reason:
+          type: string
+          maxLength: 500
+        confirmConflicts:
+          type: boolean
+          default: false
+    ConsultationType:
+      type: object
+      required: [id, name, durationMinutes, price, currency, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 100
+          examples: [First visit]
+        durationMinutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+        price:
+          type: integer
+          minimum: 0
+          description: Minor units.
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ConsultationTypeCreate:
+      type: object
+      additionalProperties: false
+      required: [name, durationMinutes, price, currency]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        durationMinutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+        price:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+    ConsultationTypeUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        durationMinutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+        price:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        isActive:
+          type: boolean
+
+    # ── slots ──
+    Slot:
+      type: object
+      description: A computed, never-stored free interval. Half-open [startsAt, endsAt).
+      required: [startsAt, endsAt, startsAtLocal, endsAtLocal, timezone]
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+          description: UTC (`Z`).
+          examples: ['2026-09-21T06:00:00Z']
+        endsAt:
+          type: string
+          format: date-time
+          examples: ['2026-09-21T06:30:00Z']
+        startsAtLocal:
+          type: string
+          format: date-time
+          description: Rendered in `timezone` with its offset.
+          examples: ['2026-09-21T02:00:00-04:00']
+        endsAtLocal:
+          type: string
+          format: date-time
+          examples: ['2026-09-21T02:30:00-04:00']
+        timezone:
+          type: string
+          examples: [America/New_York]
+
+    # ── consultations ──
+    ConsultationStatus:
+      type: string
+      enum: [booked, waiting, in_progress, completed, cancelled, no_show]
+    Participant:
+      allOf:
+        - $ref: '#/components/schemas/HydratedUserFields'
+        - type: object
+          required: [userId]
+          properties:
+            userId:
+              type: integer
+              format: int64
+    Consultation:
+      type: object
+      description: |
+        Viewer-aware. Participants (patient, assigned doctor) receive `complaintText`; the **admin view omits
+        `complaintText`** entirely. `*Local` fields are rendered in `timezone`: the patient's `patientTimezone` for the
+        patient, the doctor's timezone for the doctor, and the `timezone` query parameter (default UTC) for admins.
+      required: [id, status, doctor, patient, consultationType, startsAt, endsAt, startsAtLocal, endsAtLocal, timezone, patientTimezone, price, needsAdminFollowup, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          $ref: '#/components/schemas/ConsultationStatus'
+        doctor:
+          $ref: '#/components/schemas/Participant'
+        patient:
+          $ref: '#/components/schemas/Participant'
+        consultationType:
+          type: object
+          required: [id, name, durationMinutes]
+          properties:
+            id:
+              type: integer
+              format: int64
+            name:
+              type: string
+            durationMinutes:
+              type: integer
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        startsAtLocal:
+          type: string
+          format: date-time
+        endsAtLocal:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        patientTimezone:
+          type: string
+        price:
+          $ref: '#/components/schemas/Money'
+        complaintText:
+          type: string
+          maxLength: 4000
+          description: Participants only. Absent in admin views. Never logged.
+        joinedAt:
+          type: [string, 'null']
+          format: date-time
+        startedAt:
+          type: [string, 'null']
+          format: date-time
+        completedAt:
+          type: [string, 'null']
+          format: date-time
+        cancelledAt:
+          type: [string, 'null']
+          format: date-time
+        cancelledBy:
+          type: [string, 'null']
+          enum: [patient, doctor, admin, null]
+        cancelReason:
+          type: [string, 'null']
+        needsAdminFollowup:
+          type: boolean
+        followupReason:
+          type: [string, 'null']
+          enum: [doctor_suspended, schedule_blocked, null]
+        followUpOfRecordId:
+          type: [integer, 'null']
+          format: int64
+        hasRecord:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ConsultationCreate:
+      type: object
+      additionalProperties: false
+      description: No duration, `endsAt`, patient id, or price from the client — all derived server-side.
+      required: [doctorId, typeId, startsAt, complaintText, patientTimezone]
+      properties:
+        doctorId:
+          type: integer
+          format: int64
+          description: The doctor's Identity user id.
+        typeId:
+          type: integer
+          format: int64
+        startsAt:
+          type: string
+          format: date-time
+          description: ISO-8601 with offset; must equal a computed slot start.
+        complaintText:
+          type: string
+          minLength: 3
+          maxLength: 4000
+        patientTimezone:
+          type: string
+          maxLength: 64
+          description: IANA zone, validated with luxon.
+        followUpOfRecordId:
+          type: integer
+          format: int64
+          description: Optional; a record of this patient with this doctor that recommended a follow-up.
+      example:
+        doctorId: 204
+        typeId: 31
+        startsAt: '2026-09-21T09:00:00+03:00'
+        complaintText: Synthetic example complaint text
+        patientTimezone: America/New_York
+    Reschedule:
+      type: object
+      additionalProperties: false
+      required: [startsAt]
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+          description: New start; duration still comes from the consultation type.
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+          description: Required when the caller is an admin.
+    Cancel:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+          description: Required for doctor and admin callers; optional for patients.
+    NoShow:
+      type: object
+      additionalProperties: false
+      properties:
+        note:
+          type: string
+          maxLength: 1000
+    SessionJoin:
+      type: object
+      required: [consultation, roomId, joinToken, joinTokenExpiresAt, windowOpensAt, windowClosesAt]
+      properties:
+        consultation:
+          $ref: '#/components/schemas/Consultation'
+        roomId:
+          type: string
+          maxLength: 128
+        joinToken:
+          type: string
+          description: Short-lived provider token for this participant only. Never logged.
+        joinTokenExpiresAt:
+          type: string
+          format: date-time
+        windowOpensAt:
+          type: string
+          format: date-time
+        windowClosesAt:
+          type: string
+          format: date-time
+    CalendarView:
+      type: object
+      required: [from, to, timezone, consultations, exceptions]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        consultations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Consultation'
+        exceptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleException'
+
+    # ── patients ──
+    PatientProfile:
+      type: object
+      required: [id, userId, dateOfBirth, gender, bloodType, allergies, chronicConditions, timezone, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        userId:
+          type: integer
+          format: int64
+        dateOfBirth:
+          type: [string, 'null']
+          format: date
+        gender:
+          type: [string, 'null']
+          enum: [female, male, other, undisclosed, null]
+        bloodType:
+          type: [string, 'null']
+          enum: [A+, A-, B+, B-, AB+, AB-, O+, O-, unknown, null]
+        allergies:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+        chronicConditions:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+        timezone:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    PatientProfileUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        dateOfBirth:
+          type: [string, 'null']
+          format: date
+        gender:
+          type: [string, 'null']
+          enum: [female, male, other, undisclosed, null]
+        bloodType:
+          type: [string, 'null']
+          enum: [A+, A-, B+, B-, AB+, AB-, O+, O-, unknown, null]
+        allergies:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 200
+        chronicConditions:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 200
+        timezone:
+          type: string
+          maxLength: 64
+          description: Required when the profile does not exist yet.
+    PatientTimeline:
+      type: object
+      required: [patient, records]
+      properties:
+        patient:
+          $ref: '#/components/schemas/PatientProfile'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/MedicalRecord'
+
+    # ── records ──
+    MedicalRecord:
+      type: object
+      required: [id, consultationId, patientUserId, doctorUserId, chiefComplaint, examinationNotes, diagnosisText, diagnosisCode, treatmentPlan, followUpInDays, lockedAt, isLocked, amendments, attachments, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        consultationId:
+          type: integer
+          format: int64
+        patientUserId:
+          type: integer
+          format: int64
+        doctorUserId:
+          type: integer
+          format: int64
+        chiefComplaint:
+          type: string
+        examinationNotes:
+          type: [string, 'null']
+        diagnosisText:
+          type: [string, 'null']
+        diagnosisCode:
+          type: [string, 'null']
+          maxLength: 16
+          description: ICD-10 code.
+        treatmentPlan:
+          type: [string, 'null']
+        followUpInDays:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 365
+        lockedAt:
+          type: string
+          format: date-time
+          description: created_at + 24 h.
+        isLocked:
+          type: boolean
+        amendments:
+          type: array
+          items:
+            $ref: '#/components/schemas/MedicalRecordAmendment'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecordAttachment'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    MedicalRecordCreate:
+      type: object
+      additionalProperties: false
+      required: [chiefComplaint]
+      properties:
+        chiefComplaint:
+          type: string
+          minLength: 3
+          maxLength: 2000
+        examinationNotes:
+          type: string
+          maxLength: 10000
+        diagnosisText:
+          type: string
+          maxLength: 2000
+        diagnosisCode:
+          type: string
+          pattern: '^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$'
+        treatmentPlan:
+          type: string
+          maxLength: 10000
+        followUpInDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+    MedicalRecordPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Before the lock updates in place; after the lock becomes an amendment and `reason` is required.
+      properties:
+        chiefComplaint:
+          type: string
+          minLength: 3
+          maxLength: 2000
+        examinationNotes:
+          type: string
+          maxLength: 10000
+        diagnosisText:
+          type: string
+          maxLength: 2000
+        diagnosisCode:
+          type: string
+          pattern: '^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$'
+        treatmentPlan:
+          type: string
+          maxLength: 10000
+        followUpInDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+    MedicalRecordAmendment:
+      type: object
+      description: Append-only correction created after the record lock. Only the amended fields are non-null.
+      required: [id, recordId, authorUserId, reason, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        recordId:
+          type: integer
+          format: int64
+        authorUserId:
+          type: integer
+          format: int64
+        chiefComplaint:
+          type: [string, 'null']
+        examinationNotes:
+          type: [string, 'null']
+        diagnosisText:
+          type: [string, 'null']
+        diagnosisCode:
+          type: [string, 'null']
+        treatmentPlan:
+          type: [string, 'null']
+        followUpInDays:
+          type: [integer, 'null']
+        reason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    RecordAttachment:
+      type: object
+      required: [id, recordId, fileType, sizeBytes, description, createdAt, downloadUrl, downloadUrlExpiresAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        recordId:
+          type: integer
+          format: int64
+        fileType:
+          type: string
+          enum: [application/pdf, image/jpeg, image/png]
+        sizeBytes:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        description:
+          type: [string, 'null']
+          maxLength: 500
+        createdAt:
+          type: string
+          format: date-time
+        downloadUrl:
+          type: [string, 'null']
+          format: uri
+          description: HMAC-signed, viewer-bound, TTL ≤ 10 minutes; issuance is an audited clinical read. Never logged.
+        downloadUrlExpiresAt:
+          type: [string, 'null']
+          format: date-time
+    RecordAttachmentUpload:
+      type: object
+      required: [file]
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          description: PDF, JPEG, or PNG; at most 10 MB.
+        description:
+          type: string
+          maxLength: 500
+
+    # ── help articles ──
+    HelpArticleCategory:
+      type: string
+      enum: [how-it-works, preparing-for-consultation, cancellation-policy, platform-rules]
+    HelpArticleAudience:
+      type: string
+      enum: [patient, doctor]
+    HelpArticle:
+      type: object
+      required: [id, title, body, category, audience, isPublished, publishedAt, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+          maxLength: 200
+        body:
+          type: string
+          description: Markdown.
+        category:
+          $ref: '#/components/schemas/HelpArticleCategory'
+        audience:
+          $ref: '#/components/schemas/HelpArticleAudience'
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    HelpArticleCreate:
+      type: object
+      additionalProperties: false
+      required: [title, body, category, audience, isPublished]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+        body:
+          type: string
+          minLength: 1
+          maxLength: 50000
+        category:
+          $ref: '#/components/schemas/HelpArticleCategory'
+        audience:
+          $ref: '#/components/schemas/HelpArticleAudience'
+        isPublished:
+          type: boolean
+    HelpArticleUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+        body:
+          type: string
+          minLength: 1
+          maxLength: 50000
+        category:
+          $ref: '#/components/schemas/HelpArticleCategory'
+        audience:
+          $ref: '#/components/schemas/HelpArticleAudience'
+        isPublished:
+          type: boolean
+
+    # ── audit ──
+    AuditLogEntry:
+      type: object
+      description: Append-only audit entry. `metadata` holds ids, statuses, and reasons only — never clinical text or PII.
+      required: [id, actorUserId, actorRole, action, entityType, entityId, requestId, metadata, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        actorUserId:
+          type: [integer, 'null']
+          format: int64
+          description: Null for system actors (retry jobs).
+        actorRole:
+          type: string
+          enum: [patient, doctor, admin, service, system]
+        action:
+          type: string
+          examples: [record.read]
+        entityType:
+          type: string
+          examples: [medical_record]
+        entityId:
+          type: integer
+          format: int64
+        requestId:
+          type: [string, 'null']
+          format: uuid
+        metadata:
+          type: object
+          additionalProperties:
+            type: [string, number, boolean, 'null']
+          examples:
+            - fromStatus: booked
+              toStatus: cancelled
+              consultationId: 1042
+        createdAt:
+          type: string
+          format: date-time

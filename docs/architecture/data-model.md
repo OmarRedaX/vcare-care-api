@@ -1,0 +1,575 @@
+---
+title: Data Model
+owner: care-team
+service: care-service
+status: draft
+diataxis: reference
+last_verified: 2026-09-14
+tags: [data-model, postgresql, schema, indexes, erd]
+related: [scheduling-slots, clinical-records, integration, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint]
+---
+
+# Data Model — care-service
+
+PostgreSQL 16, one database owned by Care. Written in the style migrations will use (`knex.raw`, see the
+`write-migration` skill). Conventions:
+
+- `id BIGSERIAL` everywhere; FKs `BIGINT` with named constraints and a leading-column index.
+- Identity references are `*_user_id BIGINT` with **no FK** (`-- Identity user id`).
+- All instants `TIMESTAMPTZ` (UTC sessions). Wall-clock schedule times are `TIME` interpreted in `doctor_profiles.timezone`.
+- Enum-like columns are `VARCHAR … CHECK (… IN (…))`, never native `ENUM`; no defaults on critical columns.
+- Soft delete (`deleted_at`) for profiles, records, attachments, help articles, consultation types, exceptions,
+  working hours. Uniqueness among live rows uses partial unique indexes.
+- `ON DELETE RESTRICT` everywhere; clinical tables never cascade.
+- Every index names the query it serves. There is **no slots or availability table** ([ADR 0002](../adr/0002-slots-never-stored.md)).
+
+## ERD
+
+```mermaid
+erDiagram
+    specialties ||--o{ doctor_specialties : "linked by"
+    doctor_profiles ||--o{ doctor_specialties : has
+    doctor_profiles ||--o{ doctor_languages : speaks
+    doctor_profiles ||--o{ verification_documents : uploads
+    doctor_profiles ||--o{ working_hours : sets
+    doctor_profiles ||--o{ schedule_exceptions : blocks
+    doctor_profiles ||--o{ consultation_types : offers
+    doctor_profiles ||--o{ identity_sync_jobs : "synced by"
+    consultation_types ||--o{ consultations : "typed as"
+    consultations ||--o| medical_records : produces
+    medical_records ||--o{ medical_record_amendments : "corrected by"
+    medical_records ||--o{ record_attachments : has
+    medical_records ||--o{ consultations : "follow-up of"
+    patient_profiles }o..o{ consultations : "patient_user_id (logical)"
+    doctor_profiles }o..o{ consultations : "doctor_user_id (logical)"
+```
+
+Dotted lines are logical joins on Identity user ids (`doctor_profiles.user_id = consultations.doctor_user_id`),
+not FKs: `consultations` keys doctors by user id so the exclusion constraint and every cross-service call use the
+same stable person id.
+
+---
+
+## `specialties`
+```sql
+CREATE TABLE specialties (
+    id           BIGSERIAL PRIMARY KEY,
+    name         VARCHAR(100) NOT NULL,
+    slug         VARCHAR(100) NOT NULL,
+    description  TEXT,
+    is_active    BOOLEAN NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_specialties_slug UNIQUE (slug),
+    CONSTRAINT uq_specialties_name UNIQUE (name),
+    CONSTRAINT chk_specialties_slug_format CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+);
+-- No soft delete: specialties are deactivated (is_active=false), never removed, because doctor links reference them.
+-- uq_specialties_slug also serves: search filter ?specialty=<slug> → SELECT id FROM specialties WHERE slug = $1
+```
+
+## `doctor_profiles`
+```sql
+CREATE TABLE doctor_profiles (
+    id                     BIGSERIAL PRIMARY KEY,
+    user_id                BIGINT NOT NULL,              -- Identity user id
+    headline               VARCHAR(160) NOT NULL,
+    bio                    TEXT,
+    years_experience       INT NOT NULL,
+    consultation_fee       INT NOT NULL,                 -- minor units, no default
+    currency               CHAR(3) NOT NULL,
+    default_slot_minutes   INT NOT NULL,
+    timezone               VARCHAR(64) NOT NULL,         -- IANA, validated with luxon
+    is_accepting_patients  BOOLEAN NOT NULL,
+    verification_status    VARCHAR(16) NOT NULL,
+    submitted_at           TIMESTAMPTZ,
+    reviewed_by            BIGINT,                       -- Identity user id (admin)
+    review_note            TEXT,
+    decided_at             TIMESTAMPTZ,
+    identity_sync_status   VARCHAR(16) NOT NULL,
+    suspended_at           TIMESTAMPTZ,
+    suspended_by           BIGINT,                       -- Identity user id (admin)
+    suspension_reason      TEXT,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at             TIMESTAMPTZ,
+    CONSTRAINT chk_doctor_profiles_verification_status
+        CHECK (verification_status IN ('draft', 'submitted', 'approved', 'rejected')),
+    CONSTRAINT chk_doctor_profiles_identity_sync_status
+        CHECK (identity_sync_status IN ('not_required', 'pending', 'synced', 'failed')),
+    CONSTRAINT chk_doctor_profiles_years_experience CHECK (years_experience BETWEEN 0 AND 70),
+    CONSTRAINT chk_doctor_profiles_fee CHECK (consultation_fee >= 0),
+    CONSTRAINT chk_doctor_profiles_currency CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT chk_doctor_profiles_default_slot CHECK (default_slot_minutes BETWEEN 5 AND 240),
+    CONSTRAINT chk_doctor_profiles_suspension
+        CHECK ((suspended_at IS NULL AND suspension_reason IS NULL)
+            OR (suspended_at IS NOT NULL AND suspension_reason IS NOT NULL)),
+    CONSTRAINT chk_doctor_profiles_decision
+        CHECK (verification_status NOT IN ('approved', 'rejected') OR decided_at IS NOT NULL)
+);
+
+-- One live profile per doctor account. Serves every /doctors/me/* policy lookup:
+--   SELECT … FROM doctor_profiles WHERE user_id = $auth.userId AND deleted_at IS NULL
+-- and GET /doctors/:doctorUserId, /internal/doctors/:userId/summary, PATCH /admin/doctors/:doctorUserId/suspend.
+CREATE UNIQUE INDEX uq_doctor_profiles_user_id ON doctor_profiles (user_id) WHERE deleted_at IS NULL;
+
+-- Search candidate set (Domain rule 6) ordered/filtered by fee:
+--   WHERE verification_status='approved' AND identity_sync_status='synced' AND suspended_at IS NULL
+--     AND is_accepting_patients AND deleted_at IS NULL AND consultation_fee BETWEEN $min AND $max
+--   ORDER BY consultation_fee, id  (sort=price keyset)
+CREATE INDEX idx_doctor_profiles_bookable_fee_id ON doctor_profiles (consultation_fee, id)
+    WHERE verification_status = 'approved' AND identity_sync_status = 'synced'
+      AND suspended_at IS NULL AND is_accepting_patients AND deleted_at IS NULL;
+
+-- sort=experience keyset: ORDER BY years_experience DESC, id DESC on the same bookable subset.
+CREATE INDEX idx_doctor_profiles_bookable_experience_id ON doctor_profiles (years_experience DESC, id DESC)
+    WHERE verification_status = 'approved' AND identity_sync_status = 'synced'
+      AND suspended_at IS NULL AND is_accepting_patients AND deleted_at IS NULL;
+
+-- Admin verification queue: GET /admin/applications?status=submitted ORDER BY submitted_at, id
+CREATE INDEX idx_doctor_profiles_verification_status_submitted_at_id
+    ON doctor_profiles (verification_status, submitted_at, id) WHERE deleted_at IS NULL;
+```
+The verification **application** is a view over this row plus its documents (application id = profile id,
+one per doctor). `identity_sync_status` gates bookability together with `verification_status` (Case 1) and
+tracks Case 3 confirmation.
+
+## `doctor_specialties`
+```sql
+CREATE TABLE doctor_specialties (
+    id                 BIGSERIAL PRIMARY KEY,
+    doctor_profile_id  BIGINT NOT NULL,
+    specialty_id       BIGINT NOT NULL,
+    is_primary         BOOLEAN NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_doctor_specialties_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_doctor_specialties_specialty_id FOREIGN KEY (specialty_id) REFERENCES specialties(id) ON DELETE RESTRICT,
+    CONSTRAINT uq_doctor_specialties_doctor_profile_id_specialty_id UNIQUE (doctor_profile_id, specialty_id)
+);
+-- The unique constraint covers the doctor_profile_id FK and serves: load specialties for a page of doctors
+--   WHERE doctor_profile_id = ANY($1)
+-- Search filter ?specialty=: EXISTS (… WHERE specialty_id = $1 AND doctor_profile_id = dp.id); also covers the specialty_id FK.
+CREATE INDEX idx_doctor_specialties_specialty_id_doctor_profile_id ON doctor_specialties (specialty_id, doctor_profile_id);
+-- At most one primary specialty per doctor.
+CREATE UNIQUE INDEX uq_doctor_specialties_primary ON doctor_specialties (doctor_profile_id) WHERE is_primary;
+```
+Rows are replaced wholesale when a doctor edits specialties (link rows are not a soft-delete entity).
+
+## `doctor_languages`
+```sql
+CREATE TABLE doctor_languages (
+    id                 BIGSERIAL PRIMARY KEY,
+    doctor_profile_id  BIGINT NOT NULL,
+    language_code      CHAR(2) NOT NULL,              -- ISO 639-1
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_doctor_languages_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT uq_doctor_languages_doctor_profile_id_language_code UNIQUE (doctor_profile_id, language_code),
+    CONSTRAINT chk_doctor_languages_code CHECK (language_code ~ '^[a-z]{2}$')
+);
+-- Search filter ?language=ar: EXISTS (SELECT 1 FROM doctor_languages WHERE language_code = $1 AND doctor_profile_id = dp.id)
+CREATE INDEX idx_doctor_languages_language_code_doctor_profile_id ON doctor_languages (language_code, doctor_profile_id);
+```
+**Decision — join table, not a `TEXT[]` column.** Both work for "doctors who speak X". The join table was chosen
+because (1) it follows the same btree `EXISTS` pattern as specialties, so the search query combines filters
+uniformly and the planner uses composite btree indexes rather than a GIN index whose selectivity estimates are
+poorer; (2) each value gets a real `CHECK` and uniqueness per doctor; (3) it leaves room for per-language
+attributes (proficiency) without a migration of an array column. Cost: one extra table and a batched load per
+page (`WHERE doctor_profile_id = ANY($1)`, served by the unique constraint).
+
+## `verification_documents`
+```sql
+CREATE TABLE verification_documents (
+    id                 BIGSERIAL PRIMARY KEY,
+    doctor_profile_id  BIGINT NOT NULL,
+    type               VARCHAR(16) NOT NULL,
+    object_key         VARCHAR(512) NOT NULL,          -- storage key, never a URL; never logged
+    file_type          VARCHAR(32) NOT NULL,
+    size_bytes         INT NOT NULL,
+    status             VARCHAR(16) NOT NULL,
+    reviewed_by        BIGINT,                         -- Identity user id (admin)
+    review_note        TEXT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at         TIMESTAMPTZ,
+    CONSTRAINT fk_verification_documents_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT uq_verification_documents_object_key UNIQUE (object_key),
+    CONSTRAINT chk_verification_documents_type CHECK (type IN ('license', 'id', 'degree')),
+    CONSTRAINT chk_verification_documents_file_type CHECK (file_type IN ('application/pdf', 'image/jpeg', 'image/png')),
+    CONSTRAINT chk_verification_documents_size CHECK (size_bytes BETWEEN 1 AND 10485760),
+    CONSTRAINT chk_verification_documents_status CHECK (status IN ('uploaded', 'accepted', 'rejected'))
+);
+-- Application view and submit precondition: documents of a profile by type
+--   WHERE doctor_profile_id = $1 AND deleted_at IS NULL ORDER BY type, id
+CREATE INDEX idx_verification_documents_doctor_profile_id_type ON verification_documents (doctor_profile_id, type) WHERE deleted_at IS NULL;
+```
+
+## `working_hours`
+```sql
+CREATE TABLE working_hours (
+    id                 BIGSERIAL PRIMARY KEY,
+    doctor_profile_id  BIGINT NOT NULL,
+    weekday            SMALLINT NOT NULL,              -- ISO 1 = Monday … 7 = Sunday, doctor-local
+    start_time         TIME NOT NULL,
+    end_time           TIME NOT NULL,                  -- '24:00' allowed for a shift ending at midnight
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at         TIMESTAMPTZ,
+    CONSTRAINT fk_working_hours_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_working_hours_weekday CHECK (weekday BETWEEN 1 AND 7),
+    CONSTRAINT chk_working_hours_time_order CHECK (end_time > start_time)
+);
+-- Slot computation query 2 and GET /doctors/me/working-hours:
+--   WHERE doctor_profile_id = $1 AND deleted_at IS NULL ORDER BY weekday, start_time
+CREATE INDEX idx_working_hours_doctor_profile_id ON working_hours (doctor_profile_id, weekday, start_time) WHERE deleted_at IS NULL;
+```
+Several rows per weekday model split shifts; overlap between a doctor's intervals on one weekday is rejected by
+the service (the set is replaced atomically by `PUT`, which soft-deletes the old rows in the same transaction).
+
+## `schedule_exceptions`
+```sql
+CREATE TABLE schedule_exceptions (
+    id                 BIGSERIAL PRIMARY KEY,
+    doctor_profile_id  BIGINT NOT NULL,
+    date               DATE NOT NULL,                  -- doctor-local date
+    type               VARCHAR(16) NOT NULL,
+    start_time         TIME,
+    end_time           TIME,
+    reason             VARCHAR(500),
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at         TIMESTAMPTZ,
+    CONSTRAINT fk_schedule_exceptions_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_schedule_exceptions_type CHECK (type IN ('day_off', 'custom_hours')),
+    CONSTRAINT chk_schedule_exceptions_shape CHECK (
+        (type = 'day_off' AND start_time IS NULL AND end_time IS NULL)
+     OR (type = 'custom_hours' AND start_time IS NOT NULL AND end_time IS NOT NULL AND end_time > start_time))
+);
+-- One live exception per doctor-local date; also the FK index. Serves slot computation query 3:
+--   WHERE doctor_profile_id = $1 AND date BETWEEN $fromDate - 1 AND $toDate + 1 AND deleted_at IS NULL
+-- and GET /doctors/me/exceptions keyset (date, id).
+CREATE UNIQUE INDEX uq_schedule_exceptions_doctor_profile_id_date ON schedule_exceptions (doctor_profile_id, date) WHERE deleted_at IS NULL;
+```
+
+## `consultation_types`
+```sql
+CREATE TABLE consultation_types (
+    id                 BIGSERIAL PRIMARY KEY,
+    doctor_profile_id  BIGINT NOT NULL,
+    name               VARCHAR(100) NOT NULL,
+    duration_minutes   INT NOT NULL,
+    price              INT NOT NULL,                   -- minor units, no default
+    currency           CHAR(3) NOT NULL,
+    is_active          BOOLEAN NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at         TIMESTAMPTZ,
+    CONSTRAINT fk_consultation_types_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_consultation_types_duration CHECK (duration_minutes BETWEEN 5 AND 240),
+    CONSTRAINT chk_consultation_types_price CHECK (price >= 0),
+    CONSTRAINT chk_consultation_types_currency CHECK (currency ~ '^[A-Z]{3}$')
+);
+-- Unique live name per doctor; leading column covers the FK. Serves GET /doctors/me/consultation-types and the
+-- per-page load WHERE doctor_profile_id = ANY($1) AND deleted_at IS NULL.
+CREATE UNIQUE INDEX uq_consultation_types_doctor_profile_id_name ON consultation_types (doctor_profile_id, name) WHERE deleted_at IS NULL;
+-- Domain rule 6 "at least one active type": EXISTS (… WHERE doctor_profile_id = dp.id AND is_active AND deleted_at IS NULL)
+CREATE INDEX idx_consultation_types_doctor_profile_id_active ON consultation_types (doctor_profile_id) WHERE is_active AND deleted_at IS NULL;
+```
+
+## `consultations`
+```sql
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+CREATE TABLE consultations (
+    id                     BIGSERIAL PRIMARY KEY,
+    doctor_user_id         BIGINT NOT NULL,            -- Identity user id (doctor)
+    patient_user_id        BIGINT NOT NULL,            -- Identity user id (patient)
+    consultation_type_id   BIGINT NOT NULL,
+    starts_at              TIMESTAMPTZ NOT NULL,
+    ends_at                TIMESTAMPTZ NOT NULL,       -- starts_at + type.duration_minutes, computed server-side
+    status                 VARCHAR(16) NOT NULL,       -- no default
+    complaint_text         TEXT NOT NULL,              -- clinical; never logged, omitted from admin DTOs
+    patient_timezone       VARCHAR(64) NOT NULL,
+    price                  INT NOT NULL,               -- snapshot of the type price at booking
+    currency               CHAR(3) NOT NULL,
+    room_id                VARCHAR(128),               -- video provider room, created lazily at first join/start
+    joined_at              TIMESTAMPTZ,                -- patient entered the waiting room
+    started_at             TIMESTAMPTZ,
+    completed_at           TIMESTAMPTZ,
+    cancelled_at           TIMESTAMPTZ,
+    cancel_reason          TEXT,
+    cancelled_by           VARCHAR(16),
+    cancelled_by_user_id   BIGINT,                     -- Identity user id
+    no_show_marked_at      TIMESTAMPTZ,
+    needs_admin_followup   BOOLEAN NOT NULL DEFAULT FALSE,
+    followup_reason        VARCHAR(32),
+    follow_up_of_record_id BIGINT,
+    idempotency_key        UUID NOT NULL,
+    request_hash           CHAR(64) NOT NULL,          -- sha256 of the booking body, for replay-vs-conflict after Redis loss
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at             TIMESTAMPTZ,
+    CONSTRAINT fk_consultations_consultation_type_id FOREIGN KEY (consultation_type_id) REFERENCES consultation_types(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_consultations_status
+        CHECK (status IN ('booked', 'waiting', 'in_progress', 'completed', 'cancelled', 'no_show')),
+    CONSTRAINT chk_consultations_time_order CHECK (ends_at > starts_at),
+    CONSTRAINT chk_consultations_price CHECK (price >= 0),
+    CONSTRAINT chk_consultations_cancelled_by CHECK (cancelled_by IS NULL OR cancelled_by IN ('patient', 'doctor', 'admin')),
+    CONSTRAINT chk_consultations_cancel_shape
+        CHECK ((status = 'cancelled') = (cancelled_at IS NOT NULL AND cancelled_by IS NOT NULL)),
+    CONSTRAINT chk_consultations_followup_reason
+        CHECK (followup_reason IS NULL OR followup_reason IN ('doctor_suspended', 'schedule_blocked')),
+    CONSTRAINT uq_consultations_idempotency UNIQUE (patient_user_id, idempotency_key)
+);
+
+-- Domain rule 1 — the guarantee (verbatim from CLAUDE.md → Database rules). Half-open ranges allow back-to-back.
+ALTER TABLE consultations
+  ADD CONSTRAINT excl_consultations_doctor_no_overlap
+  EXCLUDE USING gist (doctor_user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
+  WHERE (status NOT IN ('cancelled', 'no_show') AND deleted_at IS NULL);
+-- Its GiST index also serves slot computation query 5, conflict detection for schedule changes, and the calendar:
+--   WHERE doctor_user_id = $1 AND tstzrange(starts_at, ends_at, '[)') && tstzrange($from, $to, '[)')
+--     AND status IN ('booked','waiting','in_progress') AND deleted_at IS NULL
+-- No duplicate btree for that query.
+
+-- uq_consultations_idempotency serves the in-transaction replay check:
+--   WHERE patient_user_id = $auth.userId AND idempotency_key = $key
+
+-- Patient list GET /consultations?scope=upcoming|past keyset on (starts_at, id):
+--   WHERE patient_user_id = $1 AND deleted_at IS NULL AND starts_at >= now() ORDER BY starts_at, id
+CREATE INDEX idx_consultations_patient_user_id_starts_at_id ON consultations (patient_user_id, starts_at, id) WHERE deleted_at IS NULL;
+
+-- Doctor list GET /consultations (doctor) and the terminal-inclusive calendar/list:
+--   WHERE doctor_user_id = $1 AND deleted_at IS NULL AND starts_at BETWEEN … ORDER BY starts_at, id
+CREATE INDEX idx_consultations_doctor_user_id_starts_at_id ON consultations (doctor_user_id, starts_at, id) WHERE deleted_at IS NULL;
+
+-- Doctor↔patient relationship check for GET /patients/:id, /patients/:id/records, /records/:id:
+--   EXISTS (SELECT 1 FROM consultations WHERE doctor_user_id = $auth AND patient_user_id = $1
+--           AND status IN ('booked','waiting','in_progress','completed') AND deleted_at IS NULL)
+CREATE INDEX idx_consultations_doctor_user_id_patient_user_id ON consultations (doctor_user_id, patient_user_id)
+    WHERE deleted_at IS NULL AND status IN ('booked', 'waiting', 'in_progress', 'completed');
+
+-- FK index + "type in use" check on type changes: WHERE consultation_type_id = $1
+CREATE INDEX idx_consultations_consultation_type_id ON consultations (consultation_type_id);
+
+-- Admin follow-up queue GET /consultations?needsAdminFollowup=true ORDER BY starts_at, id
+CREATE INDEX idx_consultations_followup_starts_at_id ON consultations (starts_at, id)
+    WHERE needs_admin_followup AND deleted_at IS NULL AND status IN ('booked', 'waiting');
+
+-- FK index for follow-up bookings: WHERE follow_up_of_record_id = $1
+CREATE INDEX idx_consultations_follow_up_of_record_id ON consultations (follow_up_of_record_id) WHERE follow_up_of_record_id IS NOT NULL;
+-- fk_consultations_follow_up_of_record_id is added after medical_records exists (circular reference):
+ALTER TABLE consultations ADD CONSTRAINT fk_consultations_follow_up_of_record_id
+    FOREIGN KEY (follow_up_of_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT;
+```
+Status updates are guarded: `UPDATE … SET status=$new WHERE id=$1 AND status = ANY($allowedFrom)` — zero rows
+updated means `409 InvalidTransition` (Domain rule 9). SQLSTATE `23P01` on insert or reschedule maps to
+`409 SlotUnavailable`.
+
+## `patient_profiles`
+```sql
+CREATE TABLE patient_profiles (
+    id                  BIGSERIAL PRIMARY KEY,
+    user_id             BIGINT NOT NULL,                -- Identity user id
+    date_of_birth       DATE,
+    gender              VARCHAR(16),
+    blood_type          VARCHAR(8),
+    allergies           TEXT[] NOT NULL DEFAULT '{}',   -- clinical; never logged
+    chronic_conditions  TEXT[] NOT NULL DEFAULT '{}',   -- clinical; never logged
+    timezone            VARCHAR(64) NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at          TIMESTAMPTZ,
+    CONSTRAINT chk_patient_profiles_gender CHECK (gender IS NULL OR gender IN ('female', 'male', 'other', 'undisclosed')),
+    CONSTRAINT chk_patient_profiles_blood_type
+        CHECK (blood_type IS NULL OR blood_type IN ('A+','A-','B+','B-','AB+','AB-','O+','O-','unknown')),
+    CONSTRAINT chk_patient_profiles_allergies_len CHECK (cardinality(allergies) <= 50),
+    CONSTRAINT chk_patient_profiles_conditions_len CHECK (cardinality(chronic_conditions) <= 50)
+);
+-- GET/PATCH /patients/me and GET /patients/:patientUserId: WHERE user_id = $1 AND deleted_at IS NULL
+CREATE UNIQUE INDEX uq_patient_profiles_user_id ON patient_profiles (user_id) WHERE deleted_at IS NULL;
+```
+Allergies and conditions are free-text lists that are only displayed, never filtered on, so arrays are adequate here.
+
+## `medical_records`
+```sql
+CREATE TABLE medical_records (
+    id                  BIGSERIAL PRIMARY KEY,
+    consultation_id     BIGINT NOT NULL,
+    patient_user_id     BIGINT NOT NULL,                -- Identity user id (denormalized from the consultation)
+    doctor_user_id      BIGINT NOT NULL,                -- Identity user id (author = assigned doctor)
+    chief_complaint     TEXT NOT NULL,
+    examination_notes   TEXT,
+    diagnosis_text      TEXT,
+    diagnosis_code      VARCHAR(16),                    -- ICD-10
+    treatment_plan      TEXT,
+    follow_up_in_days   INT,
+    locked_at           TIMESTAMPTZ NOT NULL,           -- created_at + interval '24 hours'
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at          TIMESTAMPTZ,
+    CONSTRAINT fk_medical_records_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_medical_records_lock CHECK (locked_at = created_at + interval '24 hours'),
+    CONSTRAINT chk_medical_records_follow_up CHECK (follow_up_in_days IS NULL OR follow_up_in_days BETWEEN 1 AND 365)
+);
+-- Domain rule 13: one record per consultation (live); covers the consultation_id FK.
+CREATE UNIQUE INDEX uq_medical_records_consultation_id ON medical_records (consultation_id) WHERE deleted_at IS NULL;
+-- Patient timeline GET /patients/:id/records keyset newest first:
+--   WHERE patient_user_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC
+CREATE INDEX idx_medical_records_patient_user_id_created_at_id ON medical_records (patient_user_id, created_at DESC, id DESC) WHERE deleted_at IS NULL;
+
+-- Domain rule 15 at the database level (from the write-migration skill):
+CREATE OR REPLACE FUNCTION forbid_update_after_lock() RETURNS trigger AS $$
+BEGIN
+    IF OLD.locked_at <= NOW() THEN
+        RAISE EXCEPTION 'record % is locked', OLD.id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_medical_records_forbid_update_after_lock
+    BEFORE UPDATE ON medical_records FOR EACH ROW EXECUTE FUNCTION forbid_update_after_lock();
+```
+
+## `medical_record_amendments`
+```sql
+CREATE TABLE medical_record_amendments (
+    id                  BIGSERIAL PRIMARY KEY,
+    medical_record_id   BIGINT NOT NULL,
+    author_user_id      BIGINT NOT NULL,                -- Identity user id (assigned doctor)
+    chief_complaint     TEXT,
+    examination_notes   TEXT,
+    diagnosis_text      TEXT,
+    diagnosis_code      VARCHAR(16),
+    treatment_plan      TEXT,
+    follow_up_in_days   INT,
+    reason              TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_medical_record_amendments_medical_record_id FOREIGN KEY (medical_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_medical_record_amendments_nonempty CHECK (
+        chief_complaint IS NOT NULL OR examination_notes IS NOT NULL OR diagnosis_text IS NOT NULL
+     OR diagnosis_code IS NOT NULL OR treatment_plan IS NOT NULL OR follow_up_in_days IS NOT NULL)
+);
+-- Record view loads amendments in order: WHERE medical_record_id = ANY($1) ORDER BY created_at, id
+CREATE INDEX idx_medical_record_amendments_medical_record_id_created_at ON medical_record_amendments (medical_record_id, created_at, id);
+-- Append-only: no updated_at/deleted_at.
+REVOKE UPDATE, DELETE ON medical_record_amendments FROM vcare_app;
+```
+
+## `record_attachments`
+```sql
+CREATE TABLE record_attachments (
+    id                   BIGSERIAL PRIMARY KEY,
+    medical_record_id    BIGINT NOT NULL,
+    uploaded_by_user_id  BIGINT NOT NULL,               -- Identity user id
+    object_key           VARCHAR(512) NOT NULL,         -- never a URL; never logged
+    file_type            VARCHAR(32) NOT NULL,
+    size_bytes           INT NOT NULL,
+    description          VARCHAR(500),
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at           TIMESTAMPTZ,
+    CONSTRAINT fk_record_attachments_medical_record_id FOREIGN KEY (medical_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT,
+    CONSTRAINT uq_record_attachments_object_key UNIQUE (object_key),
+    CONSTRAINT chk_record_attachments_file_type CHECK (file_type IN ('application/pdf', 'image/jpeg', 'image/png')),
+    CONSTRAINT chk_record_attachments_size CHECK (size_bytes BETWEEN 1 AND 10485760)
+);
+-- Record view: WHERE medical_record_id = ANY($1) AND deleted_at IS NULL ORDER BY id
+CREATE INDEX idx_record_attachments_medical_record_id ON record_attachments (medical_record_id, id) WHERE deleted_at IS NULL;
+```
+
+## `help_articles`
+```sql
+CREATE TABLE help_articles (
+    id              BIGSERIAL PRIMARY KEY,
+    title           VARCHAR(200) NOT NULL,
+    body            TEXT NOT NULL,
+    category        VARCHAR(32) NOT NULL,
+    audience        VARCHAR(16) NOT NULL,
+    is_published    BOOLEAN NOT NULL,
+    published_at    TIMESTAMPTZ,
+    created_by      BIGINT NOT NULL,                    -- Identity user id (admin)
+    updated_by      BIGINT NOT NULL,                    -- Identity user id (admin)
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at      TIMESTAMPTZ,
+    CONSTRAINT chk_help_articles_category
+        CHECK (category IN ('how-it-works', 'preparing-for-consultation', 'cancellation-policy', 'platform-rules')),
+    CONSTRAINT chk_help_articles_audience CHECK (audience IN ('patient', 'doctor')),
+    CONSTRAINT chk_help_articles_published CHECK (NOT is_published OR published_at IS NOT NULL)
+);
+-- Non-admin list GET /help-articles?category=: WHERE audience = $role AND is_published AND deleted_at IS NULL
+--   AND category = $2 ORDER BY published_at DESC, id DESC
+CREATE INDEX idx_help_articles_audience_category_published_at_id ON help_articles (audience, category, published_at DESC, id DESC)
+    WHERE is_published AND deleted_at IS NULL;
+-- Unique live title per audience (admin create/update conflict → 409 Conflict)
+CREATE UNIQUE INDEX uq_help_articles_audience_title ON help_articles (audience, title) WHERE deleted_at IS NULL;
+```
+
+## `audit_logs`
+```sql
+CREATE TABLE audit_logs (
+    id              BIGSERIAL PRIMARY KEY,
+    actor_user_id   BIGINT,                             -- Identity user id; NULL for system actors (retry jobs)
+    actor_role      VARCHAR(16) NOT NULL,
+    action          VARCHAR(64) NOT NULL,               -- e.g. record.read, consultation.cancelled, doctor.suspended
+    entity_type     VARCHAR(64) NOT NULL,
+    entity_id       BIGINT NOT NULL,
+    request_id      UUID,
+    metadata        JSONB NOT NULL,                     -- ids, statuses, reasons only; never clinical text or PII
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_audit_logs_actor_role CHECK (actor_role IN ('patient', 'doctor', 'admin', 'service', 'system')),
+    CONSTRAINT chk_audit_logs_metadata_object CHECK (jsonb_typeof(metadata) = 'object')
+);
+-- GET /audit-logs?entityType=&entityId= newest first
+CREATE INDEX idx_audit_logs_entity_type_entity_id_created_at ON audit_logs (entity_type, entity_id, created_at DESC, id DESC);
+-- GET /audit-logs?actorUserId= newest first
+CREATE INDEX idx_audit_logs_actor_user_id_created_at ON audit_logs (actor_user_id, created_at DESC, id DESC);
+-- GET /audit-logs (unfiltered, or action/time-range filtered) newest first
+CREATE INDEX idx_audit_logs_created_at_id ON audit_logs (created_at DESC, id DESC);
+-- Append-only.
+REVOKE UPDATE, DELETE ON audit_logs FROM vcare_app;
+```
+
+## `identity_sync_jobs`
+Durable retry for Integration Cases 1 and 3 (restarts do not lose them).
+```sql
+CREATE TABLE identity_sync_jobs (
+    id                    BIGSERIAL PRIMARY KEY,
+    doctor_profile_id     BIGINT NOT NULL,
+    doctor_user_id        BIGINT NOT NULL,              -- Identity user id (target of the status change)
+    kind                  VARCHAR(16) NOT NULL,
+    target_status         VARCHAR(16) NOT NULL,
+    reason                TEXT,
+    actor_user_id         BIGINT NOT NULL,              -- Identity user id (admin), sent as data
+    request_id            UUID,                         -- forwarded on every attempt
+    status                VARCHAR(16) NOT NULL,
+    attempts              INT NOT NULL DEFAULT 0,
+    consecutive_failures  INT NOT NULL DEFAULT 0,
+    last_error_code       VARCHAR(32),                  -- HTTP status or error class, never a body
+    next_attempt_at       TIMESTAMPTZ NOT NULL,
+    succeeded_at          TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_identity_sync_jobs_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_identity_sync_jobs_kind CHECK (kind IN ('verification', 'suspension')),
+    CONSTRAINT chk_identity_sync_jobs_target_status
+        CHECK ((kind = 'verification' AND target_status IN ('active', 'rejected', 'pending'))
+            OR (kind = 'suspension' AND target_status = 'suspended')),
+    CONSTRAINT chk_identity_sync_jobs_status CHECK (status IN ('pending', 'succeeded', 'failed', 'superseded'))
+);
+-- Retrier poll: SELECT … WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at
+--   FOR UPDATE SKIP LOCKED LIMIT 50
+CREATE INDEX idx_identity_sync_jobs_pending_next_attempt_at ON identity_sync_jobs (next_attempt_at) WHERE status = 'pending';
+-- At most one open job per doctor; a newer decision marks the older job 'superseded' in the same transaction.
+-- Also covers the doctor_profile_id FK and the runbook lookup by profile.
+CREATE UNIQUE INDEX uq_identity_sync_jobs_doctor_profile_id_open ON identity_sync_jobs (doctor_profile_id) WHERE status = 'pending';
+CREATE INDEX idx_identity_sync_jobs_doctor_profile_id_created_at ON identity_sync_jobs (doctor_profile_id, created_at DESC);
+-- Runbook: inspect jobs by doctor user id newest first
+CREATE INDEX idx_identity_sync_jobs_doctor_user_id_id ON identity_sync_jobs (doctor_user_id, id DESC);
+```
+`status='failed'` is set only on a non-retryable Identity answer (`409 InvalidStatusTransition`); it mirrors
+`doctor_profiles.identity_sync_status='failed'` and is requeued by an operator after reconciliation.
+
+## Not stored
+- **Slots / availability** — computed per request ([scheduling-slots.md](./scheduling-slots.md)).
+- **Names, emails, phones, avatars** — hydrated from Identity with a 300 s Redis TTL.
+- **Signed URLs** — issued per request, never persisted.
+- **Notification outbox** — mechanism pending `/system-design` (outbox table vs job queue).
