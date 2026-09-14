@@ -57,4 +57,5 @@ There is no AsyncAPI contract: MVP is HTTP-only; future events are listed in `x-
 
 ---
 _Cross-service questions (Identity's contract, who calls whom, data ownership, glossary, PRD) → the hub:
-`../vcare-hub/INDEX.md`. Do not clone another service just to read it._
+`../vcare-hub/INDEX.md` (on GitHub: [OmarRedaX/Vcare](https://github.com/OmarRedaX/Vcare/blob/main/INDEX.md)).
+Do not clone another service just to read it._
