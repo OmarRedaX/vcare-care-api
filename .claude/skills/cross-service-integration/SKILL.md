@@ -134,6 +134,6 @@ retry setUserStatus(userId,'suspended') for ~6s
 - [ ] Timeout 2 s, retry rules, idempotency on the provider
 - [ ] Batched; no per-row calls
 - [ ] X-Request-Id forwarded; metrics + alert defined in runbook
-- [ ] Hub architecture/landscape.md updated (via /system-design) if who-calls-whom changed
+- [ ] Hub architecture/landscape.md (and data-ownership.md, deployment.md network rules) updated via /system-design if who-calls-whom changed — the case definition lives in the hub; this repo documents only its consumer/provider implementation (docs-placement skill)
 - [ ] Tests for healthy, slow, failing, and malformed provider behavior
 ```

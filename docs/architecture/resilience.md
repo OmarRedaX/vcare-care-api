@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-14
-tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs]
-related: [integration, runbook, scheduling-slots, infrastructure, adr-0004-cross-service-failure-policies]
+last_verified: 2026-09-15
+tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox]
+related: [integration, runbook, scheduling-slots, infrastructure, deployment, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement]
 ---
 
 # Resilience
@@ -19,7 +19,7 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | Identity internal calls (token, users, status) | 2 s per attempt, connect + response (`IDENTITY_TIMEOUT_MS=2000`) | `undici` keep-alive pool |
 | JWKS fetch | 2 s | cached keys keep verifying during an outage |
 | Video provider (room, join token) | 2 s | join/start fail cleanly; lifecycle state unchanged on failure |
-| Object storage upload | 10 s | upload fails, no row inserted |
+| Object storage from `care-api` (`complete`: `HEAD`, 16-byte `GET`, `DELETE` 2 s; `COPY` 10 s) | per ADR 0015 | `complete` fails, no row inserted, intent stays open for a retry until it expires |
 | Email provider | outside the request | async |
 | Postgres statement | 5 s default; hot paths are budgeted far lower | |
 | Redis command | 200 ms | cache miss path on timeout |
@@ -36,6 +36,8 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | 1 | 3 | durable job, alert after 15 min unsynced |
 | 2 | 2 (1 retry) | degrade |
 | 3 | as many as fit in ~6 s | durable job, no attempt cap, backoff capped at 60 s, alert after 3 consecutive failures |
+| 4 (reinstatement) | 3 | durable job (`kind='reinstatement'`), alert after 15 min unsynced ([ADR 0012](../adr/0012-doctor-reinstatement.md)) |
+| contacts lookup (notifications) | 1 per outbox batch | outbox row stays `pending` with backoff — delivery delayed only |
 
 **Non-retryable answers:** Identity `409 InvalidStatusTransition` stops Case 1 and Case 3 retries immediately,
 sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises `IdentitySyncTransitionRejected`
@@ -53,7 +55,7 @@ sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises
 - The job row is inserted when inline attempts are exhausted, in its own transaction after the decision commit.
   A crash between the decision commit and the job insert is covered by a sweeper: profiles with
   `identity_sync_status='pending'` and no open job older than 60 s get a job.
-- A single retrier loop per instance polls `status='pending' AND next_attempt_at <= now()` with
+- The retrier loop runs in `care-worker` ([ADR 0008](../adr/0008-care-worker-component.md)) and polls `status='pending' AND next_attempt_at <= now()` with
   `FOR UPDATE SKIP LOCKED`, so multiple instances never double-send (and double-send would be harmless anyway).
 - On success: job `succeeded`, `doctor_profiles.identity_sync_status='synced'`, audit `identity_sync.synced`
   (actor role `system`), caches invalidated (a newly synced approved doctor becomes searchable).
@@ -73,7 +75,11 @@ sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises
 | `SearchLatencyHigh` | search p95 > 400 ms for 10 min | ticket |
 | `ExclusionViolationSpike` | `23P01` > 20/min | ticket |
 | `AuditWriteFailures` | any audit insert failure | page |
-| `HealthCheckFailing` | `/api/health` 503 for 2 min | page |
+| `HealthCheckFailing` | `/api/health/ready` 503 for 2 min | page |
+
+Runtime alerts added 2026-09-15 (`OutboxLagHigh`, `OutboxDeadJobs`, `DbReplicaLagHigh`, `WorkerHeartbeatStale`,
+`AuditPartitionMissing`, `IdentityReinstatementSyncPending`, `RateLimiterDegraded`, `AvailabilityBudgetBurn`):
+[deployment.md](./deployment.md) → Observability.
 
 Actions for each: [runbook.md](../runbook.md).
 
@@ -95,18 +101,21 @@ Actions for each: [runbook.md](../runbook.md).
   invalidation lag, and never allows a double booking.
 
 ## Notifications never block writes
-Emails are enqueued after commit and delivered outside the request with their own retries. A provider outage
-delays emails but never fails, delays, or rolls back a booking, reschedule, cancellation, or session action. The
-delivery mechanism (transactional outbox vs job queue) is a pending `/system-design` decision; either way the
-enqueue must not be able to fail the committed write.
+Emails use a **transactional outbox** ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)): the
+`notification_outbox` row is inserted in the same transaction as the write, and `care-worker` delivers it outside
+the request (SKIP LOCKED, backoff `30 s · 2^n` ≤ 30 min, `dead` after 8 attempts). Recipient emails come from
+Identity's `GET /internal/users/contacts` at send time and are never cached, stored, or logged. A provider or
+Identity outage delays emails but never fails, delays, or rolls back a booking, reschedule, cancellation, or session
+action. Reminders are produced by a 1-minute worker scan over `consultations`.
 
 ## Degradation summary
 | Dependency down | Effect |
 |---|---|
 | Identity (internal) | search/lists without names (Case 2); approvals 202 pending (Case 1); suspensions 503 with local effect applied (Case 3); bookings unaffected |
 | Identity JWKS only | cached keys keep working; a rotated unknown `kid` → 401 until reachable |
-| Redis | no caches (slower reads), no rate limiting, idempotency falls back to the DB key for booking; health reports `down` |
+| Redis (Tier 2) | no caches (slower reads), per-instance fallback rate limits, idempotency falls back to the DB key for booking; readiness reports `degraded`, never 503 |
+| `care-worker` | sync retries, emails, reminders, and cache refreshes delayed; requests unaffected; `WorkerHeartbeatStale` pages |
 | Postgres | service unavailable; health 503 |
 | Video provider | join/start fail; consultations remain in their state; no-show and cancel still work |
-| Email provider | notifications delayed only |
-| Object storage | uploads and document/attachment downloads fail; records' text still readable |
+| Email provider | notifications delayed only (outbox retries) |
+| Object storage | direct uploads, `complete`, and downloads fail; no document or attachment row is created; records' text still readable |

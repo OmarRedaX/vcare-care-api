@@ -23,5 +23,19 @@
       "Bash(git reset --hard*)",
       "Bash(rm -rf *)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/docs-sync-check.sh\"",
+            "timeout": 60,
+            "statusMessage": "Checking vcare docs sync across repos..."
+          }
+        ]
+      }
+    ]
   }
 }

@@ -39,7 +39,7 @@ IDENTITY_JWKS_URL=http://localhost:3000/.well-known/jwks.json
 IDENTITY_INTERNAL_URL=http://localhost:3100
 SERVICE_CLIENT_ID=care-service
 SERVICE_CLIENT_SECRET=<from Identity, never committed>
-SIGNED_URL_SECRET=<32+ random bytes, never committed>
+UPLOAD_INTENT_TTL_SECONDS=900        # ADR 0013; no signing secret: uploads/downloads use S3 presigned URLs (ADR 0014)
 ```
 
 ## 3. Install, migrate, run

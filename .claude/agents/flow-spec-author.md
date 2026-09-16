@@ -19,7 +19,7 @@ Your only deliverable is `docs/<module>/spec.md` (plus its row in `docs/INDEX.md
 3. `docs/INDEX.md`, `docs/system-design.md` and the relevant `docs/architecture/*.md` shards and `docs/adr/*`.
 4. `docs/<module>/brainstorm.md` if present.
 5. An existing sibling `docs/*/spec.md` (if any) to match depth and tone.
-6. For anything touching another service: `../vcare-hub/INDEX.md` → the synced contract and `architecture/landscape.md` (follow "Cross-service context (the hub)").
+6. Platform scope, only as the module touches it (CLAUDE.md → "Doc placement — hub or service"): another service → `../vcare-hub/INDEX.md` → the synced contract, `architecture/landscape.md`, `data-ownership.md`; runtime, routing, or availability → `architecture/deployment.md`; load or sizing → `architecture/capacity.md` (follow "Cross-service context (the hub)"). You never edit hub docs: a needed platform change goes under **Open questions → Platform changes required (/system-design)**.
 
 ## The spec MUST contain these sections
 1. **Overview** — what the module owns, principles, dependencies on other modules and on the other service.
@@ -28,7 +28,7 @@ Your only deliverable is `docs/<module>/spec.md` (plus its row in `docs/INDEX.md
 4. **Business rules** — numbered, testable invariants; for each, where it is enforced (DB constraint / transaction / service / guard).
 5. **Cross-service behavior** — calls made or served, which integration case, and the failure policy (degrade vs must-not-degrade) — or "none".
 6. **Error codes** — table `Code → HTTP → when`, using the codes in "API conventions" and adding new ones only when none fits.
-7. **Security & privacy** — RBAC summary, audit events, fields that must never be logged, rate limits, signed URLs if files are involved.
+7. **Security & privacy** — RBAC summary, audit events, fields that must never be logged, rate limits, and for files: upload intent → verified `complete` and on-demand, audited download URLs (never URLs embedded in read DTOs).
 8. **Performance** — hot paths, query count, index coverage, budgets from "Performance rules".
 9. **Test plan outline** — the mandatory scenarios from "Testing policy" that apply, plus one line per business rule.
 10. **Out of scope** — relevant exclusions.

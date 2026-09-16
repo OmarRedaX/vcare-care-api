@@ -1,0 +1,82 @@
+# Local development stack. Host ports 5433/6380 leave 5432/6379 to identity-service.
+name: vcare-care
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: care
+      POSTGRES_PASSWORD: care
+      POSTGRES_DB: care
+    ports:
+      - "5433:5432"
+    volumes:
+      - care-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U care -d care"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build: .
+    command: ["node", "dist/migrate.js", "latest"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://care:care@postgres:5432/care
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  care-api:
+    build: .
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      INTERNAL_PORT: 3101
+      INTERNAL_HOST: 0.0.0.0
+      DATABASE_URL: postgres://care:care@postgres:5432/care
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+    ports:
+      - "3001:3001"
+      - "127.0.0.1:3101:3101"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/api/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  care-worker:
+    build: .
+    init: true
+    command: ["node", "dist/worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://care:care@postgres:5432/care
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  care-pg-data:

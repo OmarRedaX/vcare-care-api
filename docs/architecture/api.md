@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 tags: [api, reference, routes, rbac]
-related: [rbac, integration, consultation-lifecycle, clinical-records, scheduling-slots]
+related: [rbac, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
 
 # API — care-service (human view)
@@ -26,8 +26,9 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 ## health
 | Method | Path | Roles | Ownership | Notes |
 |---|---|---|---|---|
-| GET | `/api/health` | public | none | 200 / 503 `status=down` |
-| GET | `/internal/health` | public (internal listener) | none | |
+| GET | `/api/health/live` | public | none | 200 (planned, ADR 0006 — replaces `/api/health`) |
+| GET | `/api/health/ready` | public | none | 200 `ok`/`degraded` / 503 (Postgres down or draining) |
+| GET | `/internal/health/live`, `/internal/health/ready` | public (internal listener) | none | same as public (replaces `/internal/health`) |
 
 ## specialties
 | Method | Path | Roles | Ownership | Audit | Errors |
@@ -42,7 +43,10 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 | POST | `/api/doctors/apply` | doctor | self | Case 1 on resubmission (`rejected → submitted`, Identity `pending`) | 200, 201, 202 `identitySync`, 400 (missing documents), 403, 409 `Conflict` |
 | GET | `/api/doctors/me` | doctor | self | — | 404 until applied |
 | PATCH | `/api/doctors/me` | doctor | self (not locally suspended) | — | 400, 403, 404 |
-| POST | `/api/doctors/me/documents` | doctor | self | — (multipart, 20/h) | 400 (MIME/size), 403, 404, 409 |
+| POST | `/api/doctors/me/documents` | doctor | self | — (multipart, 20/h) — **to be replaced**, ADR 0013 | 400 (MIME/size), 403, 404, 409 |
+| POST | `/api/doctors/me/documents/uploads` (planned, ADR 0013) | doctor | self; application `draft`/`rejected` | — (20/h) | 201 intent, 400, 403, 404, 409 |
+| POST | `/api/doctors/me/documents/uploads/{uploadId}/complete` (planned) | doctor | self (intent owner) | `verification.document_uploaded` | 201, 200 replay, 400 bad bytes, 404, 409, 410 `UploadIntentExpired` |
+| POST | `/api/doctors/me/documents/{documentId}/download-url` (planned, ADR 0014) | doctor | self | `verification.document_url_issued` | 200 `{ url, expiresAt }` (60 s), 404 |
 | GET | `/api/doctors/me/application` | doctor | self | — | 404 |
 
 ## doctors-discovery
@@ -68,7 +72,8 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 | Method | Path | Roles | Ownership | Audit | Case | Responses |
 |---|---|---|---|---|---|---|
 | GET | `/api/admin/applications` | admin | none | — | 2 degrade | `status` filter, oldest first |
-| GET | `/api/admin/applications/{id}` | admin | none | admin-action (signed document URLs issued) | 2 degrade | 404 |
+| GET | `/api/admin/applications/{id}` | admin | none | admin-action (document metadata; URLs on demand once ADR 0014 ships) | 2 degrade | 404 |
+| POST | `/api/admin/applications/{id}/documents/{documentId}/download-url` (planned, ADR 0014) | admin | none | admin-action `verification.document_url_issued` | — | 200 `{ url, expiresAt }` (60 s), 404 |
 | PATCH | `/api/admin/applications/{id}/approve` | admin | none | admin-action | **1 retry-report-pending** | 200 synced · 202 `identitySync: pending\|failed` · 409 `ApplicationNotReviewable` |
 | PATCH | `/api/admin/applications/{id}/reject` | admin | none | admin-action | **1** | same; `reason` required |
 | PATCH | `/api/admin/applications/{id}/reopen` | admin | none | admin-action | **1** (Identity `pending`) | 200 · 202 · 409 `ApplicationNotReviewable` |
@@ -79,6 +84,7 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 | Method | Path | Roles | Ownership | Audit | Case | Responses |
 |---|---|---|---|---|---|---|
 | PATCH | `/api/admin/doctors/{doctorUserId}/suspend` | admin | none | admin-action | **3 must-not-degrade** | 200 only when Identity confirmed (or already suspended: no-op) · 409 `InvalidTransition` (not approved+synced) · 503 `IdentityUnavailable` + `suspension: "applied-locally, session-revocation-pending"` |
+| PATCH | `/api/admin/doctors/{doctorUserId}/reinstate` (planned, ADR 0012) | admin | none | admin-action | **4 retry-report-pending** | 200 when Identity confirmed (or not suspended: no-op) · 202 `identitySync: pending\|failed` · 409 `InvalidTransition` (suspension not synced) · 404 |
 
 ## patients
 | Method | Path | Roles | Ownership | Audit | Notes |
@@ -107,9 +113,12 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 | Method | Path | Roles | Ownership | Audit | Errors |
 |---|---|---|---|---|---|
 | POST | `/api/consultations/{id}/record` | doctor | assigned-doctor | clinical-write | 403 `NotAssignedDoctor`, 409 `RecordRequiresCompleted`/`Conflict` |
-| GET | `/api/records/{id}` | patient, doctor | owning patient, author, or doctor who consulted the patient (else 404) | clinical-read (+ signed URL issuance) | |
+| GET | `/api/records/{id}` | patient, doctor | owning patient, author, or doctor who consulted the patient (else 404) | clinical-read | attachment metadata only once ADR 0014 ships |
 | PATCH | `/api/records/{id}` | doctor | assigned-doctor | clinical-write | 200 in place before lock · 201 amendment after lock (`reason` required) · 403 `NotAssignedDoctor` |
-| POST | `/api/records/{id}/attachments` | doctor | assigned-doctor | clinical-write | 400 MIME/size, 403, 429 (20/h) |
+| POST | `/api/records/{id}/attachments` | doctor | assigned-doctor | clinical-write | 400 MIME/size, 403, 429 (20/h) — **to be replaced**, ADR 0013 |
+| POST | `/api/records/{id}/attachments/uploads` (planned, ADR 0013) | doctor | assigned-doctor | — (20/h) | 201 intent, 400, 403 `NotAssignedDoctor`, 404 |
+| POST | `/api/records/{id}/attachments/uploads/{uploadId}/complete` (planned) | doctor | assigned-doctor (intent owner) | clinical-write `attachment.added` | 201, 200 replay, 400 bad bytes, 403, 404, 409, 410 |
+| POST | `/api/records/{id}/attachments/{attachmentId}/download-url` (planned, ADR 0014) | patient, doctor | as `GET /api/records/{id}` (admins 403) | clinical-read `attachment.url_issued` | 200 `{ url, expiresAt }` (60 s), 403, 404 |
 | DELETE | `/api/records/{id}/attachments/{attachmentId}` | doctor | assigned-doctor | clinical-write | 204, 409 `RecordLocked` |
 
 ## help-articles

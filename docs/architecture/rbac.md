@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, clinical-records, integration, infrastructure]
+related: [api, clinical-records, integration, infrastructure, file-handling]
 ---
 
 # RBAC and Ownership
@@ -64,9 +64,10 @@ still valid.
 | `GET /doctors`, `GET /doctors/:doctorUserId`, `GET /doctors/:doctorUserId/slots` | patient, admin | none (patients see bookable doctors only) | — |
 | `GET/PUT /doctors/me/working-hours`, `GET/POST /doctors/me/exceptions`, `DELETE /doctors/me/exceptions/:id`, `GET/POST /doctors/me/consultation-types`, `PATCH /doctors/me/consultation-types/:id` | doctor (active, not suspended) | self; `:id` must belong to the caller's profile, else `deny-not-found` | admin-action when a block with conflicts is confirmed |
 | `GET /admin/applications` | admin | none | — |
-| `GET /admin/applications/:id` | admin | none | admin-action (document URLs issued) |
+| `GET /admin/applications/:id` | admin | none | admin-action |
 | `PATCH /admin/applications/:id/approve`, `/reject`, `/reopen` | admin | none | admin-action |
 | `PATCH /admin/doctors/:doctorUserId/suspend` | admin | none | admin-action |
+| `PATCH /admin/doctors/:doctorUserId/reinstate` (planned, ADR 0012) | admin | none | admin-action |
 | `GET /patients/me` | patient | self | clinical-read |
 | `PATCH /patients/me` | patient | self | clinical-write |
 | `GET /patients/:patientUserId`, `GET /patients/:patientUserId/records` | patient, doctor | `consulted-patient-or-self`: patient `:id = auth.userId`; doctor has a `completed` or current consultation with the patient; else `deny-not-found` | clinical-read |
@@ -83,6 +84,10 @@ still valid.
 | `GET /records/:id` | patient, doctor | owning patient, author, or doctor who consulted the patient; else `deny-not-found` | clinical-read |
 | `PATCH /records/:id` | doctor | `assigned-doctor` (author) | clinical-write |
 | `POST /records/:id/attachments`, `DELETE /records/:id/attachments/:aid` | doctor | `assigned-doctor`; delete only before lock | clinical-write |
+| `POST /records/:id/attachments/uploads`, `…/uploads/:uploadId/complete` (planned, ADR 0013) | doctor (active, not suspended) | `assigned-doctor`; `complete` also requires intent owner = caller (else `deny-not-found`) and re-checks assignment | clinical-write on complete |
+| `POST /records/:id/attachments/:aid/download-url` (planned, ADR 0014) | patient, doctor | same as `GET /records/:id`; admins 403 | clinical-read (`attachment.url_issued`) |
+| `POST /doctors/me/documents/uploads`, `…/uploads/:uploadId/complete`, `POST /doctors/me/documents/:documentId/download-url` (planned) | doctor (pending, active, or rejected) | self; uploads only while the application is `draft`/`rejected`; intent owner = caller | `verification.document_uploaded` / `verification.document_url_issued` |
+| `POST /admin/applications/:id/documents/:documentId/download-url` (planned) | admin | none | admin-action (`verification.document_url_issued`) |
 | `GET /help-articles`, `GET /help-articles/:id` | patient, doctor, admin | none (published and own audience; admins see drafts) | — |
 | `POST/PATCH/DELETE /help-articles*` | admin | none | admin-action |
 | `GET /audit-logs` | admin | none | — |
@@ -108,7 +113,7 @@ Response DTOs are built with `from(entity, viewer)`:
 | Patient profile | all fields | all fields | not served |
 | Medical record / amendments / attachments | all fields | all fields | not served |
 | Doctor profile | public view | own full view on `/doctors/me` | public view + `status` (bookable/not) |
-| Verification application | own, with signed URLs to own documents | — | full, with signed URLs (audited) |
+| Verification application | own, document metadata; URLs on demand | — | full, document metadata; URLs on demand (audited) |
 | Audit log entry | — | — | metadata only (never clinical text) |
 
 ## Tests every route needs

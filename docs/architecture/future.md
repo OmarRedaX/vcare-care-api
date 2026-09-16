@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 tags: [future, roadmap, events, ai, out-of-scope]
 related: [integration, clinical-records, resilience, system-design]
 ---
@@ -18,30 +18,24 @@ MVP is HTTP-only; there is no AsyncAPI contract. Reserved event names (listed as
 contract): `consultation.booked`, `consultation.rescheduled`, `consultation.cancelled`, `doctor.verified`,
 `doctor.suspended`.
 
-- **Candidate transport:** RabbitMQ (topic exchange per service, durable queues, publisher confirms), adopted only
-  by an ADR — adding the client is a new runtime dependency.
+- **Transport:** a platform decision recorded as a hub ADR (candidate named by Care: RabbitMQ — tracked in hub
+  `TODO.md` → Events); adopting its client in Care is then a new runtime dependency needing a Care ADR.
 - **Publishing pattern:** a transactional outbox in Care's database so an event is emitted iff the business write
   commits; a relay publishes with at-least-once delivery; consumers dedupe by event id.
 - **First consumers:** notifications (replacing the MVP async email mechanism), analytics for utilization and
   no-show rates, the Phase-2 AI service.
 - The HTTP integration cases stay: events add propagation, they do not replace Case 3's synchronous confirmation.
 
-## 2. Closing the Identity-originated doctor-status gap
-Today a doctor status change made directly in Identity is not pushed to Care; mitigations are process (suspend
-through Care) and Case 2 status filtering in search ([integration.md](./integration.md)). Options for
-`/system-design`:
+## 2. Doctor-status gap and reinstatement — resolved
+**Resolved 2026-09-15** by hub ADR 0006: Identity refuses doctor status changes on its public admin route, so
+Care is the only initiator of a doctor's account-status change ([integration.md](./integration.md)).
+**Reinstatement designed 2026-09-15** as Case 4 ([ADR 0012](../adr/0012-doctor-reinstatement.md), hub ADR 0009):
+admin endpoint in Care, Case-1 failure policy, flags stay; needs Identity's internal route to allow
+`suspended → active` first.
 
-| Option | Trade-off |
-|---|---|
-| Identity emits `user.status_changed`; Care consumes and applies local suspension/unsuspension | cleanest; needs the bus and an Identity contract change |
-| Identity refuses doctor status changes on its public admin route and directs them to Care | no new infra; relies on Identity knowing doctor semantics |
-| Periodic reconciliation job in Care comparing doctor profiles to batch lookups | no contract change; bounded staleness and extra load |
-
-Related deferred scope: **reinstating a suspended doctor** (no Care endpoint in MVP; would be the reverse of Case 3
-with Identity `active`, a clear-flags decision for the follow-up queue, and its own audit action).
-
-Other first topics named in CLAUDE.md: notification delivery mechanism; availability caching and search ranking;
-file storage and signed URLs; the durable retry job design for Case 3; doctor-initiated follow-up booking.
+Also decided 2026-09-15: notification delivery ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)),
+search ranking cache ([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)). Remaining topic:
+doctor-initiated follow-up booking. File storage was decided in [ADR 0013](../adr/0013-verified-direct-upload-lifecycle.md)–[0015](../adr/0015-aws-sdk-storage-adapter.md).
 
 ## 3. Phase-2 AI & Retrieval service
 A **separate service** with its own dependencies (vector store, model providers) and cost profile. It
@@ -64,13 +58,12 @@ for `doctors:read` and those scopes.
 
 ## 4. Scale and operations
 - Read replicas for discovery reads (search, profile, slots); booking always on the primary.
-- Precomputed `next-available` refresh worker if lazy computation stops meeting the search budget at scale.
-- Partitioning `audit_logs` by month once volume warrants it; retention policy per data class.
+- Synchronous database standby (99.95 %) superseding [ADR 0005](../adr/0005-availability-and-recovery-targets.md) when data-loss tolerance requires it.
+- Archiving detached `audit_logs` partitions to object storage (partitioning itself ships from day one, ADR 0009); retention policy per data class.
 - Per-doctor and per-patient no-show and utilization reporting (PRD business goals).
 
 ## 5. Out of scope for MVP (PRD §13)
 Payments, payouts, and refunds · insurance claims · prescriptions and e-pharmacy · lab orders and results · the
 video infrastructure itself (a third-party room provider is assumed) · chat between consultations · ratings and
 reviews · SMS and WhatsApp channels · group practices and clinic accounts · mobile apps · waiting lists for fully
-booked doctors. Also out of scope in Care: account, credential, or token management (Identity), and reinstating a
-suspended doctor.
+booked doctors. Also out of scope in Care: account, credential, or token management (Identity).

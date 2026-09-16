@@ -4,15 +4,17 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-14
-tags: [integration, identity, service-token, case-1, case-2, case-3]
-related: [resilience, rbac, runbook, adr-0004-cross-service-failure-policies, future]
+last_verified: 2026-09-15
+tags: [integration, identity, service-token, case-1, case-2, case-3, case-4, notifications]
+related: [resilience, rbac, runbook, adr-0004-cross-service-failure-policies, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, future, hub-adr-0006-doctor-account-status-via-care-only, hub-adr-0009-doctor-reinstatement-via-care, hub-adr-0010-notification-contact-lookup]
 ---
 
 # Cross-Service Integration (Care → Identity)
 
 Care is the **consumer** in all three platform integration cases. All calls go through `lib/identity-client`.
-Implementation guidance: the **`cross-service-integration`** skill. Platform view: `../vcare-hub/architecture/landscape.md`.
+Implementation guidance: the **`cross-service-integration`** skill. The case definitions and failure policies are
+platform-scope and authored in `../vcare-hub/architecture/landscape.md` (hub ADR 0008); this shard is Care's consumer
+implementation of them (client, sync jobs, alerts) — when the two disagree, fix the hub first via `/system-design`.
 Identity's contract (synced): `../vcare-hub/contracts/identity-service.openapi.yaml`.
 
 | Local endpoint | Identity | Port |
@@ -143,7 +145,49 @@ sequenceDiagram
 - **Never report a suspension as complete before Identity confirms.** The admin UI must show that sessions are not
   yet revoked while the response is 503.
 - "Until it succeeds" covers transient failures only (network, timeout, 429, 5xx, one 401 token refresh).
-- Reinstating a suspended doctor is out of scope for MVP.
+
+## Case 4 — Reinstatement restores the account (retry, report pending)
+[ADR 0012](../adr/0012-doctor-reinstatement.md), hub ADR 0009. **Provider change first:** Identity's internal status
+route must accept `suspended → active` (today it refuses it).
+
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant C as Care
+    participant DB as Care DB
+    participant ID as Identity
+    A->>C: PATCH /admin/doctors/204/reinstate {reason}
+    alt not suspended (already active and synced)
+        C-->>A: 200 no-op
+    else suspension not synced
+        C-->>A: 409 InvalidTransition
+    end
+    C->>DB: BEGIN; suspended_at=NULL, suspension_reason=NULL, identity_sync_status='pending';<br/>audit doctor.reinstated; COMMIT (follow-up flags stay)
+    Note over C: doctor still unbookable (sync pending)
+    loop up to 3 attempts, 2 s timeout, backoff
+        C->>ID: PATCH /internal/users/204/status {status: active, reason, actorUserId}
+    end
+    alt 200
+        C->>DB: identity_sync_status='synced'; invalidate caches
+        C-->>A: 200
+    else transient failures exhausted
+        C->>DB: INSERT identity_sync_jobs (kind=reinstatement)
+        C-->>A: 202 { identitySync: "pending" }
+        Note over C: alert IdentityReinstatementSyncPending after 15 min
+    else 409 InvalidStatusTransition
+        C->>DB: identity_sync_status='failed'
+        C-->>A: 202 { identitySync: "failed" }
+        Note over C: page (IdentitySyncTransitionRejected)
+    end
+```
+
+## Notification contact lookup (degrade by delay)
+Hub ADR 0010, [ADR 0011](../adr/0011-notification-outbox-and-reminders.md). **Provider change first.**
+`care-worker` calls `GET /internal/users/contacts?ids=` (≤ 100 ids, scope `users:contact:read`, granted only to
+care-service) once per outbox batch. The response (email, locale, fullName) lives in worker memory for that batch
+only — never cached in Redis, never stored, never logged (the logger redacts `email`). Failure → the outbox rows
+stay `pending` with backoff; users receive the email later. Unknown or non-active ids → `skipped`. The API
+listener never calls this endpoint and its service token never requests the scope.
 
 ## Failure policy table
 | | Case 1 | Case 2 | Case 3 |
@@ -161,22 +205,20 @@ sequenceDiagram
 
 Rationale and rejected alternatives: [ADR 0004](../adr/0004-cross-service-failure-policies.md).
 
-## Known gap — Identity-originated doctor status changes
-MVP is HTTP-only, so a doctor status change made **directly in Identity** (`PATCH /api/users/:id/status`) is not
-pushed to Care: `doctor_profiles` would still say approved and unsuspended.
+## Doctor account status — Care is the only initiator
+The former known gap (a doctor status change made directly in Identity not reaching Care) is **closed** by hub
+ADR 0006 (`../vcare-hub/adr/0006-doctor-account-status-via-care-only.md`, 2026-09-15): Identity's
+`PATCH /api/users/:id/status` refuses doctor targets with `403 Forbidden`, so every doctor account-status change
+is requested by Care through Cases 1 and 3, and `doctor_profiles.suspended_at` / `identity_sync_status` always move
+with it. No Care contract change is required.
 
-Two mitigations apply together:
-1. **Process:** the admin console routes doctor suspension through Care's `PATCH /admin/doctors/:id/suspend`,
-   never through Identity directly.
-2. **Data:** Care reads `status` from Case 2 hydration and excludes non-active doctors from search when the cached
-   entry is fresh (≤ 300 s).
-
-Residual risk: a booking of such a doctor can still succeed within the cache window, and an Identity-side
-reinstatement leaves `suspended_at` set in Care. The doctor's own practising actions fail at Identity's token
-refresh. Closing the gap (events, or a periodic reconciliation) is the first `/system-design` topic — see
-[future.md](./future.md).
+- Care still excludes non-active doctors from search using fresh Case 2 `status` as defence in depth.
+- A `rejected` doctor can sign in and refresh at Identity (token `status=rejected`, identity-service ADR 0004), so
+  the resubmission route (`rejected → submitted`, Identity `pending`) is reachable as designed.
+- Reinstating a suspended doctor goes through Care as Case 4 (hub ADR 0009 amends ADR 0006); Identity's admin
+  route still refuses doctor targets.
 
 ## Notifications
-Booking confirmation, reminder, reschedule, cancellation, and "doctor joined" emails are sent asynchronously
-through the email port and never block or roll back the triggering write. The delivery mechanism (outbox table
-vs job queue) is decided in `/system-design` before the module is built.
+Booking confirmation, reminder, reschedule, cancellation, schedule-block, and "doctor joined" emails go through the
+transactional outbox and `care-worker` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)); they never
+block or roll back the triggering write. Recipients are resolved through the contact lookup above.

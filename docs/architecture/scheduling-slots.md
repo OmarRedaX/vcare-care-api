@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 tags: [scheduling, slots, timezones, booking, caching, performance]
-related: [data-model, consultation-lifecycle, resilience, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint]
+related: [data-model, consultation-lifecycle, resilience, capacity, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh]
 ---
 
 # Scheduling and Slot Computation
@@ -91,8 +91,10 @@ reads may use a replica when one is introduced.
 | `next-available:<doctorUserId>` | earliest free slot start in the next 14 days | ≤ 5 min | search `sort=earliest_availability`, `availableFrom/To` filters |
 
 Invalidated by doctor prefix **after commit** on: booking, reschedule, cancel, no-show, working-hours change,
-exception change, consultation-type change, timezone change, accepting toggle, suspension. Rendering per viewer
-happens after the cache. A cache miss must still meet the budget.
+exception change, consultation-type change, timezone change, accepting toggle, suspension, reinstatement. Each
+invalidation also enqueues a coalesced `next-available` refresh that `care-worker` recomputes within seconds
+([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)). Rendering per viewer happens after the cache.
+A cache miss must still meet the budget.
 
 **Search** never computes slots for every row: SQL filters on indexed columns produce the bookable candidate
 page; `next-available` is read with one `MGET` and computed lazily only for misses on that page; names come from

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure]
 ---
@@ -13,7 +13,9 @@ related: [system-design, data-model, api, integration, infrastructure]
 
 Care is one deployable Node.js service with **two HTTP listeners**, its own PostgreSQL database, Redis, and
 three outbound ports (identity-client, video, email) plus object storage. It is a modular monolith: one module
-per bounded context, strict layering, no shared database with any other service.
+per bounded context, strict layering, no shared database with any other service. This is Care's own container
+view; the platform C4 views, deployment topology, and capacity model live in the hub
+(`../vcare-hub/architecture/overview.md`, `deployment.md`, `capacity.md`).
 
 ## Containers (C4 level 2)
 
@@ -59,11 +61,12 @@ flowchart LR
 
 | Container | Role |
 |---|---|
-| Public listener (`PORT=3001`) | `/api/*` — every user-facing route and `/api/health`. Behind the public ingress. |
-| Internal listener (`INTERNAL_PORT=3101`) | `/internal/*` — `GET /internal/doctors/:userId/summary`, `/internal/health`. Binds to the private interface; the ingress never routes `/internal`. |
+| Public listener (`PORT=3001`) | `/api/*` — every user-facing route and `/api/health/live`, `/api/health/ready`. Behind the public ingress. |
+| Internal listener (`INTERNAL_PORT=3101`) | `/internal/*` — `GET /internal/doctors/:userId/summary`, `/internal/health/live|ready`. Binds to the private interface; the ingress never routes `/internal`. |
+| `care-worker` (separate component, same image) | Identity-sync retrier, notification outbox, reminder scan, `next-available` refresh, audit partitions ([ADR 0008](../adr/0008-care-worker-component.md), [deployment.md](./deployment.md)). |
 | PostgreSQL | System of record for everything Care owns. `btree_gist` for the non-overlap exclusion constraint. `TIMESTAMPTZ`, UTC sessions. |
 | Redis | Derived caches (`slots:*`, `next-available:*`, `identity:user:*`), idempotency records (24 h), rate-limit windows. Never a source of truth. |
-| Object storage | Verification documents and record attachments under random keys; served only through viewer-bound signed URLs. |
+| Object storage | Verification documents and record attachments under random keys; uploaded directly by browsers with presigned POSTs and turned into rows only after `complete` verifies the bytes; opened through on-demand, audited 60 s presigned GETs ([file-handling.md](./file-handling.md)). |
 | identity-client (`lib/identity-client`) | The only code that talks to identity-service: JWKS cache for user-token verification, service-token cache, batch hydration (Case 2), status changes (Cases 1 and 3). |
 | Video port (`lib/video`) | Creates rooms and issues short-lived per-participant join tokens from a third-party provider. |
 | Email port (`lib/email`) | Sends notifications asynchronously; failure never affects the triggering write. |
@@ -74,13 +77,13 @@ flowchart LR
 |---|---|---|---|
 | `specialties` | specialty catalog | `specialties` | — |
 | `doctors` | doctor profile, languages, specialties links, accepting toggle, local suspension | `doctor_profiles`, `doctor_specialties`, `doctor_languages` | identity-client (Case 2 hydration, Case 3 suspension), `availability` (next-available for search) |
-| `verification` | documents, application states, decisions | `verification_documents`, `identity_sync_jobs` | identity-client (Case 1), storage, signed-url |
+| `verification` | documents, application states, decisions | `verification_documents`, `identity_sync_jobs` | identity-client (Case 1), storage (uploads, download URLs) |
 | `schedules` | working hours, exceptions, consultation types, conflict detection | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
 | `consultations` | booking, reschedule, cancel, no-show, lists, calendar | `consultations` | `availability`, `doctors` (bookability), email, identity-client (Case 2) |
 | `sessions` | waiting room, join/start/complete, room tokens | `consultations` (session columns) | video, email |
 | `patients` | patient profile, clinical timeline | `patient_profiles` | `records`, `consultations` (relationship check) |
-| `records` | medical records, amendments, attachments | `medical_records`, `medical_record_amendments`, `record_attachments` | storage, signed-url, `consultations` |
+| `records` | medical records, amendments, attachments | `medical_records`, `medical_record_amendments`, `record_attachments` | storage (uploads, download URLs), `consultations` |
 | `help-articles` | help center content | `help_articles` | — |
 | `audit` | append-only audit log and its read API | `audit_logs` | — (called by every module through `lib/audit`) |
 | `identity-client` (lib) | outbound Identity calls and their policies | — | identity-service |
@@ -91,7 +94,7 @@ Cross-module calls go through **services**, never another module's repository.
 
 ```
 src/app/<module>/   controller → service → repository     may import lib/, pkg/
-src/lib/            auth, rbac, audit, identity-client, signed-url, storage, video, email,
+src/lib/            auth, rbac, audit, identity-client, storage (S3 presign/verify), video, email,
                     idempotency, rate-limit, error, http, config, knex, redis, logger
                     may import pkg/; never app/<module>
 src/pkg/            pure functions: slots/, utils/time.ts, utils/interval.ts
@@ -131,7 +134,7 @@ sequenceDiagram
 ```
 
 1. **request-id** — adopt a valid UUID `X-Request-Id` or generate one; echo it; bind it to the logger.
-2. **helmet + CORS allowlist**; `Cache-Control: no-store` on clinical and consultation routes.
+2. **helmet** (+ CORS allowlist in local development only — production is a single origin, hub ADR 0005); `Cache-Control: no-store` on clinical and consultation routes.
 3. **rate-limit** — search/slots 60/min per IP and 120/min per user; booking writes 10/min per user; uploads 20/h per user.
 4. **user-guard** — verifies the EdDSA token locally against Identity's JWKS; no network call per request.
 5. **authorize(policy)** — deny by default; roles, ownership resolved from the database, account state (onboarding: `pending|active|rejected`; practising doctor actions: `active` and not locally suspended; booking: `emailVerified`).

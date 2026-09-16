@@ -83,12 +83,12 @@ x-future-events:
 
 paths:
   # ─────────────────────────────────────────────────────────────── health
-  /api/health:
+  /api/health/live:
     get:
-      operationId: getHealth
+      operationId: getPublicLiveness
       tags: [health]
-      summary: Public health check (Postgres, Redis, cached JWKS)
-      description: Unauthenticated. Returns 503 with `status=down` when Postgres or Redis is unreachable. Identity being down does not fail this check while a cached JWKS key exists.
+      summary: Public liveness probe
+      description: 'Liveness: no dependency checks; used by the orchestrator to restart; never 503.'
       security: []
       x-roles: [public]
       x-ownership: none
@@ -96,16 +96,31 @@ paths:
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
-          $ref: '#/components/responses/HealthOk'
-        '503':
-          $ref: '#/components/responses/HealthDown'
+          $ref: '#/components/responses/HealthLiveOk'
 
-  /internal/health:
+  /api/health/ready:
     get:
-      operationId: getInternalHealth
+      operationId: getPublicReadiness
+      tags: [health]
+      summary: Public readiness probe
+      description: 'Readiness: Postgres `SELECT 1` (500 ms) is fatal; Redis `PING` (500 ms) is reported only; 503 when Postgres is down or shutdown is in progress. Identity is not a dependency. Not rate-limited; not enveloped.'
+      security: []
+      x-roles: [public]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthReadyOk'
+        '503':
+          $ref: '#/components/responses/HealthReadyDown'
+
+  /internal/health/live:
+    get:
+      operationId: getInternalLiveness
       tags: [health, internal]
-      summary: Internal listener health check
-      description: Served only on the internal listener. Unauthenticated; the network isolation is the protection.
+      summary: Internal liveness probe
+      description: 'Liveness: no dependency checks; used by the orchestrator to restart; never 503. Served only on the internal listener.'
       servers:
         - url: http://localhost:3101
           description: Internal listener (INTERNAL_PORT=3101), network-isolated, never routed by the public ingress.
@@ -116,9 +131,27 @@ paths:
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
-          $ref: '#/components/responses/HealthOk'
+          $ref: '#/components/responses/HealthLiveOk'
+
+  /internal/health/ready:
+    get:
+      operationId: getInternalReadiness
+      tags: [health, internal]
+      summary: Internal readiness probe
+      description: 'Readiness: Postgres `SELECT 1` (500 ms) is fatal; Redis `PING` (500 ms) is reported only; 503 when Postgres is down or shutdown is in progress. Identity is not a dependency. Not rate-limited; not enveloped.'
+      servers:
+        - url: http://localhost:3101
+          description: Internal listener (INTERNAL_PORT=3101), network-isolated, never routed by the public ingress.
+      security: []
+      x-roles: [public]
+      x-ownership: none
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthReadyOk'
         '503':
-          $ref: '#/components/responses/HealthDown'
+          $ref: '#/components/responses/HealthReadyDown'
 
   # ─────────────────────────────────────────────────────────────── specialties
   /api/specialties:
@@ -2773,20 +2806,35 @@ components:
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
-    HealthOk:
-      description: All required dependencies are reachable.
+    HealthLiveOk:
+      description: The process is alive. No dependency was checked.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthLive'
+    HealthReadyOk:
+      description: Postgres reachable; `degraded` when Redis is down.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/HealthStatus'
-    HealthDown:
-      description: A required dependency (Postgres or Redis) is down. Body is the health report with `status=down`.
+    HealthReadyDown:
+      description: Postgres unreachable or shutting down.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
       content:
         application/json:
           schema:
@@ -3492,31 +3540,33 @@ components:
           type: integer
           minimum: 0
 
+    HealthLive:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: { type: string, const: ok }
+
     HealthStatus:
       type: object
-      required: [status, service, checks]
+      required: [status, checks]
+      additionalProperties: false
       properties:
         status:
           type: string
           enum: [ok, degraded, down]
-        service:
-          type: string
-          const: care-service
         checks:
           type: object
-          required: [postgres, redis]
+          required: [database, redis]
           properties:
-            postgres:
+            database:
               type: string
               enum: [up, down]
             redis:
               type: string
               enum: [up, down]
-            identityJwks:
-              type: string
-              enum: [cached, stale, missing]
-              description: Informational; `degraded` when stale, never `down` on its own.
-
+              description: Reported only; Redis is Tier 2 and never fails readiness.
+      example: { status: degraded, checks: { database: up, redis: down } }
     HydratedUserFields:
       type: object
       description: |

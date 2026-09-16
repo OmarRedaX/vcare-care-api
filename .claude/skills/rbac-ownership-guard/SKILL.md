@@ -91,15 +91,19 @@ export function authorize(policy: Policy | undefined): RequestHandler {
 
 | Route | Roles | Ownership | Notes |
 |---|---|---|---|
-| `POST /auth/register`, `/auth/login`, `/auth/forgot-password`, `/auth/reset-password`, `/auth/verify-email`, `/auth/resend-verification` | public (no guard) | — | rate-limited; no `authorize` needed because no principal — register them with an explicit `publicRoute()` marker so the "no policy" check still passes deliberately |
+| `POST /auth/register/start`, `/auth/register/complete`, `/auth/login`, `/auth/forgot-password`, `/auth/reset-password` | public (no guard) | — | rate-limited; no `authorize` needed because no principal — register them with an explicit `publicRoute()` marker so the "no policy" check still passes deliberately; login accepts `pending`, `active`, `rejected` (never `suspended`) |
 | `POST /auth/refresh`, `/auth/logout` | refresh cookie | family of the presented token | `publicRoute()` + cookie validation in the service |
 | `GET /auth/me`, `PATCH /auth/me`, `POST /auth/change-password` | patient, doctor, admin | self | `PATCH /auth/me` cannot touch email/role/status |
 | `GET /users`, `GET /users/:id` | admin | none | |
-| `PATCH /users/:id/status` | admin | none + service check: not self, target not admin | writes status history |
+| `PATCH /users/:id/status` | admin | none + service check: not self, target not admin, **target not doctor** (`403 Forbidden`; doctor status only via Care) | writes status history; patients only |
 | `GET /users/:id/sessions`, `DELETE /users/:id/sessions` | admin | none | |
 | `GET /internal/users` | service | scope `users:read` | |
 | `PATCH /internal/users/:id/status` | service | scope `users:status:write` | |
 | `POST /internal/auth/token` | client credentials | — | `publicRoute()` on the internal listener; secret verified in service |
+
+Policies list roles **explicitly** — never an "any authenticated user" wildcard — so a role added later gets no
+access until a policy names it. Guards authenticate (set `req.auth`); `authorize(policy)` only authorizes.
+Self routes (`/auth/me`, `/auth/change-password`) accept `rejected` accounts.
 
 ## Care service — route policies
 
@@ -138,7 +142,7 @@ export function authorize(policy: Policy | undefined): RequestHandler {
 ## Clinical-access auditing
 - Policies with `audit: "clinical-read" | "clinical-write"` require the service to write an `audit_logs` row: `actor_user_id, actor_role, action (e.g. record.read), entity_type, entity_id, request_id, metadata (ids/statuses only), created_at`.
 - Writes: audit row in the **same transaction** as the change. Reads: audit row written **before** the response is sent; if the audit insert fails, the read fails (`500`) — no unaudited clinical read.
-- Issuing a signed URL for a document/attachment is itself an audited clinical read.
+- Issuing a download URL for a document/attachment is itself an audited clinical read: issued on demand per file by a `download-url` route after `authorize(policy)`, never embedded in read DTOs; admins never get record attachment URLs.
 - `metadata` never contains clinical text or PII.
 
 ## Tests every route needs

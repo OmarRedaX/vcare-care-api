@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 tags: [records, clinical, privacy, audit, attachments, amendments]
-related: [consultation-lifecycle, rbac, data-model, future]
+related: [consultation-lifecycle, rbac, data-model, future, file-handling]
 ---
 
 # Clinical Records
@@ -39,15 +39,20 @@ the body. Insert and `record.created` audit row are one transaction.
 - Reads return the original plus amendments in chronological order; clients show the amended view with history.
   Nothing is ever silently overwritten.
 
-## Attachments and signed URLs
-- Upload: `multipart/form-data`, MIME allowlist `application/pdf`, `image/jpeg`, `image/png` verified by content
-  sniffing, 10 MB cap, 20 uploads/hour per user, random object key (never the client filename), private bucket.
+## Attachments
+Full design: [file-handling.md](./file-handling.md) ([ADR 0013](../adr/0013-verified-direct-upload-lifecycle.md),
+[ADR 0014](../adr/0014-on-demand-download-urls.md)).
+- Upload: the assigned doctor creates an intent (`POST /api/records/{id}/attachments/uploads`, 20/hour per user),
+  uploads directly to the private bucket with the presigned POST, then calls `…/uploads/{uploadId}/complete`. The
+  `record_attachments` row and `attachment.added` are written **only after** Care verifies the stored object's size
+  (≤ 10 MB) and leading bytes (PDF, JPEG, PNG) — never the filename or a declared content type.
 - Adding is allowed before and after the lock (it appends); **deleting** (soft) is allowed only before the lock,
   else `409 RecordLocked`.
-- Download: `downloadUrl` is issued per read by `lib/signed-url` — HMAC-SHA256 over
-  `(objectKey, viewerUserId, expiresAt)`, TTL ≤ 10 minutes (`SIGNED_URL_TTL_SECONDS=600`), bound to the viewer,
-  only after the authorization check. **Issuing a URL is an audited clinical read** (`attachment.url_issued`).
-- Object keys and signed URLs are never logged and never stored beyond the key.
+- Download: record reads list attachment metadata only. Opening a file calls
+  `POST /api/records/{id}/attachments/{attachmentId}/download-url`, which runs the record's read policy (admins
+  never) and returns a presigned GET valid 60 s. **Issuing a URL is an audited clinical read**
+  (`attachment.url_issued`); if the audit insert fails, no URL is issued.
+- Object keys and presigned URLs are never logged and never stored beyond the key.
 
 ## Who can read
 | Viewer | Records | Patient profile clinical fields |
@@ -83,7 +88,7 @@ A doctor-initiated booking on the patient's behalf is a `/system-design` topic, 
 | `record.read`, `attachment.url_issued`, `patient_records.listed`, `patient_profile.read`, `consultation.read` | reads | written before the response; **if the audit insert fails, the read fails (500)** |
 
 Audit `metadata` holds ids, statuses, and reasons only — never clinical text, codes, or names. Logs never contain
-record contents, complaint text, allergies, conditions, diagnosis text or code, object keys, or signed URLs.
+record contents, complaint text, allergies, conditions, diagnosis text or code, object keys, or presigned URLs.
 Responses carry `Cache-Control: no-store`.
 
 ## Phase-2 AI boundary

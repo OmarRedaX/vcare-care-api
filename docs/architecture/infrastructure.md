@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-14
-tags: [infrastructure, env, logging, errors, health, configuration]
-related: [overview, resilience, runbook, quickstart]
+last_verified: 2026-09-15
+tags: [infrastructure, env, logging, errors, health, configuration, deployment]
+related: [overview, resilience, runbook, quickstart, deployment, capacity, adr-0006-health-split-redis-tier-2, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
 
 # Infrastructure — care-service
@@ -32,8 +32,9 @@ env. **Secrets have no defaults.** Values shown are local defaults.
 | `JWT_AUDIENCE` | `vcare-care` | | expected `aud` on user and service tokens |
 | `JWT_ISSUER` | `vcare-identity` | | expected `iss` |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
-| `SIGNED_URL_SECRET` | — | **yes, no default** | HMAC key for document/attachment URLs |
-| `SIGNED_URL_TTL_SECONDS` | `600` | | must be ≤ 600 |
+| `UPLOAD_INTENT_TTL_SECONDS` | `900` | | upload intent lifetime ([file-handling.md](./file-handling.md), ADR 0013) |
+| `UPLOAD_POLICY_TTL_SECONDS` | `300` | | presigned POST validity; must be ≤ `UPLOAD_INTENT_TTL_SECONDS` |
+| `DOWNLOAD_URL_TTL_SECONDS` | `60` | | presigned GET validity; must be ≤ 60 (ADR 0014) |
 | `BOOKING_HORIZON_DAYS` | `60` | | Domain rule 3 |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | Domain rule 10 |
 | `NO_SHOW_GRACE_MINUTES` | `10` | | Domain rule 11 |
@@ -53,12 +54,19 @@ env. **Secrets have no defaults.** Values shown are local defaults.
 | `EMAIL_PROVIDER_URL` | provider base URL | | behind `lib/email` |
 | `EMAIL_PROVIDER_KEY` | — | **yes, no default** | |
 | `EMAIL_FROM` | `no-reply@vcare.example.test` | | |
-| `CORS_ORIGINS` | `http://localhost:5173` | | comma-separated allowlist |
+| `CORS_ORIGINS` | `http://localhost:5173` | | comma-separated allowlist — local development only; production is single-origin with CORS disabled (hub ADR 0005) |
 | `LOG_LEVEL` | `info` | | `debug` only in development |
 | `RATE_LIMIT_SEARCH_PER_IP_PER_MIN` | `60` | | |
 | `RATE_LIMIT_SEARCH_PER_USER_PER_MIN` | `120` | | |
 | `RATE_LIMIT_BOOKING_PER_USER_PER_MIN` | `10` | | |
 | `RATE_LIMIT_UPLOADS_PER_USER_PER_HOUR` | `20` | | |
+| `RATE_LIMIT_FALLBACK_DIVISOR` | `2` | | per-instance fallback limit when Redis is down ([ADR 0006](../adr/0006-health-split-redis-tier-2.md)) |
+| `WORKER_POLL_INTERVAL_MS` | `1000` | | `care-worker` outbox and sync-job polling ([ADR 0008](../adr/0008-care-worker-component.md)) |
+| `WORKER_BATCH_SIZE` | `20` | | rows claimed per poll |
+| `OUTBOX_MAX_ATTEMPTS` | `8` | | notification attempts before `dead` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)) |
+| `OUTBOX_RETENTION_DAYS` | `30` | | purge of `sent` outbox rows |
+| `REMINDER_SCAN_INTERVAL_MS` | `60000` | | reminder scan cadence |
+| `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | partitions pre-created ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 
 ## Database connection
 - `pg` pool via Knex; every connection runs `SET TIME ZONE 'UTC'`.
@@ -74,7 +82,7 @@ Structured JSON, one line per event:
 `level, message, timestamp (ISO UTC), requestId, service="care-service", userId?, role?, route, status, durationMs`.
 
 **Never logged:** complaint text, examination notes, diagnosis text or code, treatment plans, allergies, chronic
-conditions, blood type, date of birth, document or attachment contents, object keys, signed URLs, names, emails,
+conditions, blood type, date of birth, document or attachment contents, object keys, presigned URLs and POST fields, names, emails,
 phones, `Authorization` headers, service or video tokens, request bodies of clinical or consultation routes.
 The logger also redacts these keys by name (`complaintText`, `examinationNotes`, `diagnosisText`, `diagnosisCode`,
 `treatmentPlan`, `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `objectKey`, `downloadUrl`,
@@ -97,19 +105,31 @@ Produced only by `lib/error/errorHandler.ts`, identical to identity-service:
 echoes it on every response; binds it to every log line; writes it to `audit_logs.request_id`; forwards it on
 every Identity call; stores it on `identity_sync_jobs` so retries keep the trace.
 
-## Health
+## Health ([ADR 0006](../adr/0006-health-split-redis-tier-2.md))
 | Endpoint | Listener | Checks | Status |
 |---|---|---|---|
-| `GET /api/health` | public | Postgres `SELECT 1`, Redis `PING`, JWKS cache state (informational) | 200 `ok`/`degraded`, 503 `down` if Postgres or Redis fails |
-| `GET /internal/health` | internal | same | same |
+| `GET /api/health/live`, `GET /internal/health/live` | both | event loop responsive; no dependencies | 200 `ok` |
+| `GET /api/health/ready`, `GET /internal/health/ready` | both | Postgres `SELECT 1` (500 ms, fatal); Redis `PING` and JWKS cache state (reported only) | 200 `ok`/`degraded`; 503 if Postgres is down or shutdown is in progress |
+Load balancers use readiness; the orchestrator restarts on liveness. Redis is Tier 2 and never fails readiness.
 Identity reachability is **not** a health dependency: Care must stay up (degraded) when Identity is down.
+(Contract change pending: these replace `GET /api/health` and `GET /internal/health`.)
 
 ## HTTP hardening
-`helmet`; CORS allowlist from `CORS_ORIGINS`; `Cache-Control: no-store` on clinical and consultation responses;
-body size limits (JSON 100 kB, multipart 10 MB); Redis sliding-window rate limits as listed above; graceful
+`helmet`; CORS allowlist from `CORS_ORIGINS` in development only (single origin in production, hub ADR 0005); `Cache-Control: no-store` on clinical and consultation responses;
+body size limits (JSON 100 kB; no multipart routes — file bytes go straight to object storage, ADR 0013); Redis sliding-window rate limits as listed above; graceful
 shutdown drains both listeners and stops the retrier loop after its current batch.
 
-## Deployment shape
-One container image, two listeners. The public ingress routes only `/api/*` to `PORT`; `INTERNAL_PORT` is exposed
-only on the private network to identity-service's egress and admin tooling. The retrier loop runs in every
-instance (`SKIP LOCKED` keeps it safe).
+## Runtime notes
+The platform deployment topology — edge routing, private network, every service's components, the availability
+roll-up, and the release pipeline — is platform-scope and authored in the hub
+(`../vcare-hub/architecture/deployment.md`; hub ADRs 0005, 0007, 0008). Care-specific runtime facts:
+
+- One image runs both listeners; `PORT` receives every `/api/*` prefix the edge does not route to Identity;
+  `INTERNAL_PORT` admits only registered service clients and admin tooling.
+- Background loops (Identity-sync retrier, notification outbox, reminders, `next-available` refresh, audit
+  partitions) run in the separate `care-worker` component ([ADR 0008](../adr/0008-care-worker-component.md));
+  graceful shutdown stops each loop after its current batch.
+- Outbound: `care-api` → Identity internal LB and JWKS, video room provider, object storage; `care-worker` →
+  Identity internal LB, email provider.
+
+Components, sizing, availability, metrics, and alerts: [deployment.md](./deployment.md) and [capacity.md](./capacity.md).

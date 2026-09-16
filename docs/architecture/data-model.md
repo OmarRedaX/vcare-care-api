@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-14
+last_verified: 2026-09-15
 tags: [data-model, postgresql, schema, indexes, erd]
-related: [scheduling-slots, clinical-records, integration, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint]
+related: [scheduling-slots, clinical-records, integration, file-handling, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
@@ -303,6 +303,8 @@ CREATE TABLE consultations (
     needs_admin_followup   BOOLEAN NOT NULL DEFAULT FALSE,
     followup_reason        VARCHAR(32),
     follow_up_of_record_id BIGINT,
+    reminder_24h_sent_at   TIMESTAMPTZ,                -- ADR 0011; reset to NULL by reschedule
+    reminder_1h_sent_at    TIMESTAMPTZ,                -- ADR 0011; reset to NULL by reschedule
     idempotency_key        UUID NOT NULL,
     request_hash           CHAR(64) NOT NULL,          -- sha256 of the booking body, for replay-vs-conflict after Redis loss
     created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -354,6 +356,11 @@ CREATE INDEX idx_consultations_consultation_type_id ON consultations (consultati
 -- Admin follow-up queue GET /consultations?needsAdminFollowup=true ORDER BY starts_at, id
 CREATE INDEX idx_consultations_followup_starts_at_id ON consultations (starts_at, id)
     WHERE needs_admin_followup AND deleted_at IS NULL AND status IN ('booked', 'waiting');
+
+-- Reminder scan (care-worker, every minute, ADR 0011):
+--   WHERE status = 'booked' AND deleted_at IS NULL AND starts_at BETWEEN now() AND now() + interval '24 hours'
+--     AND (reminder_24h_sent_at IS NULL OR reminder_1h_sent_at IS NULL) ORDER BY starts_at LIMIT 200
+CREATE INDEX idx_consultations_booked_starts_at ON consultations (starts_at) WHERE status = 'booked' AND deleted_at IS NULL;
 
 -- FK index for follow-up bookings: WHERE follow_up_of_record_id = $1
 CREATE INDEX idx_consultations_follow_up_of_record_id ON consultations (follow_up_of_record_id) WHERE follow_up_of_record_id IS NOT NULL;
@@ -475,6 +482,41 @@ CREATE TABLE record_attachments (
 CREATE INDEX idx_record_attachments_medical_record_id ON record_attachments (medical_record_id, id) WHERE deleted_at IS NULL;
 ```
 
+## `upload_intents`
+Temporary, single-use upload intents ([ADR 0013](../adr/0013-verified-direct-upload-lifecycle.md),
+[file-handling.md](./file-handling.md)). Operational, never exposed: a row is **not** a document or attachment; the
+real row is inserted only after `complete` verifies the stored object. `file_type` of the real row is the detected
+type. `care-worker` closes expired intents and purges rows older than 7 days.
+```sql
+CREATE TABLE upload_intents (
+    id              BIGSERIAL PRIMARY KEY,
+    kind            VARCHAR(32) NOT NULL,
+    target_id       BIGINT NOT NULL,                -- doctor_profiles.id or medical_records.id (by kind), re-checked at complete
+    owner_user_id   BIGINT NOT NULL,                -- Identity user id
+    document_type   VARCHAR(16),                    -- verification documents only
+    description     VARCHAR(500),                   -- record attachments only
+    quarantine_key  VARCHAR(512) NOT NULL,          -- storage key, never a URL; never logged
+    max_bytes       INT NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    consumed_at     TIMESTAMPTZ,                    -- set on success, failed verification, or expiry purge
+    result_id       BIGINT,                         -- id of the created document/attachment (replay)
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_upload_intents_quarantine_key UNIQUE (quarantine_key),
+    CONSTRAINT chk_upload_intents_kind CHECK (kind IN ('verification_document', 'record_attachment')),
+    CONSTRAINT chk_upload_intents_document_type CHECK (
+        (kind = 'verification_document' AND document_type IN ('license', 'id', 'degree'))
+        OR (kind = 'record_attachment' AND document_type IS NULL)),
+    CONSTRAINT chk_upload_intents_max_bytes CHECK (max_bytes BETWEEN 1 AND 10485760),
+    CONSTRAINT chk_upload_intents_result CHECK (result_id IS NULL OR consumed_at IS NOT NULL)
+);
+-- Worker purge: WHERE consumed_at IS NULL AND expires_at < now() ORDER BY expires_at LIMIT 500
+CREATE INDEX idx_upload_intents_expires_at_open ON upload_intents (expires_at) WHERE consumed_at IS NULL;
+-- Old-row purge: WHERE created_at < now() - interval '7 days'
+CREATE INDEX idx_upload_intents_created_at ON upload_intents (created_at);
+```
+No foreign key on `target_id` (it points at one of two tables by `kind`); `complete` re-loads and re-authorizes the
+target. Rows are hard-deleted by the purge because they are operational, not business data (like the outbox).
+
 ## `help_articles`
 ```sql
 CREATE TABLE help_articles (
@@ -504,9 +546,12 @@ CREATE UNIQUE INDEX uq_help_articles_audience_title ON help_articles (audience, 
 ```
 
 ## `audit_logs`
+Range-partitioned by month from the first migration ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md));
+`care-worker` pre-creates `AUDIT_PARTITION_MONTHS_AHEAD` months; a `DEFAULT` partition alerts if non-empty;
+grants are applied to every partition; retention ≥ 6 years (detach + archive, never `DELETE`).
 ```sql
 CREATE TABLE audit_logs (
-    id              BIGSERIAL PRIMARY KEY,
+    id              BIGSERIAL,
     actor_user_id   BIGINT,                             -- Identity user id; NULL for system actors (retry jobs)
     actor_role      VARCHAR(16) NOT NULL,
     action          VARCHAR(64) NOT NULL,               -- e.g. record.read, consultation.cancelled, doctor.suspended
@@ -516,8 +561,11 @@ CREATE TABLE audit_logs (
     metadata        JSONB NOT NULL,                     -- ids, statuses, reasons only; never clinical text or PII
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_audit_logs_actor_role CHECK (actor_role IN ('patient', 'doctor', 'admin', 'service', 'system')),
-    CONSTRAINT chk_audit_logs_metadata_object CHECK (jsonb_typeof(metadata) = 'object')
-);
+    CONSTRAINT chk_audit_logs_metadata_object CHECK (jsonb_typeof(metadata) = 'object'),
+    CONSTRAINT pk_audit_logs PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+CREATE TABLE audit_logs_y2026m09 PARTITION OF audit_logs FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');  -- example
+CREATE TABLE audit_logs_default PARTITION OF audit_logs DEFAULT;
 -- GET /audit-logs?entityType=&entityId= newest first
 CREATE INDEX idx_audit_logs_entity_type_entity_id_created_at ON audit_logs (entity_type, entity_id, created_at DESC, id DESC);
 -- GET /audit-logs?actorUserId= newest first
@@ -529,7 +577,8 @@ REVOKE UPDATE, DELETE ON audit_logs FROM vcare_app;
 ```
 
 ## `identity_sync_jobs`
-Durable retry for Integration Cases 1 and 3 (restarts do not lose them).
+Durable retry for Integration Cases 1, 3, and 4 (restarts do not lose them). Polled by `care-worker`.
+`kind` gains `'reinstatement'` with `target_status = 'active'` ([ADR 0012](../adr/0012-doctor-reinstatement.md)).
 ```sql
 CREATE TABLE identity_sync_jobs (
     id                    BIGSERIAL PRIMARY KEY,
@@ -549,10 +598,11 @@ CREATE TABLE identity_sync_jobs (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_identity_sync_jobs_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
-    CONSTRAINT chk_identity_sync_jobs_kind CHECK (kind IN ('verification', 'suspension')),
+    CONSTRAINT chk_identity_sync_jobs_kind CHECK (kind IN ('verification', 'suspension', 'reinstatement')),
     CONSTRAINT chk_identity_sync_jobs_target_status
         CHECK ((kind = 'verification' AND target_status IN ('active', 'rejected', 'pending'))
-            OR (kind = 'suspension' AND target_status = 'suspended')),
+            OR (kind = 'suspension' AND target_status = 'suspended')
+            OR (kind = 'reinstatement' AND target_status = 'active')),
     CONSTRAINT chk_identity_sync_jobs_status CHECK (status IN ('pending', 'succeeded', 'failed', 'superseded'))
 );
 -- Retrier poll: SELECT … WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at
@@ -568,8 +618,40 @@ CREATE INDEX idx_identity_sync_jobs_doctor_user_id_id ON identity_sync_jobs (doc
 `status='failed'` is set only on a non-retryable Identity answer (`409 InvalidStatusTransition`); it mirrors
 `doctor_profiles.identity_sync_status='failed'` and is requeued by an operator after reconciliation.
 
+## `notification_outbox`
+Transactional outbox for emails ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)); inserted in the same
+transaction as the triggering write; delivered by `care-worker`.
+```sql
+CREATE TABLE notification_outbox (
+    id                  BIGSERIAL PRIMARY KEY,
+    kind                VARCHAR(32) NOT NULL,
+    consultation_id     BIGINT,
+    recipient_user_id   BIGINT NOT NULL,              -- Identity user id; email resolved at send time, never stored
+    payload             JSONB NOT NULL,               -- ids and non-clinical render params only; never email or complaint text
+    status              VARCHAR(16) NOT NULL,
+    attempts            INT NOT NULL DEFAULT 0,
+    next_attempt_at     TIMESTAMPTZ NOT NULL,
+    last_error_code     VARCHAR(32),                  -- HTTP status or error class, never a body
+    request_id          UUID,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sent_at             TIMESTAMPTZ,
+    CONSTRAINT fk_notification_outbox_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id) ON DELETE RESTRICT,
+    CONSTRAINT chk_notification_outbox_kind CHECK (kind IN ('booking_confirmed', 'reminder_24h', 'reminder_1h',
+        'rescheduled', 'cancelled', 'schedule_blocked', 'doctor_joined')),
+    CONSTRAINT chk_notification_outbox_status CHECK (status IN ('pending', 'sent', 'dead', 'skipped')),
+    CONSTRAINT chk_notification_outbox_payload_object CHECK (jsonb_typeof(payload) = 'object')
+);
+-- Worker claim: WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at
+--   FOR UPDATE SKIP LOCKED LIMIT 20
+CREATE INDEX idx_notification_outbox_pending_next_attempt_at ON notification_outbox (next_attempt_at) WHERE status = 'pending';
+-- FK index + support lookup by consultation
+CREATE INDEX idx_notification_outbox_consultation_id ON notification_outbox (consultation_id) WHERE consultation_id IS NOT NULL;
+-- Purge: WHERE status='sent' AND sent_at < now() - OUTBOX_RETENTION_DAYS, batches of 5 k
+CREATE INDEX idx_notification_outbox_sent_at ON notification_outbox (sent_at) WHERE status = 'sent';
+```
+
 ## Not stored
 - **Slots / availability** — computed per request ([scheduling-slots.md](./scheduling-slots.md)).
-- **Names, emails, phones, avatars** — hydrated from Identity with a 300 s Redis TTL.
+- **Names, emails, phones, avatars** — hydrated from Identity with a 300 s Redis TTL; recipient emails for
+  notifications are fetched at send time and held in worker memory only (hub ADR 0010).
 - **Signed URLs** — issued per request, never persisted.
-- **Notification outbox** — mechanism pending `/system-design` (outbox table vs job queue).

@@ -6,7 +6,7 @@ clinical, scheduling, and cross-service rules this service needs. This file is *
 not need another repo's CLAUDE.md to follow it.
 
 - **Source of intent:** the PRD at `../vcare-hub/product/prd.md`. **Source of truth for the API:** `contracts/openapi.yaml`.
-- **Cross-service context:** the hub at `../vcare-hub` (start at its `INDEX.md`).
+- **Cross-service context:** the hub at `../vcare-hub` (start at its `INDEX.md`). Platform-scope docs — overview, deployment topology, capacity model, integration cases, data ownership — live **only** there; see "Doc placement — hub or service".
 - **Citing this file:** always cite sections **by name** (e.g. "CLAUDE.md → Domain rules"), never by number.
 - **Architect trigger:** when the user says **"let's system design"** (or runs `/system-design <topic>`), run the `/system-design` command inline — see "Architect mode — /system-design".
 
@@ -59,6 +59,7 @@ Expected bounded contexts (module slugs are fixed by `/brainstorm`, not pre-crea
 | JWT verification | `jose` — verify EdDSA tokens against Identity's JWKS (never sign user tokens) |
 | Timezones | `luxon` (IANA zones) |
 | Internal HTTP client | `undici` (timeouts, keep-alive pool) |
+| Object storage | AWS SDK v3 modular (`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, `@aws-sdk/s3-request-presigner`) — imported only in `lib/storage` (ADR 0015) |
 | Security headers | `helmet` |
 | Logging | custom structured JSON `Logger` with clinical/PII redaction |
 | Testing | `jest` + `supertest` |
@@ -77,6 +78,9 @@ src/
   app.ts                     # public express app (mounted under /api)
   internal-app.ts            # internal express app (mounted under /internal) — separate listener
   server.ts                  # bootstrap both listeners + graceful shutdown
+  worker.ts                  # care-worker entrypoint — background loops only (ADR 0008)
+  bootstrap.ts               # DI registration (the only place that wires app/ into the container)
+  migrate.ts                 # migration CLI (latest / rollback / status / make)
   routes.ts                  # mounts public module routers
   internal-routes.ts         # mounts internal module routers
   app/<module>/              # one folder per bounded context
@@ -92,14 +96,15 @@ src/
     identity-client/ # service-token cache, getUsersBatch (Case 2), setUserStatus (Cases 1 & 3), retry/backoff
     rbac/            # authorize.ts (deny-by-default), ownership resolvers
     audit/           # audit.ts — writes audit_logs rows inside the caller's transaction
-    signed-url/      # HMAC-signed, expiring download URLs
-    storage/         # object-storage port + adapter (documents, attachments)
+    storage/         # object-storage port + S3 adapter: presigned POST/GET, head, byte-range read, promote, delete (ADRs 0013–0015)
     video/           # room-provider port + adapter
     request-id/      # X-Request-Id middleware
     config/          # env.ts (zod)
     di/              # container.ts, tokens.ts
     error/           # AppError.ts, errorHandler.ts (the one error envelope)
-    http/            # response.ts, pagination/
+    http/            # response.ts, pagination/, cors.ts (dev allowlist), no-store.ts, client-ip.ts
+    lifecycle/       # shutdown/readiness state, in-flight request counter
+    worker/          # loop runner for care-worker (stop after the current tick)
     idempotency/     # Redis-backed idempotency middleware (required on booking writes)
     rate-limit/      # Redis sliding-window limiter
     knex/  redis/  logger/  types/  validation/
@@ -185,7 +190,7 @@ Every module under `src/app/<module>/` has the same skeleton.
 
 ## API conventions
 
-**Base paths:** public `/api/*` on `PORT` (local `3001`); internal `/internal/*` on `INTERNAL_PORT` (local `3101`); `GET /api/health`, `GET /internal/health`. Identity runs locally on `3000` / `3100`.
+**Base paths:** public `/api/*` on `PORT` (local `3001`); internal `/internal/*` on `INTERNAL_PORT` (local `3101`); `GET /api/health/live|ready`, `GET /internal/health/live|ready` (readiness fails only on Postgres; Redis is Tier 2 — ADR 0006). Identity runs locally on `3000` / `3100`.
 
 **One error envelope** — identical in both vcare services, produced only by `lib/error/errorHandler.ts`:
 ```json
@@ -280,11 +285,14 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 
 ## Security rules
 
-- **Documents and attachments** are served only via `lib/signed-url`: HMAC-SHA256 over `(objectKey, viewerUserId, expiresAt)`, TTL ≤ 10 minutes, bound to the viewer, issued only after an authorization check, and the issuance is audited. No public bucket URLs, no permanent links.
-- **Uploads:** MIME allowlist (`application/pdf`, `image/jpeg`, `image/png`), size cap (10 MB), content sniffing, random object keys, never the client filename in the key.
+- **Documents and attachments** never pass through `care-api` as bytes and never get a public or permanent link (ADRs 0013, 0014; hub ADR 0011; `docs/architecture/file-handling.md`):
+  - **Upload** = intent → presigned POST to `quarantine/<uuid>` → `complete`. A `verification_documents` / `record_attachments` row is created **only after `complete` verifies the stored object itself**: `HEAD` size 1 B–10 MB and the leading bytes (magic number) are PDF, JPEG, or PNG. The filename and any client- or S3-declared `Content-Type` are never trusted; `file_type` is the detected type. A failed check deletes the quarantine object and returns `400 ValidationFailed`.
+  - **Upload intents** (`upload_intents`) are temporary (15 min), single-use, bound to their owner, and re-authorized at `complete`; they are never documents or attachments.
+  - **Download** URLs are issued on demand by a `download-url` endpoint, only after `authorize(policy)` and a successful audit insert: presigned GET valid **60 s**, `attachment` disposition, verified content type. Read DTOs never embed URLs.
+  - Private bucket, Block Public Access on, TLS-only, CORS `POST` from the web origin only; random object keys, never the client filename.
 - **Rate limits (Redis sliding window):** public search and slots 60/min per IP and 120/min per user · booking writes 10/min per user · uploads 20/h per user.
-- **Headers:** `helmet`; CORS allowlist from env; `Cache-Control: no-store` on every clinical and consultation response.
-- **Env:** every variable declared in `lib/config/env.ts` (zod), no defaults on secrets (`SERVICE_CLIENT_SECRET`, `SIGNED_URL_SECRET`, `VIDEO_PROVIDER_KEY`, storage credentials).
+- **Headers:** `helmet`; CORS allowlist from env in local development only — production is a single origin with CORS disabled (hub ADR 0005); `Cache-Control: no-store` on every clinical and consultation response.
+- **Env:** every variable declared in `lib/config/env.ts` (zod), no defaults on secrets (`SERVICE_CLIENT_SECRET`, `VIDEO_PROVIDER_KEY`, storage credentials).
 - **Video:** join returns a short-lived provider join token for that participant only, issued only inside the session window.
 - **Phase-2 AI boundary:** any AI-produced clinical artifact (complaint parse, summary, ICD-10 suggestion) is stored as a **draft** that the doctor must confirm; AI never diagnoses, prescribes, or decides treatment; red-flag symptoms escalate to a human immediately. AI service calls use the same service-token flow with their own scopes.
 
@@ -293,8 +301,8 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 ## Privacy and logging
 
 - Structured JSON: `level, message, timestamp (ISO UTC), requestId, service="care-service", userId?, role?, route, status, durationMs`.
-- **Never log clinical data or PII:** complaint text, examination notes, diagnosis text/code, treatment plans, allergies, chronic conditions, blood type, date of birth, document or attachment contents/keys/URLs, names, emails, phones, `Authorization` headers, signed URLs, request bodies of clinical or consultation routes. The logger redacts these keys by name as defence in depth — do not rely on it.
-- **Every access to clinical records is audited:** reading a record, a patient's record list/timeline, a patient profile's clinical fields, issuing a signed URL, creating/updating/amending a record, adding/removing an attachment. The audit row is written **in the same transaction** as the write, or before returning the read.
+- **Never log clinical data or PII:** complaint text, examination notes, diagnosis text/code, treatment plans, allergies, chronic conditions, blood type, date of birth, document or attachment contents/keys/URLs, names, emails, phones, `Authorization` headers, presigned URLs and POST fields, request bodies of clinical or consultation routes. The logger redacts these keys by name as defence in depth — do not rely on it.
+- **Every access to clinical records is audited:** reading a record, a patient's record list/timeline, a patient profile's clinical fields, issuing a download URL, creating/updating/amending a record, adding/removing an attachment. The audit row is written **in the same transaction** as the write, or before returning the read.
 - **Also audited (PRD 7.12):** every consultation status change, verification decision, suspension, schedule block that affects bookings, admin action on behalf of a user.
 - Audit `metadata` holds ids, statuses, and reasons — never clinical text.
 - All seed and demo data is fully synthetic.
@@ -334,9 +342,14 @@ Search results, consultation lists, and a doctor's patient list:
 
 > Cases 2 and 3 use the same client with **opposite failure policies**. Choosing the wrong policy is a Critical review finding.
 
-**Known gap (MVP, HTTP-only, no events):** a doctor status change made directly in Identity is not pushed to Care. Two mitigations apply together: (1) the admin console routes doctor suspension through Care's `PATCH /admin/doctors/:id/suspend`, never Identity directly; (2) Care reads `status` from hydration (Case 2) and excludes non-active doctors from search when the data is fresh. Reinstating a suspended doctor is out of scope for MVP (no Care endpoint; an Identity-side reinstatement leaves `suspended_at` set in Care). Closing the gap is the first candidate topic for `/system-design`.
+**Doctor account status — Care is the only initiator (hub ADR 0006):** Identity's admin status route refuses doctor targets, so every doctor account-status change goes through Cases 1 and 3 and Care's `suspended_at` / `identity_sync_status` always move with it. Care still excludes non-active doctors from search using fresh hydrated `status` as defence in depth. A `rejected` doctor can sign in at Identity, so resubmission is reachable. Reinstating a suspended doctor goes through Care as **Case 4** (below; hub ADR 0009).
 
-**Notifications (PRD 7.11)** — booking confirmation, reminder, reschedule, cancellation, "doctor joined" — are sent **asynchronously** through the email port; delivery failure never blocks or rolls back a booking. The mechanism (outbox table vs job queue) is decided in `/system-design` before the module is built; RabbitMQ is a future option, not MVP.
+### Case 4 — Reinstatement restores the account (synchronous, retry-report-pending)
+`PATCH /admin/doctors/:id/reinstate` with a reason (care ADR 0012): precondition suspended **and** synced (else `409 InvalidTransition`; not suspended → 200 no-op); one transaction clears `suspended_at`, sets `identity_sync_status='pending'`, audits (follow-up flags stay); `PATCH /internal/users/:id/status` → `active` with the **Case 1** policy (3 attempts → `202 identitySync:"pending"` + durable job `kind='reinstatement'`; alert after 15 min; Identity 409 → `failed` + page). The doctor stays unbookable until synced. Requires Identity to allow `suspended → active` on its internal route (provider first).
+
+**Notifications (PRD 7.11)** — booking confirmation, reminder, reschedule, cancellation, "doctor joined" — are sent **asynchronously** through the email port; delivery failure never blocks or rolls back a booking. Mechanism (ADR 0011): a `notification_outbox` row inserted **in the same transaction** as the write, delivered by `care-worker` (SKIP LOCKED, `dead` after 8 attempts); reminders by a 1-minute worker scan (`reminder_24h_sent_at`/`reminder_1h_sent_at`, reset on reschedule); recipient emails fetched at send time from Identity `GET /internal/users/contacts` (scope `users:contact:read`, worker only) — **never cached, stored, or logged** (hub ADR 0010). RabbitMQ is a future option, not MVP.
+
+**Background work** runs only in the separate `care-worker` component (ADR 0008) — never in `care-api` tasks.
 
 ---
 
@@ -399,7 +412,7 @@ Every rule here has a named unit test. "Enforced by" says where the guarantee li
 - **Unit tests** (`tests/unit/`): isolate one unit; mock collaborators (repositories, services, Redis, `identity-client`, clock, storage, video, email). Infra-failure scenarios are unit tests. `pkg/slots` is tested exhaustively as pure functions (DST forward/back, split shifts, exceptions, cross-midnight patient rendering). Fast (< 100 ms each).
 - **Integration tests** (`tests/integration/`): supertest against the **real** wiring, **real** Postgres (with `btree_gist`), **real** Redis. **Never mock services or repositories.** Mock only system-external dependencies: **Identity** (a local fake HTTP server implementing the contract — including slow and failing modes), the video provider, storage, email. Truncate tables per suite; no infra mocks in `tests/setup.ts`.
 - **Contract conformance:** assert status codes, error `code`s, and response shapes from `contracts/openapi.yaml`; Care's Identity fake is built from `../vcare-hub/contracts/identity-service.openapi.yaml`.
-- **Mandatory scenarios:** each "Domain rules" rule; RBAC per route (wrong role, non-owner → 404/403, owner allowed, **admin denied on every clinical route**); two concurrent bookings for one slot → exactly one 201 and one 409; idempotent replay returns the same consultation, conflicting body → 422; Case 2 with Identity down still returns search results with `profileHydrated:false`; Case 3 with Identity down → 503, local suspension applied, retry job enqueued, bookings blocked; Case 1 pending sync keeps doctor unbookable; record after 24 h creates an amendment; every clinical read writes an audit row; logs captured during tests contain no clinical fixture strings; slot computation budget test (14 days, busy doctor) < 300 ms; pagination page 2 on the default sort.
+- **Mandatory scenarios:** each "Domain rules" rule; RBAC per route (wrong role, non-owner → 404/403, owner allowed, **admin denied on every clinical route**); two concurrent bookings for one slot → exactly one 201 and one 409; idempotent replay returns the same consultation, conflicting body → 422; Case 2 with Identity down still returns search results with `profileHydrated:false`; Case 3 with Identity down → 503, local suspension applied, retry job enqueued, bookings blocked; Case 1 pending sync keeps doctor unbookable; record after 24 h creates an amendment; every clinical read writes an audit row; logs captured during tests contain no clinical fixture strings; slot computation budget test (14 days, busy doctor) < 300 ms; pagination page 2 on the default sort; an upload whose stored bytes are not PDF/JPEG/PNG is rejected at `complete` and creates no row even with a `.pdf` filename and `application/pdf` Content-Type; an expired, closed, or another user's intent cannot be completed; replaying `complete` returns the same row; every `download-url` writes one audit row and admins get 403 on attachment `download-url`.
 - Names: `should <do something> when <condition>`. Do not test the framework.
 
 ---
@@ -413,7 +426,7 @@ Every rule here has a named unit test. "Enforced by" says where the guarantee li
 5. **Slot computation** loads inputs with a fixed number of queries (hours, exceptions, types, consultations in range — one each), computes in `pkg/slots` in memory, and caches the computed window in Redis (`slots:<doctorId>:<typeId>:<fromDate>:<toDate>`, TTL ≤ 60 s, invalidated on any booking/exception/hours/type change). Use the `timezone-slot-computation` skill.
 6. **Search** filters on indexed columns (specialty, language, fee range, accepting, bookable) and sorts by earliest availability using a cached per-doctor `next_available_at` in Redis (derived, TTL-bound), never by computing slots for every row.
 7. Read replicas serve discovery reads when introduced; writes and booking re-validation always hit the primary.
-8. Notifications, retries, and file processing run outside the request.
+8. Notifications and retries run outside the request. Upload and download bytes never pass through `care-api`; `complete` reads at most 16 bytes of the object.
 
 ---
 
@@ -427,7 +440,8 @@ Every rule here has a named unit test. "Enforced by" says where the guarantee li
 - ❌ Trusting identity headers; trusting a user id from the request body for authorization
 - ❌ Storing slots; computing availability in the client's or server's local timezone
 - ❌ `Date` arithmetic for schedules — use `luxon` in `pkg/slots` / `pkg/utils/time.ts`
-- ❌ Logging clinical data, PII, signed URLs, or tokens
+- ❌ Logging clinical data, PII, presigned URLs, object keys, or tokens
+- ❌ Creating a document or attachment row before `complete` verified the stored bytes; trusting a filename or a declared `Content-Type`; embedding download URLs in read DTOs
 - ❌ Overwriting a locked medical record; deleting audit rows
 - ❌ Failing a search or booking because hydration failed; degrading a suspension
 - ❌ `try { … } catch (e) { console.log(e) }`; `any` in signatures; inline `interface`/`type` outside `types.ts`
@@ -465,7 +479,6 @@ Implement one module end-to-end before starting the next (parallel modules only 
 - Message bus / events in MVP — HTTP only; `consultation.booked`, `consultation.cancelled`, `doctor.suspended`, … are future (no AsyncAPI contract yet); RabbitMQ is the candidate transport when an ADR adopts it
 - Phase-2 AI capabilities (separate service; Care only guarantees the draft-confirm boundary and exposes internal APIs via service tokens)
 - Account, credential, or token management (Identity)
-- Reinstating a suspended doctor (no Care endpoint in MVP)
 
 ---
 
@@ -475,7 +488,7 @@ Feature work runs through slash commands, each backed by a focused subagent. **E
 
 | Command | Does | Runs as |
 |---|---|---|
-| `/system-design <topic>` | interactive architecture dialogue → `docs/system-design.md`, `docs/architecture/*`, `docs/adr/*` (+ hub for cross-service) | inline |
+| `/system-design <topic>` | interactive architecture dialogue → `docs/system-design.md`, `docs/architecture/*`, `docs/adr/*` for service scope; hub docs for platform scope (classified with the `docs-placement` skill) | inline |
 | `/brainstorm <feature>` | interactive intent/scope → `docs/<module>/brainstorm.md` | inline |
 | `/construct-spec <module>` | `docs/<module>/spec.md` (parallel recon when ≥ 2 large sources) | `flow-spec-author` |
 | `/develop <module> [--fix-review]` | spec → `tasks.md` → code, task by task | `flow-developer` |
@@ -502,12 +515,13 @@ Subagents cannot spawn subagents, so **all fan-out is orchestrated by the comman
 Run the `/system-design` command **inline** — never delegate the dialogue or the writing to a subagent.
 
 It works at architecture altitude, like `/brainstorm` one level up:
-1. Read the hub first (`../vcare-hub/INDEX.md` → `architecture/landscape.md`, `architecture/data-ownership.md`, the relevant PRD section, Identity's synced contract), then this repo's `docs/system-design.md`, `docs/architecture/*`, `docs/adr/*`, `contracts/openapi.yaml`.
+1. Read the hub first (`../vcare-hub/INDEX.md` → `architecture/overview.md`, then the platform docs the topic touches — `landscape.md`, `data-ownership.md`, `deployment.md`, `capacity.md` — the relevant PRD section, Identity's synced contract), then this repo's `docs/system-design.md`, `docs/architecture/*`, `docs/adr/*`, `contracts/openapi.yaml`.
 2. Ask **one question at a time**; for each decision propose **2–3 options with trade-offs and a recommendation**; the user decides.
-3. Write the result: `docs/system-design.md` (router), `docs/architecture/<topic>.md` shard(s), `docs/adr/NNNN-<slug>.md` for each decision; flag required contract changes.
-4. **Cross-service topics** also update `../vcare-hub/architecture/landscape.md` and `../vcare-hub/architecture/data-ownership.md` (and a hub ADR when the decision is platform-wide).
+3. **Classify every output by scope** before writing (see "Doc placement — hub or service"; `docs-placement` skill).
+4. Write service-scope results here: `docs/system-design.md` (router), `docs/architecture/<topic>.md` shard(s), `docs/adr/NNNN-<slug>.md` for each decision; flag required contract changes.
+5. Write platform-scope results to the hub: `architecture/overview.md`, `deployment.md`, `capacity.md`, `landscape.md`, `data-ownership.md`, `glossary.md`, hub `adr/` for platform-wide decisions. Split topics (capacity, deployment, availability, observability) → the platform part and this service's roll-up row in the hub, the derivation here.
 
-Good first topics: notification delivery mechanism; closing the Identity-originated doctor-status gap; availability caching and search ranking; file storage and signed URLs; the durable retry job for Case 3.
+Decided 2026-09-15 (ADRs 0005–0012): availability 99.9 %, health split, metrics, `care-worker`, audit partitions, search ranking cache, notifications, reinstatement; Care capacity and deployment shards written. File handling decided the same day (ADRs 0013–0015, hub ADR 0011; `docs/architecture/file-handling.md`). Remaining good topic: doctor-initiated follow-up booking.
 
 ---
 
@@ -518,7 +532,7 @@ docs/
   INDEX.md             # router — READ FIRST
   service-card.md      # 30-second summary — synced to ../vcare-hub/catalog/care-service.card.md
   system-design.md     # architecture ROUTER → architecture/*.md (one doc = one job)
-  architecture/        # overview, data-model, api, scheduling-slots, consultation-lifecycle,
+  architecture/        # SERVICE SCOPE ONLY: overview, data-model, api, scheduling-slots, consultation-lifecycle,
                        # clinical-records, rbac, integration, resilience, infrastructure, future
   runbook.md           # on-call (how-to lens)
   quickstart.md        # first local run (tutorial lens)
@@ -537,17 +551,47 @@ contracts/
 6. **Decisions → ADRs** (`docs/adr/NNNN-*.md`), append-only; supersede, never rewrite.
 7. **No per-module folders ahead of time** — `/brainstorm` creates `docs/<module>/` when the module is started.
 8. **Clinical examples in docs are synthetic and minimal** — never paste realistic patient data into any doc, spec, or QA record.
+9. **Place every doc by scope** (hub ADR 0008): platform-scope content goes to the hub, service-scope content stays here, split topics use the hub roll-up; never `service: platform` in this repo. See "Doc placement — hub or service".
+10. **Keep all three repos in sync in the same session.** Any change that affects care, identity, or the hub updates every affected doc, `CLAUDE.md`, and shared skill in all three. A Stop hook (`.claude/hooks/docs-sync-check.sh`, identical in both spokes) enforces it: hub freshness, retired terms from `.claude/hooks/retired-terms.txt`, and hub card/contract drift. When a decision retires a name, add it to `retired-terms.txt` in both spokes.
+
+---
+
+## Doc placement — hub or service
+
+Every doc and every fact has **one home, decided by scope** — never by the repo you happen to be working in (hub ADR 0008). Step-by-step procedure, placement table, and checklist: the `docs-placement` skill.
+
+**Scope test — "whose code makes this true, and who must agree on it?"**
+
+| If the doc or fact… | Scope | Home |
+|---|---|---|
+| describes the platform as a whole or two or more services: system context and container views, edge routing, network zones, how every service is deployed, the release pipeline, the availability roll-up, shared traffic assumptions, cross-service load, integration cases and failure policies, data ownership, shared terms, platform-wide decisions | **platform** | the hub — `../vcare-hub/architecture/{overview,deployment,capacity,landscape,data-ownership}.md`, `glossary.md`, `adr/`, `product/prd.md` |
+| is made true only by this service's code: module map, layering, request pipeline, data model, API prose, env vars, this service's capacity derivation, runtime components and scaling, bottlenecks, metrics and alerts, runbook, quickstart, service decisions, module docs | **service** | this repo — `docs/` |
+| has both parts (capacity, deployment, availability, observability, data ownership) | **split** | hub: the platform part + one **roll-up** row per service with headline values and a link; here: the derivation, linking to the hub for its inputs |
+
+**When to read the hub**
+- Working on this service's internals (a module, migration, route, test) → read `CLAUDE.md` and `docs/` only.
+- Touching edge routing, networking, deployment, scaling, availability, release, or observability → hub `architecture/deployment.md` first, then the local shard.
+- Sizing anything or changing a load assumption → hub `architecture/capacity.md` first, then the local capacity shard.
+- Touching a cross-service call, borrowed data, or a shared term → hub `landscape.md`, `data-ownership.md`, `glossary.md`, the other service's synced contract.
+- Orienting on the whole system → hub `INDEX.md` → `architecture/overview.md`.
+
+**When to write where**
+- **Author each number once.** Platform inputs are authored in the hub; values derived from them are authored here. A local doc may quote a hub value only with a link to it — it is never the place to change it.
+- Frontmatter `service: platform` ⇔ the file lives in the hub. Never create a `service: platform` doc here, and never copy a hub doc here; link to it. The Stop hook blocks the first.
+- Only `/system-design` hand-edits hub docs (never the synced `catalog/*.card.md` or `contracts/*`). Every other phase writes this repo's `docs/` and **lists** platform deltas for `/system-design`.
+- Changing a headline the hub rolls up (task counts, DB class, storage, availability target) updates the hub row in the same session.
+- `docs/service-card.md` names hub docs in plain text — the sync rewrites its relative links to point into this repo.
 
 ---
 
 ## Cross-service context (the hub)
 
-This repo knows only itself. For Identity's contract, who calls whom, data ownership, glossary terms, or the PRD → the hub at `../vcare-hub`, starting at `INDEX.md`.
+This repo knows only itself. For Identity's contract, who calls whom, data ownership, glossary terms, platform deployment or capacity, or the PRD → the hub at `../vcare-hub`, starting at `INDEX.md`.
 
 Retrieval escalates **cheapest first**; stop as soon as you have the answer:
 1. **Local** — grep this repo.
 2. **Hub `INDEX.md`** — find where the answer lives.
-3. **Hub content** — catalog cards, synced contracts, landscape, data-ownership, ADRs, glossary, PRD. Most cross-service answers end here.
+3. **Hub content** — platform overview, deployment topology, capacity model, landscape (integration), data-ownership, catalog cards, synced contracts, ADRs, glossary, PRD. Every platform-scope answer ends here.
 4. **Sibling repo on disk?** If you need detail the hub lacks, check for `../vcare-identity-api`. If present, read its docs directly. **If unsure whether it is checked out, ASK the user** before reaching out.
 5. **GitHub MCP peek** — only if not local; read the specific file. Still no clone.
 6. **Clone** — only to actually change or run that service. Never clone just to read docs.

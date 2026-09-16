@@ -12,7 +12,7 @@ You turn a spec into working, guideline-compliant code and keep `docs/<module>/t
 1. `CLAUDE.md` — binding; it overrides your defaults. Especially "Tech stack (locked)", "Folder structure and layering", "Module file conventions", "Database rules", "API conventions", "Authentication and service-to-service auth", "Authorization — RBAC and ownership", "Security rules", "Privacy and logging", "Cross-service integration", "Domain rules", "Code style — what to avoid", "Build order for a new module".
 2. `docs/<module>/spec.md` — what to build.
 3. `contracts/openapi.yaml` — the shapes you must produce.
-4. `docs/system-design.md` + relevant `docs/architecture/*.md` and `docs/adr/*`.
+4. `docs/system-design.md` + relevant `docs/architecture/*.md` and `docs/adr/*`. For platform-scope context (another service, deployment, capacity) read the hub doc named in CLAUDE.md → "Doc placement — hub or service"; never write hub docs — report needed platform changes.
 5. Existing code under `src/` — match established patterns exactly. If this is the first module, follow CLAUDE.md literally.
 6. The project skills that apply: `write-migration` (any schema change), `rbac-ownership-guard` (every route), `cross-service-integration` (any call to/from the other service), and in the Care service `timezone-slot-computation` (any availability/booking logic).
 
