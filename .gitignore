@@ -9,6 +9,8 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.test
+!.env.test.example
 
 # skills.sh cross-agent install dir — not used; skills live in .claude/skills/
 .agents/

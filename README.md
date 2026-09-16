@@ -12,10 +12,10 @@ center, and the audit log.
 > limiting, graceful shutdown, worker loop, health probes, the `btree_gist` migration, Docker and CI.
 > `npm run lint`, `npm run typecheck`, and `npm run build` are green, and the health probes, migrations,
 > and error envelope were verified by hand against the compose test stack (Postgres 17 + Redis 7).
-> **Two follow-ups are open:** the unit and integration suites are scaffolding only (`/write-tests
-> foundation`), and `.env.example` / `.env.test` still have to be created by hand from
-> [`docs/foundation/spec.md`](./docs/foundation/spec.md) §3.8 — a local permission rule blocked writing
-> them, and `npm run test:integration` needs `.env.test`. No domain endpoints exist yet;
+> **One follow-up is open:** the unit and integration suites are scaffolding only (`/write-tests
+> foundation`). The env files from [`docs/foundation/spec.md`](./docs/foundation/spec.md) §3.8 are in
+> place: `.env.example`, `.env.test`, and `.env.test.example` are committed; `.env` and
+> `.env.test.bak.real` are local-only and gitignored. No domain endpoints exist yet;
 > [`contracts/openapi.yaml`](./contracts/openapi.yaml) is the design they get built against.
 
 ## Stack
@@ -32,7 +32,7 @@ Ports sit one above identity-service so both stacks run side by side.
 
 ```bash
 npm install
-cp .env.example .env                      # see the status note — .env.example is not created yet
+cp .env.example .env                      # synthetic local values; .env is gitignored
 docker compose up -d postgres redis       # Postgres 17 on 5433, Redis 7 on 6380
 npm run migrate                           # apply migrations (rollback / status also available)
 npm run dev                               # public :3001, internal :3101
@@ -55,7 +55,7 @@ npm run lint
 npm run typecheck
 npm test                      # unit — scaffolding only until /write-tests foundation runs
 npm run test:infra:up         # Postgres 5434 + Redis 6381 (tmpfs, hermetic)
-npm run test:integration      # requires .env.test
+npm run test:integration      # reads .env.test (cp .env.test.example .env.test to reset it)
 npm run test:infra:down
 ```
 
