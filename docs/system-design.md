@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-09-26
 tags: [system-design, architecture, router, care]
 related: [overview, data-model, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
@@ -49,6 +49,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0013](./adr/0013-verified-direct-upload-lifecycle.md) | Direct-to-S3 uploads via temporary intent; row only after verified `complete` |
 | [0014](./adr/0014-on-demand-download-urls.md) | On-demand, audited, 60 s presigned download URLs |
 | [0015](./adr/0015-aws-sdk-storage-adapter.md) | AWS SDK v3 modular packages behind `lib/storage` |
+| [0017](./adr/0017-generic-helpers-and-transaction-scoping.md) | Generic helpers live in `lib/`/`pkg/`; transactions use Knex's handler form |
 
 `/system-design` 2026-09-15 (Care runtime, capacity, notifications, reinstatement) also produced hub ADR 0009
 (doctor reinstatement via Care) and hub ADR 0010 (notification contact lookup). The file-handling session

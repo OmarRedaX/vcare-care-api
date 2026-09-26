@@ -1,14 +1,12 @@
 import { createHash } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
-import type Redis from "ioredis";
 import { canonicalJson } from "../../pkg/utils/canonical-json";
-import { container } from "../di/container";
-import { TOKENS } from "../di/tokens";
+import { isUuid } from "../../pkg/utils/uuid";
 import { Conflict, IdempotencyConflict, ValidationFailed } from "../error/errors";
 import { clientIp } from "../http/client-ip";
+import { routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
-import { isRedisReady, redis as defaultRedis } from "../redis/redis";
-import { UUID_PATTERN } from "../request-id/request-id";
+import { isRedisReady, resolveRedis } from "../redis/redis";
 import { acquireLock, readRecord, releaseLock, storeResult } from "./idempotency-store";
 import type { IdempotencyOptions } from "./types";
 
@@ -38,21 +36,9 @@ export function hashBody(body: unknown): string {
     return createHash("sha256").update(canonicalJson(body ?? null)).digest("hex");
 }
 
-function resolveRedis(options: IdempotencyOptions): Redis {
-    if (options.redis !== undefined) {
-        return options.redis;
-    }
-    return container.isRegistered(TOKENS.Redis) ? container.resolve<Redis>(TOKENS.Redis) : defaultRedis;
-}
-
-function routePattern(req: Request): string {
-    const path = (req as { route?: { path?: string } }).route?.path;
-    return `${req.method} ${req.baseUrl}${typeof path === "string" ? path : ""}`;
-}
-
 /** Redis is Tier 2: when it is unavailable the middleware steps aside — DB-level guarantees still apply. */
 function skip(req: Request, reason: string): void {
-    logger.warn("idempotency_skipped", { requestId: req.requestId, route: routePattern(req), reason });
+    logger.warn("idempotency_skipped", { requestId: req.requestId, route: routeLabel(req), reason });
     logger.metric("idempotency_skipped", 1, { reason });
 }
 
@@ -91,12 +77,12 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
             );
             return;
         }
-        if (!UUID_PATTERN.test(key)) {
+        if (!isUuid(key)) {
             next(ValidationFailed.withDetails([{ field: "Idempotency-Key", issue: "must be a UUID" }]));
             return;
         }
 
-        const client = resolveRedis(options);
+        const client = resolveRedis(options.redis);
         if (!isRedisReady(client)) {
             skip(req, "redis_not_ready");
             next();
@@ -161,7 +147,7 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
                         : storeResult(client, storeKey, bodyHash, status, captured, ttlMs);
                 settle.catch(() => {
                     // Response is already sent; the lock expires after lockTtlMs.
-                    logger.warn("idempotency_store_failed", { requestId: req.requestId, route: routePattern(req) });
+                    logger.warn("idempotency_store_failed", { requestId: req.requestId, route: routeLabel(req) });
                 });
             });
 

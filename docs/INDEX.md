@@ -3,7 +3,7 @@ title: Care Service — Docs Index
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-09-15
+last_verified: 2026-09-26
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -57,6 +57,7 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0013-verified-direct-upload-lifecycle.md](./adr/0013-verified-direct-upload-lifecycle.md) | direct-to-S3 uploads via a temporary intent; the real row only after `complete` verifies the bytes | explanation |
 | [adr/0014-on-demand-download-urls.md](./adr/0014-on-demand-download-urls.md) | download URLs issued per click, audited, 60 s presigned GET; no URLs in DTOs | explanation |
 | [adr/0015-aws-sdk-storage-adapter.md](./adr/0015-aws-sdk-storage-adapter.md) | AWS SDK v3 modular packages, only inside `lib/storage` | explanation |
+| [adr/0017-generic-helpers-and-transaction-scoping.md](./adr/0017-generic-helpers-and-transaction-scoping.md) | where a domain-free helper goes; how a service opens a transaction | explanation |
 
 ## Module docs
 Created by the workflow, not ahead of time: `/brainstorm <feature>` creates `docs/<module>/` (brainstorm,

@@ -1,5 +1,8 @@
 import Redis from "ioredis";
+import { settleWithin } from "../async/settle-within";
 import { getEnv } from "../config/env";
+import { container } from "../di/container";
+import { TOKENS } from "../di/tokens";
 import { logger } from "../logger/logger";
 import type { CreateRedisOptions } from "./types";
 
@@ -39,8 +42,25 @@ export function createRedis(url: string, options?: CreateRedisOptions): Redis {
 
 export const redis: Redis = createRedis(getEnv().REDIS_URL, { name: "care-api" });
 
+/** Client for Redis-backed middleware: an explicit override (tests), else the container's, else the root client. */
+export function resolveRedis(override?: Redis): Redis {
+    if (override !== undefined) {
+        return override;
+    }
+    return container.isRegistered(TOKENS.Redis) ? container.resolve<Redis>(TOKENS.Redis) : redis;
+}
+
 export function isRedisReady(client: Redis): boolean {
     return client.status === "ready";
+}
+
+/** Graceful `QUIT`, falling back to a hard disconnect when the connection is already gone. */
+export async function closeRedis(client: Redis = redis): Promise<void> {
+    try {
+        await client.quit();
+    } catch {
+        client.disconnect();
+    }
 }
 
 /** `PING` bounded by `timeoutMs`; skipped without a round trip when the client is not ready. */
@@ -48,24 +68,12 @@ export async function probeRedis(client: Redis, timeoutMs: number): Promise<bool
     if (!isRedisReady(client)) {
         return false;
     }
-
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), timeoutMs);
-        timer.unref();
-    });
-
-    try {
-        return await Promise.race([
-            client
-                .ping()
-                .then((reply) => reply === "PONG")
-                .catch(() => false),
-            timeout,
-        ]);
-    } finally {
-        if (timer !== undefined) {
-            clearTimeout(timer);
-        }
-    }
+    return settleWithin(
+        client
+            .ping()
+            .then((reply) => reply === "PONG")
+            .catch(() => false),
+        timeoutMs,
+        false,
+    );
 }

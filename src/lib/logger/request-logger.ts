@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { routePattern } from "../http/route-pattern";
 import { logger } from "./logger";
 
 /**
@@ -10,17 +11,12 @@ export function requestLogger(): RequestHandler {
         const startedAt = performance.now();
         let settled = false;
 
-        const routePattern = (): string => {
-            const path = (req as { route?: { path?: string } }).route?.path;
-            return typeof path === "string" ? `${req.baseUrl}${path}` : "unmatched";
-        };
-
         res.on("finish", () => {
             if (settled) {
                 return;
             }
             settled = true;
-            const route = routePattern();
+            const route = routePattern(req) ?? "unmatched";
             const status = res.statusCode;
             const code = (res.locals as { errorCode?: string }).errorCode;
             const fields = {
@@ -50,7 +46,7 @@ export function requestLogger(): RequestHandler {
             (req.log ?? logger).warn("request_aborted", {
                 requestId: req.requestId,
                 method: req.method,
-                route: routePattern(),
+                route: routePattern(req) ?? "unmatched",
                 durationMs: Number((performance.now() - startedAt).toFixed(1)),
             });
         });

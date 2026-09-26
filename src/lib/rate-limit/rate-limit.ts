@@ -1,11 +1,10 @@
-import type { Request, RequestHandler } from "express";
+import type { RequestHandler } from "express";
 import type Redis from "ioredis";
 import { getEnv } from "../config/env";
-import { container } from "../di/container";
-import { TOKENS } from "../di/tokens";
 import { RateLimited } from "../error/errors";
+import { routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
-import { isRedisReady, redis as defaultRedis } from "../redis/redis";
+import { isRedisReady, resolveRedis } from "../redis/redis";
 import { MemoryLimiter } from "./memory-limiter";
 import { SLIDING_WINDOW_LUA } from "./sliding-window.lua";
 import type { LimitResult, RateLimitOptions, SlidingWindowRedis } from "./types";
@@ -18,24 +17,12 @@ export function fallbackLimit(limit: number, divisor: number): number {
     return Math.max(1, Math.floor(limit / divisor));
 }
 
-function resolveRedis(options: RateLimitOptions): Redis {
-    if (options.redis !== undefined) {
-        return options.redis;
-    }
-    return container.isRegistered(TOKENS.Redis) ? container.resolve<Redis>(TOKENS.Redis) : defaultRedis;
-}
-
 function ensureScript(client: Redis): SlidingWindowRedis {
     if (!scriptedClients.has(client)) {
         client.defineCommand("slidingWindowHit", { numberOfKeys: 1, lua: SLIDING_WINDOW_LUA });
         scriptedClients.add(client);
     }
     return client as unknown as SlidingWindowRedis;
-}
-
-function routePattern(req: Request): string {
-    const path = (req as { route?: { path?: string } }).route?.path;
-    return `${req.method} ${req.baseUrl}${typeof path === "string" ? path : req.path}`;
 }
 
 function logDegraded(name: string, nowMs: number): void {
@@ -76,7 +63,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
             logger.warn("rate_limited", {
                 requestId: req.requestId,
                 limiter: options.name,
-                route: routePattern(req),
+                route: routeLabel(req),
             });
             next(RateLimited);
         };
@@ -100,7 +87,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
             deny(result);
         };
 
-        const client = resolveRedis(options);
+        const client = resolveRedis(options.redis);
         if (!isRedisReady(client)) {
             degrade();
             return;

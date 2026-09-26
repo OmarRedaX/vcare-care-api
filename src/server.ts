@@ -11,7 +11,7 @@ import { createGracefulShutdown } from "./lib/lifecycle/graceful-shutdown";
 import type { InFlightCounter } from "./lib/lifecycle/in-flight";
 import type { ShutdownState } from "./lib/lifecycle/shutdown-state";
 import { logger } from "./lib/logger/logger";
-import { redis } from "./lib/redis/redis";
+import { closeRedis, redis } from "./lib/redis/redis";
 
 const KEEP_ALIVE_TIMEOUT_MS = 65_000;
 const HEADERS_TIMEOUT_MS = 66_000;
@@ -50,13 +50,7 @@ function main(): void {
         timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
         closeResources: [
             () => db.destroy(),
-            async () => {
-                try {
-                    await redis.quit();
-                } catch {
-                    redis.disconnect();
-                }
-            },
+            () => closeRedis(redis),
         ],
         logger,
         exit: (code: number) => process.exit(code),

@@ -102,15 +102,16 @@ src/
     config/          # env.ts (zod)
     di/              # container.ts, tokens.ts
     error/           # AppError.ts, errorHandler.ts (the one error envelope)
-    http/            # response.ts, pagination/, cors.ts (dev allowlist), no-store.ts, client-ip.ts
+    http/            # response.ts, pagination/, cors.ts (dev allowlist), no-store.ts, client-ip.ts, route-pattern.ts
     lifecycle/       # shutdown/readiness state, in-flight request counter
     worker/          # loop runner for care-worker (stop after the current tick)
+    async/           # promise plumbing with timers: settle-within.ts (bounded wait), future backoff/sleep
     idempotency/     # Redis-backed idempotency middleware (required on booking writes)
     rate-limit/      # Redis sliding-window limiter
     knex/  redis/  logger/  types/  validation/
     email/           # notification email port (async, never blocks a booking)
   pkg/
-    utils/           # time.ts, interval.ts (pure interval math), string.ts — framework-free
+    utils/           # time.ts, interval.ts (pure interval math), uuid.ts, canonical-json.ts — framework-free
     slots/           # pure slot computation (no DB, no env) — see the timezone-slot-computation skill
   migrations/
 tests/
@@ -125,6 +126,12 @@ pkg/  → pure functions; NO imports from lib/ or app/, NO env, NO singletons, N
 ```
 - Cross-module calls go through **services**, never another module's repository.
 - **All calls to Identity go through `lib/identity-client`.** No module builds its own HTTP call to another service.
+- **Generic helpers have one home.** Behaviour that knows nothing about Care's domain — transaction scoping, retry/backoff,
+  timeouts, Redis client resolution, route labels, UUID/id parsing, pagination, serialization, error mapping — lives in
+  `lib/<concern>/` (I/O, framework, or timers) or `pkg/utils` (pure), never as a private method of a service,
+  controller, or repository, and never copied from one `lib/` module into another. Before writing one, grep `lib/`
+  and `pkg/` for it; when a second caller appears, move it instead of duplicating it. A service's private methods
+  hold only Care rules. Do not extract a helper with a single caller just to have one.
 - `/internal/*` routers are mounted **only** on the internal listener (`INTERNAL_PORT`), never reachable from the public ingress.
 
 ---
@@ -184,7 +191,7 @@ Every module under `src/app/<module>/` has the same skeleton.
 - **Enum-like columns:** `VARCHAR(n) NOT NULL CHECK (col IN (...))`, never native `ENUM`.
 - **Every FK** named and covered by an index whose leading column is the FK column. **Indexes exist only for a query in code**, commented with that query; composite = equality columns then range/sort.
 - **No defaults on critical columns** (fees, prices, durations, statuses).
-- **Transactions:** service-owned, explicit commit/rollback, never nested. Booking, reschedule, cancel, suspension side-effects, and record writes + their audit rows are each **one transaction**.
+- **Transactions:** service-owned, never nested, always Knex's handler form — `await this.db.transaction(async (trx) => …)`, which commits when the callback resolves and rolls back and rethrows when it throws. Never hand-roll `trx.commit()`/`trx.rollback()` and never wrap it in a private `inTransaction` helper. Repositories take the `trx` as `conn`; calls to Identity, storage, or video happen after the `await`, outside the transaction. Booking, reschedule, cancel, suspension side-effects, and record writes + their audit rows are each **one transaction**.
 
 ---
 
@@ -436,6 +443,7 @@ Every rule here has a named unit test. "Enforced by" says where the guarantee li
 - ❌ Returning entities or rows from controllers; returning clinical fields to admins
 - ❌ Cross-module repository imports; HTTP calls to Identity outside `lib/identity-client`
 - ❌ Business logic in controllers or middleware
+- ❌ Generic infrastructure helpers (transaction wrappers, retries, timeouts, route labels, id parsing) as private service methods or as copies in several files — see "Folder structure and layering"
 - ❌ A route without `authorize(...)`
 - ❌ Trusting identity headers; trusting a user id from the request body for authorization
 - ❌ Storing slots; computing availability in the client's or server's local timezone
