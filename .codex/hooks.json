@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash 'E:\\Full Stack Projects\\Vcare\\VCare\\vcare-care-api\\.codex\\hooks\\docs-sync-check.sh'",
+            "timeout": 60,
+            "statusMessage": "Checking vcare docs sync across repos..."
+          }
+        ]
+      }
+    ]
+  }
+}
