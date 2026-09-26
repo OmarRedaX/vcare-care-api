@@ -1,0 +1,20 @@
+# Retired terms — extended regex, one per line. Used by docs-sync-check.sh (Stop hook).
+# Scanned in: both spokes' CLAUDE.md, .claude/{skills,agents,commands}, docs/service-card.md;
+# hub architecture/, glossary.md, INDEX.md. ADRs, design history, and contract-mirroring docs are NOT scanned.
+# Add a term whenever a design decision retires a name; remove it only by a new decision.
+
+# identity-service ADR 0006 — verify-email flow removed
+/auth/verify-email
+/auth/resend-verification
+email_verifications
+# identity-service ADR 0010 — admin provisioning
+seed/ops procedure
+# hub ADR 0006 — doctor status gap closed
+Known gap
+# hub ADR 0005 / 0007 — deployment shape
+identity-service's egress
+public ingress \(routes /api
+# care-service ADRs 0013-0014 - file handling (presigned direct upload, on-demand download URLs)
+lib/signed-url
+SIGNED_URL_SECRET
+[^e]signed URL
