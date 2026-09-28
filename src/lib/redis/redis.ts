@@ -19,6 +19,9 @@ export function createRedis(url: string, options?: CreateRedisOptions): Redis {
         connectTimeout: 2_000,
         commandTimeout: 500,
         retryStrategy: (attempt: number) => Math.min(attempt * 200, 2_000),
+        // Never replay a command that was on the wire when the connection dropped: its request has long given up
+        // (an idempotency SET NX would strand a lock; a rate-limit hit would be counted twice).
+        autoResendUnfulfilledCommands: false,
         ...(options?.name !== undefined ? { connectionName: options.name } : {}),
     });
 

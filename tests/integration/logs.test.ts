@@ -107,21 +107,43 @@ describe("privacy of captured logs (integration)", () => {
         expectNoSensitiveStrings(capture, [COMPLAINT, EMAIL, TOKEN, "Bearer ", "email=", "/api/__test/echo?"]);
     });
 
-    // PRODUCT BUG (privacy, CLAUDE.md → Privacy and logging): pg embeds the rejected VALUE in its error message
-    // (`invalid input syntax for type integer: "<value>"`), and serializeError (src/lib/logger/logger.ts:25-37)
-    // keeps `message` and `stack`, which errorHandler logs as `unhandled_error` (src/lib/error/errorHandler.ts:49).
-    // Any request value that reaches a failing query is therefore written to the logs verbatim.
-    test.failing("should not leak a request value into logs when Postgres rejects it in an unhandled error (F7)", async () => {
+    // Regression (was known bug 1, review Critical): pg embeds the rejected VALUE in its error message
+    // (`invalid input syntax for type integer: "<value>"`) and V8 repeats it in the lazily formatted stack header.
+    // serializeError now drops the message of database errors and rebuilds the stack from frames only.
+    it.each([
+        ["22P02", "int", COMPLAINT],
+        ["22007", "timestamptz", COMPLAINT],
+        ["22008", "date", "1990-02-30"],
+    ])(
+        "should not leak a request value into logs when Postgres rejects it with %s in an unhandled error (F7)",
+        async (code, type, value) => {
+            const { publicApp } = apps();
+            const capture = captureLogs();
+            let status: number;
+            try {
+                status = (await request(publicApp).post("/api/__test/db-cast").send({ value, type })).status;
+            } finally {
+                capture.restore();
+            }
+            expect(status).toBe(500);
+            const unhandled = capture.lines().find((line) => line.message === "unhandled_error");
+            expect(unhandled?.error).toMatchObject({ code });
+            expectNoSensitiveStrings(capture, [value]);
+        },
+    );
+
+    it("should not leak a request value into logs when a CHECK constraint rejects it in an unhandled error (F7)", async () => {
         const { publicApp } = apps();
         const capture = captureLogs();
         let status: number;
         try {
-            status = (await request(publicApp).post("/api/__test/db-cast").send({ value: COMPLAINT })).status;
+            status = (await request(publicApp).post("/api/__test/db-check").send({ value: COMPLAINT })).status;
         } finally {
             capture.restore();
         }
         expect(status).toBe(500);
-        expect(capture.lines().some((line) => line.message === "unhandled_error")).toBe(true);
+        const unhandled = capture.lines().find((line) => line.message === "unhandled_error");
+        expect(unhandled?.error).toMatchObject({ code: "23514", constraint: "chk_check_probe_short" });
         expectNoSensitiveStrings(capture, [COMPLAINT]);
     });
 

@@ -68,10 +68,24 @@ export function buildEnvelopeRouter(): Router {
         throw new Error("SELECT password_hash FROM secret_table WHERE id = 42");
     });
 
-    // A "repository" call Postgres rejects: pg puts the offending VALUE into the error message.
+    // A "repository" call Postgres rejects: pg puts the offending VALUE into the error message
+    // (22P02 int, 22007 timestamptz, 22008 date out of range).
     router.post("/__test/db-cast", async (req: Request, res: Response) => {
-        const value = (req.body as { value?: unknown }).value;
-        await db.raw("SELECT ?::int AS n", [String(value)]);
+        const { value, type } = req.body as { value?: unknown; type?: unknown };
+        const cast = type === "timestamptz" ? "timestamptz" : type === "date" ? "date" : "int";
+        await db.raw(`SELECT ?::${cast} AS v`, [String(value)]);
+        sendSuccess(res, { ok: true });
+    });
+
+    // A CHECK violation: pg puts the failing row (with the value) into `detail`, the constraint name into `constraint`.
+    router.post("/__test/db-check", async (req: Request, res: Response) => {
+        const value = String((req.body as { value?: unknown }).value);
+        await db.transaction(async (trx) => {
+            await trx.raw(
+                `CREATE TEMP TABLE check_probe (v TEXT, CONSTRAINT chk_check_probe_short CHECK (length(v) < 5)) ON COMMIT DROP`,
+            );
+            await trx.raw("INSERT INTO check_probe (v) VALUES (?)", [value]);
+        });
         sendSuccess(res, { ok: true });
     });
 

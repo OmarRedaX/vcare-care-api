@@ -1,4 +1,5 @@
 # Local development stack. Host ports 5433/6380 leave 5432/6379 to identity-service.
+# Postgres (known credentials) and Redis (no auth) are published on host loopback only.
 name: vcare-care
 
 services:
@@ -9,7 +10,7 @@ services:
       POSTGRES_PASSWORD: care
       POSTGRES_DB: care
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - care-pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -21,7 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

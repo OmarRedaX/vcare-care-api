@@ -3,6 +3,7 @@ import path from "node:path";
 import { getEnv } from "./lib/config/env";
 import { createKnex } from "./lib/knex/knex";
 import { migrationConfig } from "./lib/knex/knexfile";
+import { runMain } from "./lib/lifecycle/run-main";
 import { logger } from "./lib/logger/logger";
 
 const NAME_PATTERN = /^[a-z][a-z0-9_]{2,80}$/;
@@ -59,12 +60,12 @@ async function run(command: string): Promise<number> {
         switch (command) {
             case "latest": {
                 const [batch, files] = (await knex.migrate.latest(migrationConfig)) as [number, string[]];
-                logger.info("migrations_applied", { batch, files: files.map((file) => path.basename(file)) });
+                logger.info("migrations_applied", { batch, files });
                 return 0;
             }
             case "rollback": {
                 const [batch, files] = (await knex.migrate.rollback(migrationConfig)) as [number, string[]];
-                logger.info("migrations_rolled_back", { batch, files: files.map((file) => path.basename(file)) });
+                logger.info("migrations_rolled_back", { batch, files });
                 return 0;
             }
             case "status": {
@@ -91,4 +92,4 @@ async function main(): Promise<void> {
     process.exit(code);
 }
 
-void main();
+runMain(main);

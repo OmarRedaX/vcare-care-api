@@ -1,5 +1,5 @@
 import type { Env } from "../config/types";
-import { db } from "../knex/knex";
+import { db, probeDb } from "../knex/knex";
 import { InFlightCounter } from "../lifecycle/in-flight";
 import { ShutdownState } from "../lifecycle/shutdown-state";
 import { logger } from "../logger/logger";
@@ -12,6 +12,7 @@ export function registerCore(env: Env): void {
     container.registerInstance(TOKENS.Env, env);
     container.registerInstance(TOKENS.Logger, logger);
     container.registerInstance(TOKENS.Db, db);
+    container.registerInstance(TOKENS.ProbeDb, probeDb);
     container.registerInstance(TOKENS.Redis, redis);
     container.registerInstance(TOKENS.ShutdownState, new ShutdownState());
     container.registerInstance(TOKENS.InFlightCounter, new InFlightCounter());

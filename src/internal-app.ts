@@ -2,7 +2,7 @@ import express from "express";
 import helmet from "helmet";
 import { buildHealthRouter } from "./app/health/routes";
 import { errorHandler } from "./lib/error/errorHandler";
-import { notFound } from "./lib/error/not-found";
+import { notFound, optionsNotFound } from "./lib/error/not-found";
 import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
 import { requestLogger } from "./lib/logger/request-logger";
@@ -19,6 +19,7 @@ export function createInternalApp(options?: AppOptions): express.Express {
     app.use(inFlight());
     app.use(requestLogger());
     app.use(helmet());
+    app.use(optionsNotFound);
 
     app.use(express.json({ limit: "100kb", strict: true, type: "application/json" }));
 

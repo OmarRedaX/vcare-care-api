@@ -1,11 +1,12 @@
-import type http from "node:http";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { createGracefulShutdown } from "../../../../src/lib/lifecycle/graceful-shutdown";
-import { InFlightCounter } from "../../../../src/lib/lifecycle/in-flight";
+import { InFlightCounter, inFlight } from "../../../../src/lib/lifecycle/in-flight";
 import { ShutdownState } from "../../../../src/lib/lifecycle/shutdown-state";
 import { Logger } from "../../../../src/lib/logger/logger";
 
 /** Records every lifecycle step in one ordered list so sequencing can be asserted. */
-function setup(options: { closeDelayMs?: number; failDb?: boolean; timeoutMs?: number } = {}) {
+function setup(options: { closeDelayMs?: number; failDb?: boolean; hangDb?: boolean; timeoutMs?: number } = {}) {
     const events: string[] = [];
     const lines: Array<Record<string, unknown>> = [];
     const logger = new Logger({
@@ -51,6 +52,9 @@ function setup(options: { closeDelayMs?: number; failDb?: boolean; timeoutMs?: n
         closeResources: [
             () => {
                 events.push("db.destroy");
+                if (options.hangDb === true) {
+                    return new Promise<void>(() => undefined);
+                }
                 return options.failDb === true ? Promise.reject(new Error("synthetic destroy failure")) : Promise.resolve();
             },
             () => {
@@ -91,6 +95,9 @@ describe("lib/lifecycle/createGracefulShutdown", () => {
             "public.close",
             "public.closeIdle",
             "internal.close",
+            "internal.closeIdle",
+            // Once idle, the sockets that carried the last requests are closed too (keep-alive fix).
+            "public.closeIdle",
             "internal.closeIdle",
             "db.destroy",
             "redis.quit",
@@ -178,5 +185,76 @@ describe("lib/lifecycle/createGracefulShutdown", () => {
         expect(failure?.level).toBe("error");
         expect((failure?.error as { message: string }).message).toBe("synthetic destroy failure");
         expect(exit).toHaveBeenCalledWith(0);
+    });
+
+    it("should bound each resource by the remaining deadline and still close the next one when a resource hangs", async () => {
+        jest.useFakeTimers();
+        const { shutdown, events, lines, exit } = setup({ hangDb: true, timeoutMs: 2_000 });
+
+        const done = shutdown("SIGTERM");
+        await jest.advanceTimersByTimeAsync(2_000);
+        await done;
+
+        expect(lines.find((line) => line.message === "shutdown_resource_timeout")).toMatchObject({ level: "error" });
+        expect(events.indexOf("redis.quit")).toBeGreaterThan(events.indexOf("db.destroy"));
+        expect(lines.some((line) => line.message === "shutdown_timeout")).toBe(false);
+        expect(exit).toHaveBeenCalledWith(1);
+    });
+});
+
+describe("lib/lifecycle/createGracefulShutdown with a real http.Server and a keep-alive client", () => {
+    it("should exit 0 well before the deadline when a keep-alive socket carried an in-flight request (Medium: keep-alive hang)", async () => {
+        const counter = new InFlightCounter();
+        const state = new ShutdownState();
+        const track = inFlight(counter, state);
+        const server = http.createServer((req, res) => {
+            track(req as never, res as never, () => {
+                setTimeout(() => res.end("ok"), 150);
+            });
+        });
+        server.keepAliveTimeout = 65_000;
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const { port } = server.address() as AddressInfo;
+
+        const lines: Array<Record<string, unknown>> = [];
+        const logger = new Logger({
+            level: "debug",
+            service: "care-service",
+            write: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+        });
+        const exit = jest.fn();
+        const shutdown = createGracefulShutdown({
+            servers: [server],
+            state,
+            inFlight: counter,
+            timeoutMs: 4_000,
+            closeResources: [],
+            logger,
+            exit,
+        });
+
+        const agent = new http.Agent({ keepAlive: true });
+        try {
+            const response = new Promise<{ status?: number; connection?: string; body: string }>((resolve, reject) => {
+                http.get({ host: "127.0.0.1", port, path: "/", agent }, (res) => {
+                    let body = "";
+                    res.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+                    res.on("end", () => resolve({ status: res.statusCode, connection: res.headers.connection, body }));
+                }).on("error", reject);
+            });
+
+            await new Promise((resolve) => setTimeout(resolve, 50)); // the request is now in flight
+            const startedAt = Date.now();
+            await shutdown("SIGTERM");
+            const elapsed = Date.now() - startedAt;
+
+            expect(await response).toEqual({ status: 200, connection: "close", body: "ok" });
+            expect(elapsed).toBeLessThan(2_000);
+            expect(lines.some((line) => line.message === "shutdown_timeout")).toBe(false);
+            expect(exit).toHaveBeenCalledWith(0);
+        } finally {
+            agent.destroy();
+            server.closeAllConnections();
+        }
     });
 });

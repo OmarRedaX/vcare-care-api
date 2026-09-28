@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { z } from "zod";
 import type { Env, EnvSource } from "./types";
 
@@ -26,8 +27,28 @@ const urlWithScheme = (schemes: string[], label: string) =>
             { message: `must be a ${label} URL` },
         );
 
-const ipv4Or6 = z.string().refine((value) => /^[0-9.]+$/.test(value) || /^[0-9a-fA-F:]+$/.test(value), {
-    message: "must be an IP address",
+/**
+ * Session settings Care sets per pool (spec §3.4.1 / §3.4.8). pg merges the connection string OVER the explicit
+ * config, so one of these in `DATABASE_URL` would silently replace `TimeZone=UTC`, a timeout, or the pool's name.
+ */
+const CARE_OWNED_PG_PARAMS = ["options", "statement_timeout", "query_timeout", "application_name"] as const;
+
+const databaseUrl = urlWithScheme(["postgres:", "postgresql:"], "postgres").refine(
+    (value) => {
+        let params: URLSearchParams;
+        try {
+            params = new URL(value).searchParams;
+        } catch {
+            return true; // already reported by the scheme refine
+        }
+        return CARE_OWNED_PG_PARAMS.every((name) => !params.has(name));
+    },
+    { message: `must not set ${CARE_OWNED_PG_PARAMS.join(", ")} — Care sets them per pool` },
+);
+
+/** An IPv4 or IPv6 literal — never a host name (the internal listener must bind exactly where configured). */
+const ipv4Or6 = z.string().refine((value) => isIP(value) !== 0, {
+    message: "must be an IPv4 or IPv6 address",
 });
 
 const corsOrigins = z
@@ -64,7 +85,7 @@ export const envSchema = z
         INTERNAL_PORT: port.default(3101),
         INTERNAL_HOST: ipv4Or6.default("127.0.0.1"),
         TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
-        DATABASE_URL: urlWithScheme(["postgres:", "postgresql:"], "postgres"),
+        DATABASE_URL: databaseUrl,
         DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
         REDIS_URL: urlWithScheme(["redis:", "rediss:"], "redis"),
         CORS_ORIGINS: corsOrigins,

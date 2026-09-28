@@ -1,5 +1,6 @@
 import type { Knex } from "knex";
-import { createKnex, db } from "../../src/lib/knex/knex";
+import { InvalidEnvError, parseEnv } from "../../src/lib/config/env";
+import { createKnex, db, probeDb } from "../../src/lib/knex/knex";
 import { migrationConfig } from "../../src/lib/knex/knexfile";
 import { closeDb } from "../helpers/db";
 
@@ -32,6 +33,13 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         const [completed, pending] = (await migrator.migrate.list(migrationConfig)) as [unknown[], unknown[]];
         expect(pending).toHaveLength(0);
         expect(completed.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("should record migration names without the file extension (parity d)", async () => {
+        const rows = await db("knex_migrations").select("name").orderBy("id");
+        const names = rows.map((row: { name: string }) => row.name);
+        expect(names).toContain("20260915000000_create_extension_btree_gist");
+        expect(names.every((name) => !/\.(ts|js)$/.test(name))).toBe(true);
     });
 
     it("should support a btree_gist exclusion constraint over (bigint =, tstzrange &&) when installed", async () => {
@@ -68,6 +76,38 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         );
         for (const result of results) {
             expect(result.rows[0]?.TimeZone).toBe("UTC");
+        }
+    });
+
+    it("should report UTC on the readiness pool and the migrator too (F8)", async () => {
+        for (const pool of [probeDb, migrator]) {
+            const result = await pool.raw<{ rows: Array<{ TimeZone: string }> }>("SHOW TIME ZONE");
+            expect(result.rows[0]?.TimeZone).toBe("UTC");
+        }
+    });
+
+    // Review 2026-09-28 (Low): pg merges the connection string OVER createKnex's `options: "-c TimeZone=UTC"`, so a
+    // DATABASE_URL carrying `options` must never reach a pool — env validation rejects it (spec §3.4.1).
+    it("should reject at env validation a DATABASE_URL whose options pg would apply over TimeZone=UTC", async () => {
+        const url = new URL(process.env.DATABASE_URL ?? "");
+        url.searchParams.set("options", "-c TimeZone=America/New_York");
+
+        expect(() => parseEnv({ DATABASE_URL: url.toString(), REDIS_URL: process.env.REDIS_URL })).toThrow(
+            InvalidEnvError,
+        );
+
+        // Why the guard exists: bypassing env validation, pg really does let the URL win.
+        const unguarded = createKnex({
+            url: url.toString(),
+            poolMax: 1,
+            statementTimeoutMs: 2_000,
+            applicationName: "care-test",
+        });
+        try {
+            const result = await unguarded.raw<{ rows: Array<{ TimeZone: string }> }>("SHOW TIME ZONE");
+            expect(result.rows[0]?.TimeZone).toBe("America/New_York");
+        } finally {
+            await unguarded.destroy();
         }
     });
 

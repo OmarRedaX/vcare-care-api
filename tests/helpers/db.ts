@@ -1,5 +1,5 @@
 import type { Knex } from "knex";
-import { db } from "../../src/lib/knex/knex";
+import { db, probeDb } from "../../src/lib/knex/knex";
 
 /** Truncates every table in `public` except Knex's own bookkeeping. No-op while no tables exist. */
 export async function truncateAll(conn: Knex = db): Promise<void> {
@@ -16,6 +16,11 @@ export async function truncateAll(conn: Knex = db): Promise<void> {
     await conn.raw(`TRUNCATE ${tables.join(", ")} RESTART IDENTITY CASCADE`);
 }
 
-export async function closeDb(conn: Knex = db): Promise<void> {
-    await conn.destroy();
+/** Destroys the given pool, or both application pools (request + readiness probe) by default. */
+export async function closeDb(conn?: Knex): Promise<void> {
+    if (conn !== undefined) {
+        await conn.destroy();
+        return;
+    }
+    await Promise.all([db.destroy(), probeDb.destroy()]);
 }

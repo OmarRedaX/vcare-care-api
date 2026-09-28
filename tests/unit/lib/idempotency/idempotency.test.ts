@@ -10,7 +10,7 @@ import { requestId } from "../../../../src/lib/request-id/request-id";
 
 const KEY = "3c1b2a4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
-/** In-memory stand-in for the three Redis commands the middleware uses. */
+/** In-memory stand-in for the Redis commands the middleware uses (EVAL = the compare-and-delete release). */
 function fakeRedis(status = "ready") {
     const store = new Map<string, string>();
     const calls: unknown[][] = [];
@@ -31,6 +31,15 @@ function fakeRedis(status = "ready") {
             calls.push(["del", key]);
             store.delete(key);
             return Promise.resolve(1);
+        }),
+        eval: jest.fn((script: string, _numKeys: number, key: string, expected: string): Promise<number> => {
+            calls.push(["eval", key]);
+            expect(script).toContain('redis.call("GET", KEYS[1]) == ARGV[1]');
+            if (store.get(key) === expected) {
+                store.delete(key);
+                return Promise.resolve(1);
+            }
+            return Promise.resolve(0);
         }),
     };
     return client;
@@ -160,6 +169,11 @@ describe("lib/idempotency/idempotency middleware", () => {
         expect(first).toEqual(["set", expect.any(String), "PX", 60_000, "NX"]);
         expect(second).toEqual(["set", expect.any(String), "PX", 86_400_000]);
         const stored = JSON.parse(redis.store.values().next().value ?? "{}") as Record<string, unknown>;
+        expect(JSON.parse(String(redis.set.mock.calls[0]?.[1]))).toEqual({
+            state: "in_progress",
+            bodyHash: hashBody({ a: 1 }),
+            owner: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        });
         expect(stored).toEqual({
             state: "done",
             bodyHash: hashBody({ a: 1 }),
@@ -254,7 +268,8 @@ describe("lib/idempotency/idempotency middleware", () => {
         const res = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
         await settle();
         expect(res.status).toBe(500);
-        expect(redis.del).toHaveBeenCalledTimes(1);
+        expect(redis.eval).toHaveBeenCalledTimes(1);
+        expect(redis.del).not.toHaveBeenCalled();
         expect(redis.store.size).toBe(0);
     });
 
@@ -267,7 +282,7 @@ describe("lib/idempotency/idempotency middleware", () => {
         });
         await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
         await settle();
-        expect(redis.del).toHaveBeenCalledTimes(1);
+        expect(redis.eval).toHaveBeenCalledTimes(1);
         expect(redis.store.size).toBe(0);
     });
 
@@ -287,8 +302,80 @@ describe("lib/idempotency/idempotency middleware", () => {
         expect(res.status).toBe(201);
         expect(warn).toHaveBeenCalledWith("idempotency_store_failed", expect.any(Object));
         expect(redis.del).not.toHaveBeenCalled();
+        expect(redis.eval).not.toHaveBeenCalled();
         const lock = JSON.parse(redis.store.values().next().value ?? "{}") as Record<string, unknown>;
         expect(lock.state).toBe("in_progress");
+    });
+
+    it("should store the result and replay it when the client disconnects before the response (High: settle on end)", async () => {
+        const redis = fakeRedis();
+        const { app, runs } = harness(redis, {
+            respond: (_req, res) => {
+                // The handler commits AFTER the client gave up (timeout-then-retry).
+                setTimeout(() => void res.status(201).json({ success: true, data: { run: 1 } }), 150);
+            },
+        });
+
+        await expect(
+            request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 }).timeout(30),
+        ).rejects.toThrow();
+        await new Promise((resolve) => setTimeout(resolve, 250));
+
+        const stored = JSON.parse(redis.store.values().next().value ?? "{}") as Record<string, unknown>;
+        expect(stored).toMatchObject({ state: "done", status: 201 });
+
+        const retry = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        expect(retry.status).toBe(201);
+        expect(retry.body).toEqual({ success: true, data: { run: 1 } });
+        expect(runs.count).toBe(1);
+    });
+
+    it("should settle exactly once when both the wrapped end and finish fire", async () => {
+        const redis = fakeRedis();
+        const { app } = harness(redis);
+        await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        await settle();
+        const writes = redis.calls.filter((call) => call[0] === "set");
+        expect(writes).toHaveLength(2); // the NX lock, then exactly one done record
+    });
+
+    it("should compare-and-delete its own lock when SET NX throws after its effect landed (High: orphan lock)", async () => {
+        const redis = fakeRedis();
+        // The SET reaches Redis but the client-side commandTimeout rejects it first.
+        redis.set.mockImplementationOnce((key: string, value: string) => {
+            redis.store.set(key, value);
+            return Promise.reject(new Error("Command timed out"));
+        });
+        const { app, runs } = harness(redis);
+
+        const first = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        await settle();
+        expect(first.status).toBe(201);
+        expect(metric).toHaveBeenCalledWith("idempotency_skipped", 1, { reason: "redis_error" });
+        expect(redis.eval).toHaveBeenCalledTimes(1);
+        expect(redis.store.size).toBe(0);
+
+        // The retry is not blocked by a 60 s orphan in-flight marker.
+        const retry = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        expect(retry.status).toBe(201);
+        expect(retry.headers["retry-after"]).toBeUndefined();
+        expect(runs.count).toBe(2);
+    });
+
+    it("should never delete another attempt's lock when its own SET NX throws without landing", async () => {
+        const redis = fakeRedis();
+        const foreign = JSON.stringify({ state: "in_progress", bodyHash: hashBody({ a: 1 }), owner: "someone-else" });
+        redis.set.mockImplementationOnce((key: string) => {
+            redis.store.set(key, foreign); // another attempt holds the key; ours never landed
+            return Promise.reject(new Error("Command timed out"));
+        });
+        const { app } = harness(redis);
+
+        await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        await settle();
+
+        expect(redis.eval).toHaveBeenCalledTimes(1);
+        expect(redis.store.values().next().value).toBe(foreign);
     });
 
     it("should replace error.requestId with the current request id when replaying a stored error", async () => {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { IdempotentOperation } from "./types";
 
 /**
  * Contract conformance (CLAUDE.md → Testing policy): status codes, error codes, and shapes asserted here are
@@ -211,4 +212,54 @@ export function expectPaginationMeta(meta: unknown): { nextCursor: string | null
     expect(typeof parsed.hasMore).toBe("boolean");
     expect(Number.isInteger(parsed.count) && parsed.count >= 0).toBe(true);
     return parsed;
+}
+
+/**
+ * Every operation that declares an `Idempotency-Key` parameter, with the response it references for `409`
+ * (`undefined` when it declares none). Parsed from the `paths:` section by indentation (2 = path, 4 = method).
+ */
+export function idempotentOperations(): IdempotentOperation[] {
+    const start = LINES.indexOf("paths:");
+    const end = LINES.indexOf("components:");
+    const operations: IdempotentOperation[] = [];
+    let path = "";
+    let current: { method: string; lines: string[] } | undefined;
+
+    const flush = (): void => {
+        if (current === undefined) {
+            return;
+        }
+        const body = current.lines.join("\n");
+        if (/\$ref: '#\/components\/parameters\/IdempotencyKey(Required|Optional)'/.test(body)) {
+            const conflict = /^ {8}'409':\s*\n\s+\$ref: '#\/components\/responses\/([A-Za-z]+)'/m.exec(body);
+            operations.push({ method: current.method.toUpperCase(), path, conflictResponse: conflict?.[1] });
+        }
+        current = undefined;
+    };
+
+    for (const line of LINES.slice(start + 1, end)) {
+        const pathMatch = /^ {2}(\/\S*):$/.exec(line);
+        const methodMatch = /^ {4}(get|post|put|patch|delete):$/.exec(line);
+        if (pathMatch?.[1] !== undefined) {
+            flush();
+            path = pathMatch[1];
+        } else if (methodMatch?.[1] !== undefined) {
+            flush();
+            current = { method: methodMatch[1], lines: [] };
+        } else if (current !== undefined) {
+            current.lines.push(line);
+        }
+    }
+    flush();
+    return operations;
+}
+
+/** The body of `components.parameters.<name>`. */
+export function parameterBlock(name: string): string {
+    return blockAfter(`    ${name}:`, 4);
+}
+
+/** The body of `components.headers.<name>`. */
+export function headerBlock(name: string): string {
+    return blockAfter(`    ${name}:`, 4);
 }

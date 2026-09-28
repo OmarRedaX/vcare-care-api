@@ -3,7 +3,7 @@ import helmet from "helmet";
 import { buildHealthRouter } from "./app/health/routes";
 import { getEnv } from "./lib/config/env";
 import { errorHandler } from "./lib/error/errorHandler";
-import { notFound } from "./lib/error/not-found";
+import { notFound, optionsNotFound } from "./lib/error/not-found";
 import { cors } from "./lib/http/cors";
 import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
@@ -27,6 +27,7 @@ export function createPublicApp(options?: AppOptions): express.Express {
     if (env.NODE_ENV === "development" && env.CORS_ORIGINS.length > 0) {
         app.use(cors({ origins: env.CORS_ORIGINS }));
     }
+    app.use(optionsNotFound);
 
     app.use(express.json({ limit: "100kb", strict: true, type: "application/json" }));
 

@@ -152,9 +152,34 @@ describe("lib/error/errorHandler", () => {
         expect(line).toBeDefined();
         expect(line?.level).toBe("error");
         expect(line?.requestId).toBe(REQUEST_ID);
-        const error = line?.error as { name: string; stack?: string };
+        const error = line?.error as { name: string; message?: string; stack?: string };
         expect(error.name).toBe("Error");
-        expect(error.stack).toContain("synthetic unknown failure");
+        expect(error.message).toBe("synthetic unknown failure");
+        expect(error.stack?.split("\n")[1]).toMatch(/^\s+at /);
+    });
+
+    it("should log a database error without its message or the rejected value when an unknown error is a pg error (F7)", async () => {
+        await request(
+            harness(() => {
+                throw Object.assign(new Error('invalid input syntax for type integer: "SYNTHETIC-COMPLAINT-7731"'), {
+                    code: "22P02",
+                    severity: "ERROR",
+                });
+            }),
+        ).get("/t");
+
+        const line = logs.lines().find((entry) => entry.message === "unhandled_error");
+        expect(line?.error).toMatchObject({ name: "Error", code: "22P02", severity: "ERROR" });
+        expect(logs.text()).not.toContain("SYNTHETIC-COMPLAINT-7731");
+    });
+
+    it("should not call next or print a raw stack when headers were already sent (parity b)", () => {
+        const next = jest.fn();
+        const res = { headersSent: true, end: jest.fn() } as unknown as Response;
+        errorHandler(new Error("late failure"), { requestId: REQUEST_ID } as Request, res, next);
+        expect(next).not.toHaveBeenCalled();
+        expect((res.end as jest.Mock).mock.calls).toHaveLength(1);
+        expect(logs.lines().filter((entry) => entry.message === "error_after_headers_sent")).toHaveLength(1);
     });
 
     it("should log a 5xx AppError at error level and not log a 4xx AppError", async () => {

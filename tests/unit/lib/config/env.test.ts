@@ -1,4 +1,4 @@
-import { InvalidEnvError, parseEnv } from "../../../../src/lib/config/env";
+import { InvalidEnvError, envSchema, parseEnv } from "../../../../src/lib/config/env";
 import type * as EnvModule from "../../../../src/lib/config/env";
 import type { EnvSource } from "../../../../src/lib/config/types";
 
@@ -98,6 +98,32 @@ describe("lib/config/env parseEnv", () => {
         ]);
     });
 
+    // Review 2026-09-28 (Low): pg merges the URL over the explicit config, so these would replace `TimeZone=UTC`,
+    // the timeouts, or the pool name set in lib/knex (spec §3.4.1).
+    it.each([
+        ["options", "options=-c%20TimeZone%3DAmerica%2FNew_York"],
+        ["options (search_path only)", "options=-c%20search_path%3Dcare"],
+        ["statement_timeout", "statement_timeout=0"],
+        ["query_timeout", "query_timeout=0"],
+        ["application_name", "sslmode=require&application_name=psql"],
+    ])("should reject DATABASE_URL when its query string sets %s", (_name, query) => {
+        const url = `${SECRET_DB}?${query}`;
+        const error = captureInvalid({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS });
+        expect(error.keys).toEqual(["DATABASE_URL"]);
+        expect(error.message).not.toContain("synthetic-pass-9931");
+
+        const result = envSchema.safeParse({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS });
+        expect(result.success).toBe(false);
+        expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+            "must not set options, statement_timeout, query_timeout, application_name — Care sets them per pool",
+        ]);
+    });
+
+    it("should accept DATABASE_URL when its query string carries only other parameters", () => {
+        const url = `${SECRET_DB}?sslmode=require&sslrootcert=%2Fetc%2Fssl%2Frds.pem`;
+        expect(parseEnv({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS }).DATABASE_URL).toBe(url);
+    });
+
     it("should treat an empty string as unset when a default exists", () => {
         const env = parseEnv({ ...secretsOnly(), PORT: "", LOG_LEVEL: "", CORS_ORIGINS: "" });
         expect(env.PORT).toBe(3001);
@@ -125,9 +151,9 @@ describe("lib/config/env parseEnv", () => {
         expect(captureInvalid({ ...secretsOnly(), [key]: value }).keys).toEqual([key]);
     });
 
-    // PRODUCT BUG (spec §3.4.1 says `string().ip()`): src/lib/config/env.ts:29 accepts any run of digits/dots or
-    // hex/colons, so "999.999.999.999" and "cafe" pass validation and the process only fails later at listen().
-    test.failing.each(["999.999.999.999", "cafe", "1.2.3"])(
+    // Regression (was known bug 3): any run of digits/dots or hex/colons used to pass, so "999.999.999.999" and "cafe"
+    // failed only later at listen(). INTERNAL_HOST must now be an IPv4 or IPv6 literal (spec §3.4.1).
+    it.each(["999.999.999.999", "cafe", "1.2.3", "localhost", "::g"])(
         "should reject INTERNAL_HOST when it is not a valid IP address (%p)",
         (host) => {
             expect(captureInvalid({ ...secretsOnly(), INTERNAL_HOST: host }).keys).toEqual(["INTERNAL_HOST"]);

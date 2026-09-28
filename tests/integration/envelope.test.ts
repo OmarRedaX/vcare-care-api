@@ -57,6 +57,21 @@ describe("error envelope, request id, security headers (integration)", () => {
         expectErrorEnvelope(res.body, "NotFound");
     });
 
+    it("should return the 404 NotFound envelope when OPTIONS is sent to a known path on either listener (bug 4, QA case 23)", async () => {
+        const { publicApp, internalApp } = apps();
+        for (const [app, path] of [
+            [publicApp, "/api/health/live"],
+            [publicApp, "/api/__test/echo"],
+            [internalApp, "/internal/health/ready"],
+            [internalApp, "/internal/__test/echo"],
+        ] as const) {
+            const res = await request(app).options(path);
+            expect(res.status).toBe(404);
+            expect(res.headers.allow).toBeUndefined();
+            expectErrorEnvelope(res.body, "NotFound", res.headers["x-request-id"]);
+        }
+    });
+
     it("should not serve test routes of one listener on the other (listener isolation)", async () => {
         const { publicApp, internalApp } = apps();
         expect((await request(publicApp).get("/internal/__test/context")).status).toBe(404);

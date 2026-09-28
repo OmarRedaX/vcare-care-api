@@ -22,7 +22,7 @@
     "migrate": "tsx --env-file-if-exists=.env src/migrate.ts latest",
     "migrate:rollback": "tsx --env-file-if-exists=.env src/migrate.ts rollback",
     "migrate:status": "tsx --env-file-if-exists=.env src/migrate.ts status",
-    "migrate:make": "tsx src/migrate.ts make"
+    "migrate:make": "tsx --env-file-if-exists=.env src/migrate.ts make"
   },
   "dependencies": {
     "class-transformer": "0.5.1",

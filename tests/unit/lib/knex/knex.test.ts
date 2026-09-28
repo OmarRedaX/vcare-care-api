@@ -1,43 +1,32 @@
 import type { Knex } from "knex";
 import { types as pgTypes } from "pg";
-import { createKnex, parseInt8 } from "../../../../src/lib/knex/knex";
-import { migrationConfig } from "../../../../src/lib/knex/knexfile";
+import { buildKnexLog } from "../../../../src/lib/knex/knex-log";
+import { buildConnectionConfig, createKnex, parseInt8 } from "../../../../src/lib/knex/knex";
+import { MigrationFiles, migrationConfig } from "../../../../src/lib/knex/knexfile";
 import { probeDatabase } from "../../../../src/lib/knex/probe";
 import type { KnexOptions } from "../../../../src/lib/knex/types";
+import { Logger } from "../../../../src/lib/logger/logger";
 
-type AfterCreate = (connection: unknown, done: (error: Error | null, connection: unknown) => void) => void;
-
-/** Reads the pool/acquire settings Knex was configured with — no connection is ever opened (pool min 0). */
-function configOf(knex: Knex): { pool: { min: number; max: number; afterCreate: AfterCreate }; acquireConnectionTimeout: number; connection: Record<string, unknown> } {
+/** Reads the settings Knex was configured with — no connection is ever opened (pool min 0). */
+function configOf(knex: Knex): {
+    pool: { min: number; max: number; createTimeoutMillis: number; afterCreate?: unknown };
+    acquireConnectionTimeout: number;
+    connection: Record<string, unknown>;
+    compileSqlOnError: boolean;
+    log: Knex.Logger;
+} {
     return (knex.client as { config: never }).config;
 }
 
-/** A fake pg connection that records the SQL it receives and can fail a statement. */
-function fakeConnection(failOn?: string) {
-    const statements: string[] = [];
-    const connection = {
-        query(sql: string, callback: (error: Error | null) => void) {
-            statements.push(sql);
-            callback(failOn !== undefined && sql.startsWith(failOn) ? new Error("synthetic failure") : null);
-        },
-    };
-    return { connection, statements };
-}
+const OPTIONS: KnexOptions = {
+    url: "postgres://care:care@127.0.0.1:1/care_unit",
+    poolMax: 3,
+    statementTimeoutMs: 2000,
+    applicationName: "care-api",
+};
 
 function build(overrides: Partial<KnexOptions> = {}): Knex {
-    return createKnex({
-        url: "postgres://care:care@127.0.0.1:1/care_unit",
-        poolMax: 3,
-        statementTimeoutMs: 2000,
-        applicationName: "care-api",
-        ...overrides,
-    });
-}
-
-function runAfterCreate(knex: Knex, connection: unknown): Promise<{ error: Error | null; connection: unknown }> {
-    return new Promise((resolve) => {
-        configOf(knex).pool.afterCreate(connection, (error, conn) => resolve({ error, connection: conn }));
-    });
+    return createKnex({ ...OPTIONS, ...overrides });
 }
 
 describe("lib/knex/createKnex", () => {
@@ -46,44 +35,42 @@ describe("lib/knex/createKnex", () => {
         await Promise.all(created.map((knex) => knex.destroy()));
     });
 
-    it("should run SET TIME ZONE 'UTC' and the statement timeout when a connection is created (F8)", async () => {
+    it("should pass TimeZone=UTC and the statement timeout as startup parameters when a pool is created (F8)", () => {
         const knex = build();
         created.push(knex);
-        const { connection, statements } = fakeConnection();
-
-        const result = await runAfterCreate(knex, connection);
-
-        expect(result).toEqual({ error: null, connection });
-        expect(statements).toEqual(["SET TIME ZONE 'UTC'", "SET statement_timeout = 2000"]);
+        const config = configOf(knex);
+        expect(config.connection).toMatchObject({ options: "-c TimeZone=UTC", statement_timeout: 2000 });
+        // No per-connection SETs inside the 1 s acquire window any more.
+        expect(config.pool.afterCreate).toBeUndefined();
     });
 
-    it("should skip the statement timeout when statementTimeoutMs is null", async () => {
-        const knex = build({ statementTimeoutMs: null, applicationName: "care-migrate" });
-        created.push(knex);
-        const { connection, statements } = fakeConnection();
-
-        await runAfterCreate(knex, connection);
-
-        expect(statements).toEqual(["SET TIME ZONE 'UTC'"]);
+    it("should set connect and query timeouts and TCP keepalive when the statement timeout is set", () => {
+        expect(buildConnectionConfig(OPTIONS)).toEqual({
+            connectionString: OPTIONS.url,
+            application_name: "care-api",
+            options: "-c TimeZone=UTC",
+            connectionTimeoutMillis: 2000,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10_000,
+            statement_timeout: 2000,
+            query_timeout: 3000,
+        });
     });
 
-    it("should hand the error to the pool and stop when SET TIME ZONE fails", async () => {
-        const knex = build();
-        created.push(knex);
-        const { connection, statements } = fakeConnection("SET TIME ZONE");
-
-        const result = await runAfterCreate(knex, connection);
-
-        expect(result.error).toBeInstanceOf(Error);
-        expect(statements).toEqual(["SET TIME ZONE 'UTC'"]);
+    it("should omit the statement and query timeouts when statementTimeoutMs is null", () => {
+        const config = buildConnectionConfig({ ...OPTIONS, statementTimeoutMs: null, applicationName: "care-migrate" });
+        expect(config).not.toHaveProperty("statement_timeout");
+        expect(config).not.toHaveProperty("query_timeout");
+        expect(config).toMatchObject({ options: "-c TimeZone=UTC", connectionTimeoutMillis: 2000, keepAlive: true });
     });
 
-    it("should configure a lazy pool, the application name, and a 1 s acquire timeout for care-api", () => {
+    it("should configure a lazy pool, the application name, a 2 s create timeout, and a 1 s acquire timeout for care-api", () => {
         const knex = build({ poolMax: 7 });
         created.push(knex);
         const config = configOf(knex);
         expect(config.pool.min).toBe(0);
         expect(config.pool.max).toBe(7);
+        expect(config.pool.createTimeoutMillis).toBe(2_000);
         expect(config.acquireConnectionTimeout).toBe(1_000);
         expect(config.connection).toMatchObject({ application_name: "care-api" });
     });
@@ -92,6 +79,60 @@ describe("lib/knex/createKnex", () => {
         const knex = build({ applicationName: "care-migrate", statementTimeoutMs: null });
         created.push(knex);
         expect(configOf(knex).acquireConnectionTimeout).toBe(60_000);
+    });
+
+    it("should never compile bindings into an error message when a query fails (F7)", () => {
+        const knex = build();
+        created.push(knex);
+        expect(configOf(knex).compileSqlOnError).toBe(false);
+    });
+
+    it("should route Knex's own log output through the JSON logger when a pool is created (bug 2)", () => {
+        const knex = build();
+        created.push(knex);
+        const log = configOf(knex).log;
+        expect(log.enableColors).toBe(false);
+        for (const method of [log.warn, log.error, log.debug, log.deprecate]) {
+            expect(typeof method).toBe("function");
+        }
+    });
+});
+
+describe("lib/knex/buildKnexLog", () => {
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    function collect() {
+        const lines: Array<Record<string, unknown>> = [];
+        const logger = new Logger({
+            level: "debug",
+            service: "care-service",
+            write: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+        });
+        return { log: buildKnexLog(logger), lines };
+    }
+
+    it("should log one JSON line with only the first line of Knex's text and never use console when Knex logs", () => {
+        const { log, lines } = collect();
+        const consoleLog = jest.spyOn(console, "log").mockImplementation(() => undefined);
+
+        log.warn?.("Acquire connection error: Error: connect ECONNREFUSED 127.0.0.1:1\n    at TCPConnectWrap.afterConnect");
+        log.error?.("Knex: " + "x".repeat(500));
+        log.deprecate?.("json(true)", "jsonb()");
+        log.debug?.("select $1::int as n");
+
+        expect(consoleLog).not.toHaveBeenCalled();
+        expect(lines.map((line) => [line.level, line.message])).toEqual([
+            ["warn", "knex_warn"],
+            ["error", "knex_error"],
+            ["warn", "knex_deprecated"],
+            ["debug", "knex_debug"],
+        ]);
+        expect(lines[0]?.summary).toBe("Acquire connection error: Error: connect ECONNREFUSED 127.0.0.1:1");
+        expect(String(lines[1]?.summary)).toHaveLength(200);
+        expect(lines[2]).toMatchObject({ method: "json(true)", alternative: "jsonb()" });
+        expect(JSON.stringify(lines[3])).not.toContain("select");
     });
 });
 
@@ -138,9 +179,31 @@ describe("lib/knex/probeDatabase", () => {
 });
 
 describe("lib/knex/migrationConfig", () => {
-    it("should point at src/migrations with .ts extensions when running from source", () => {
+    it("should use the extension-free migration source and the knex_migrations table", () => {
         expect(migrationConfig.tableName).toBe("knex_migrations");
-        expect(migrationConfig.loadExtensions).toEqual([".ts"]);
-        expect(String(migrationConfig.directory).replace(/\\/g, "/")).toMatch(/\/src\/migrations$/);
+        expect(migrationConfig.migrationSource).toBeInstanceOf(MigrationFiles);
+        expect(migrationConfig).not.toHaveProperty("directory");
+    });
+
+    it("should list the .ts migrations when running from source and name them without the extension (parity d)", async () => {
+        const source = new MigrationFiles();
+        const files = await source.getMigrations();
+        expect(files).toContain("20260915000000_create_extension_btree_gist.ts");
+        expect(files).toEqual([...files].sort());
+        expect(files.map((file) => source.getMigrationName(file))).toContain("20260915000000_create_extension_btree_gist");
+    });
+
+    it("should give the compiled and the source file the same migration name", () => {
+        const fromSource = new MigrationFiles("unused", ".ts");
+        const fromDist = new MigrationFiles("unused", ".js");
+        expect(fromSource.getMigrationName("20260915000000_create_extension_btree_gist.ts")).toBe(
+            fromDist.getMigrationName("20260915000000_create_extension_btree_gist.js"),
+        );
+    });
+
+    it("should load a migration module with up and down when asked for one", async () => {
+        const migration = await new MigrationFiles().getMigration("20260915000000_create_extension_btree_gist.ts");
+        expect(typeof migration.up).toBe("function");
+        expect(typeof migration.down).toBe("function");
     });
 });

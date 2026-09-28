@@ -6,9 +6,10 @@ import { getEnv } from "./lib/config/env";
 import { container } from "./lib/di/container";
 import { TOKENS } from "./lib/di/tokens";
 import { createInternalApp } from "./internal-app";
-import { db } from "./lib/knex/knex";
+import { db, probeDb } from "./lib/knex/knex";
 import { createGracefulShutdown } from "./lib/lifecycle/graceful-shutdown";
 import type { InFlightCounter } from "./lib/lifecycle/in-flight";
+import { runMain } from "./lib/lifecycle/run-main";
 import type { ShutdownState } from "./lib/lifecycle/shutdown-state";
 import { logger } from "./lib/logger/logger";
 import { closeRedis, redis } from "./lib/redis/redis";
@@ -50,6 +51,7 @@ function main(): void {
         timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
         closeResources: [
             () => db.destroy(),
+            () => probeDb.destroy(),
             () => closeRedis(redis),
         ],
         logger,
@@ -78,4 +80,4 @@ function main(): void {
     });
 }
 
-main();
+runMain(main);

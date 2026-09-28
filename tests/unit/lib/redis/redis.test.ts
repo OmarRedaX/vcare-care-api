@@ -57,6 +57,8 @@ describe("lib/redis", () => {
                 maxRetriesPerRequest: 1,
                 connectTimeout: 2_000,
                 commandTimeout: 500,
+                // parity e: a command on the wire at disconnect is never replayed after the reconnect
+                autoResendUnfulfilledCommands: false,
                 connectionName: "care-unit",
             });
             const retry = client.options.retryStrategy;

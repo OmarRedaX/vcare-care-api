@@ -13,6 +13,8 @@ export interface IdempotencyOptions {
 export interface IdempotencyInProgressRecord {
     state: "in_progress";
     bodyHash: string;
+    /** Random per attempt: lets compare-and-delete release only this attempt's lock. */
+    owner: string;
 }
 
 export interface IdempotencyDoneRecord {

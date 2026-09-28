@@ -5,7 +5,8 @@ import { HealthController } from "../../src/app/health/controller/health.control
 import { HealthService } from "../../src/app/health/service/health.service";
 import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
-import { createKnex, db } from "../../src/lib/knex/knex";
+import { getEnv } from "../../src/lib/config/env";
+import { createKnex, db, probeDb } from "../../src/lib/knex/knex";
 import { ShutdownState } from "../../src/lib/lifecycle/shutdown-state";
 import { redis } from "../../src/lib/redis/redis";
 import { buildTestApps, withContainerOverrides } from "../helpers/app";
@@ -27,9 +28,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
  * its controller when the app is built, so the apps must be built INSIDE `withContainerOverrides`.
  */
 function healthWiring(deps: { db?: Knex; redis?: Redis; state?: ShutdownState }): ContainerOverride[] {
-    const service = new HealthService(deps.db ?? db, deps.redis ?? redis, deps.state ?? new ShutdownState());
+    const service = new HealthService(deps.db ?? probeDb, deps.redis ?? redis, deps.state ?? new ShutdownState());
     return [
-        ...(deps.db !== undefined ? [{ token: TOKENS.Db, value: deps.db }] : []),
+        ...(deps.db !== undefined ? [{ token: TOKENS.ProbeDb, value: deps.db }] : []),
         ...(deps.redis !== undefined ? [{ token: TOKENS.Redis, value: deps.redis }] : []),
         ...(deps.state !== undefined ? [{ token: TOKENS.ShutdownState, value: deps.state }] : []),
         { token: TOKENS.HealthService, value: service },
@@ -130,11 +131,10 @@ describe("health (integration: real Postgres + Redis)", () => {
         }
     });
 
-    // PRODUCT BUG (spec §3.4.4 "everything goes through Logger"; ADR 0007 log-derived metrics): createKnex
-    // (src/lib/knex/knex.ts:23-46) passes no `log` option, so Knex's default logger writes a raw, ANSI-coloured
-    // console.log line ("Acquire connection error: …") outside the structured JSON logger whenever the pool
-    // cannot connect — exactly during a Postgres outage, when clean logs matter most.
-    test.failing("should write no raw (non-JSON) console output when the Postgres pool cannot connect", async () => {
+    // Regression (was known bug 2): Knex's default logger wrote a raw, ANSI-coloured console.log line
+    // ("Acquire connection error: …") outside the JSON logger whenever the pool could not connect. createKnex now
+    // routes Knex's log through Logger (spec §3.4.8 buildKnexLog).
+    it("should write no raw (non-JSON) console output when the Postgres pool cannot connect", async () => {
         const deadDb = createKnex({
             url: "postgres://care:care@127.0.0.1:1/care_test",
             poolMax: 1,
@@ -159,6 +159,20 @@ describe("health (integration: real Postgres + Redis)", () => {
         expect(consoleCalls).toEqual([]);
     });
 
+    it("should report database up when every request-pool connection is busy (F10, dedicated probe pool)", async () => {
+        // Hold every connection of the real request pool for 1 s: readiness must still answer from its own pool.
+        const busy = Array.from({ length: getEnv().DATABASE_POOL_MAX }, () => db.raw("SELECT pg_sleep(1)"));
+        try {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            const { publicApp } = buildTestApps();
+            const res = await request(publicApp).get("/api/health/ready");
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual({ status: "ok", checks: { database: "up", redis: "up" } });
+        } finally {
+            await Promise.all(busy);
+        }
+    });
+
     it("should return 503 when shutdown has been marked (F10) while liveness stays 200 (F9)", async () => {
         const state = new ShutdownState();
         state.markShuttingDown();
@@ -181,6 +195,7 @@ describe("health (integration: real Postgres + Redis)", () => {
         expect(container.resolve(TOKENS.HealthController)).toBe(realController);
         expect(container.resolve(TOKENS.Redis)).toBe(redis);
         expect(container.resolve(TOKENS.Db)).toBe(db);
+        expect(container.resolve(TOKENS.ProbeDb)).toBe(probeDb);
 
         const { publicApp } = buildTestApps();
         expect((await request(publicApp).get("/api/health/ready")).body.status).toBe("ok");

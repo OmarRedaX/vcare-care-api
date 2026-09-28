@@ -97,6 +97,27 @@ describe("idempotency middleware (integration: real Redis)", () => {
         expect(counters.idem).toBe(0);
     });
 
+    it("should replay the stored 2xx and run the handler once when the first attempt was aborted by the client before the response (F12, review High)", async () => {
+        const app = publicApp();
+        const key = randomUUID();
+        const body = { amount: 7 };
+
+        // The client times out at 100 ms and disconnects; the handler commits at 400 ms (timeout-then-retry).
+        await expect(
+            request(app).post(`${ROUTE}?delayMs=400`).set("Idempotency-Key", key).send(body).timeout(100),
+        ).rejects.toThrow();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+
+        const record = JSON.parse((await redis.get(await storedKeyFor(ROUTE, key))) ?? "{}") as { state: string; status: number };
+        expect(record).toMatchObject({ state: "done", status: 201 });
+
+        const retry = await request(app).post(ROUTE).set("Idempotency-Key", key).send(body);
+        expect(retry.status).toBe(201);
+        expect(expectSuccessEnvelope(retry.body)).toEqual({ run: 1, echo: body });
+        expect(retry.headers["retry-after"]).toBeUndefined();
+        expect(counters.idem).toBe(1);
+    });
+
     it("should run the handler once and answer the loser with 409 Conflict and Retry-After 1 when two requests with the same key race against a slow handler (F15)", async () => {
         const app = publicApp();
         const key = randomUUID();

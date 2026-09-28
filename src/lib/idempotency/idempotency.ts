@@ -7,7 +7,7 @@ import { clientIp } from "../http/client-ip";
 import { routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
 import { isRedisReady, resolveRedis } from "../redis/redis";
-import { acquireLock, readRecord, releaseLock, storeResult } from "./idempotency-store";
+import { acquireLock, inProgressRecord, readRecord, releaseOwnLock, storeResult } from "./idempotency-store";
 import type { IdempotencyOptions } from "./types";
 
 const DEFAULT_LOCK_TTL_MS = 60_000;
@@ -91,12 +91,16 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
 
         const storeKey = buildIdempotencyKey(req, key);
         const bodyHash = hashBody(req.body);
+        const lockValue = inProgressRecord(bodyHash);
 
         void (async () => {
             let acquired: boolean;
             try {
-                acquired = await acquireLock(client, storeKey, bodyHash, lockTtlMs);
+                acquired = await acquireLock(client, storeKey, lockValue, lockTtlMs);
             } catch {
+                // The SET may still land after the client-side timeout. Redis runs this later EVAL after it on the
+                // same connection, so a lock that nobody would settle is not left to block retries for lockTtlMs.
+                releaseOwnLock(client, storeKey, lockValue).catch(() => undefined);
                 skip(req, "redis_error");
                 next();
                 return;
@@ -139,17 +143,30 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
                 return originalJson(body);
             };
 
-            res.on("finish", () => {
+            // Settle exactly once, when the HANDLER completes the response — not when the socket finishes: a client
+            // that timed out and disconnected emits only `close`, and its retry must still get the original result.
+            let settled = false;
+            const settle = (): void => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
                 const status = res.statusCode;
-                const settle =
+                const work =
                     status >= 500 || status === 429
-                        ? releaseLock(client, storeKey)
+                        ? releaseOwnLock(client, storeKey, lockValue)
                         : storeResult(client, storeKey, bodyHash, status, captured, ttlMs);
-                settle.catch(() => {
+                work.catch(() => {
                     // Response is already sent; the lock expires after lockTtlMs.
                     logger.warn("idempotency_store_failed", { requestId: req.requestId, route: routeLabel(req) });
                 });
-            });
+            };
+            const originalEnd = res.end.bind(res) as (...args: unknown[]) => Response;
+            res.end = ((...args: unknown[]) => {
+                settle();
+                return originalEnd(...args);
+            }) as Response["end"];
+            res.on("finish", settle); // fallback only; settle() is idempotent
 
             next();
         })();

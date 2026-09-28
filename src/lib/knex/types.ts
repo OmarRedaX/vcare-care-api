@@ -1,4 +1,4 @@
-export type ApplicationName = "care-api" | "care-worker" | "care-migrate" | "care-test";
+export type ApplicationName = "care-api" | "care-api-probe" | "care-worker" | "care-migrate" | "care-test";
 
 export interface KnexOptions {
     url: string;
@@ -8,7 +8,26 @@ export interface KnexOptions {
     applicationName: ApplicationName;
 }
 
-/** The raw `pg` client handed to Knex's `afterCreate` hook. */
-export interface PgConnection {
-    query(sql: string, callback: (error: Error | null) => void): void;
+/** The `pg` client configuration handed to Knex as `connection` (spec §3.4.8). */
+export interface PgConnectionConfig {
+    connectionString: string;
+    application_name: ApplicationName;
+    /** Startup parameter: `-c TimeZone=UTC`. */
+    options: string;
+    connectionTimeoutMillis: number;
+    keepAlive: boolean;
+    keepAliveInitialDelayMillis: number;
+    statement_timeout?: number;
+    query_timeout?: number;
+}
+
+
+/**
+ * The pg 8.23 `Client` fields `isConnectionIdle` reads (spec §3.4.8). They are pg-PRIVATE: no public signal says
+ * "a query timed out on this connection". Pinned by `tests/unit/lib/knex/pg-connection-state.test.ts`.
+ */
+export interface PgClientQueryState {
+    _activeQuery?: unknown;
+    _queryQueue?: unknown;
+    _sentQueryQueue?: unknown;
 }

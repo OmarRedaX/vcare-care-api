@@ -64,6 +64,36 @@ describe("lib/lifecycle/InFlightCounter + inFlight()", () => {
         await expect(new InFlightCounter().whenIdle()).resolves.toBeUndefined();
     });
 
+    it("should set Connection: close on responses written while shutting down", () => {
+        const state = new ShutdownState();
+        const headers = new Map<string, string>();
+        const writeHead = jest.fn();
+        const res = Object.assign(fakeRes(), {
+            headersSent: false,
+            setHeader: (name: string, value: string) => headers.set(name.toLowerCase(), value),
+            writeHead,
+        });
+        inFlight(new InFlightCounter(), state)({} as Request, res, jest.fn());
+
+        state.markShuttingDown(); // SIGTERM arrives while the request is in flight
+        res.writeHead(200);
+
+        expect(headers.get("connection")).toBe("close");
+        expect(writeHead).toHaveBeenCalledWith(200);
+    });
+
+    it("should leave the Connection header alone when not shutting down", () => {
+        const headers = new Map<string, string>();
+        const res = Object.assign(fakeRes(), {
+            headersSent: false,
+            setHeader: (name: string, value: string) => headers.set(name.toLowerCase(), value),
+            writeHead: jest.fn(),
+        });
+        inFlight(new InFlightCounter(), new ShutdownState())({} as Request, res, jest.fn());
+        res.writeHead(200);
+        expect(headers.has("connection")).toBe(false);
+    });
+
     it("should never go below zero when decremented too often", () => {
         const counter = new InFlightCounter();
         counter.decrement();
