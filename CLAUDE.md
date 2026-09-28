@@ -211,7 +211,7 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 
 **Pagination:** every list is cursor-based keyset — `?cursor=<opaque>&limit=<1..100, default 20>`; cursor encodes `(sortValue, id)`; `meta: { nextCursor, hasMore, count }`; fetch `limit + 1`. Filters are whitelisted query params.
 
-**Idempotency:** `Idempotency-Key` (UUID) is **required** on `POST /consultations`, `PATCH /consultations/:id/reschedule`, `PATCH /consultations/:id/cancel` (missing → `400 ValidationFailed`), optional on other writes. Redis-backed for 24 h, keyed by `(route, principal, key)` with a request-body hash: same key + same body → replay original response; same key + different body → `422 IdempotencyConflict`. Booking additionally persists the key on the consultation row (`uq_consultations_idempotency`) so a Redis loss cannot double-book.
+**Idempotency:** `Idempotency-Key` (UUID) is **required** on `POST /consultations`, `PATCH /consultations/:id/reschedule`, `PATCH /consultations/:id/cancel` (missing → `400 ValidationFailed`), optional on other writes. Redis-backed for 24 h, keyed by `(route, principal, key)` with a request-body hash: same key + same body → replay original response; same key + different body → `422 IdempotencyConflict`; same key while the first request is still in flight → immediate `409 Conflict` with `Retry-After: 1`. Booking additionally persists the key on the consultation row (`uq_consultations_idempotency`) so a Redis loss cannot double-book.
 
 **Status codes:** 200 · 201 · 204 · 400 `ValidationFailed` · 401 `Unauthorized`/`TokenExpired` · 403 `Forbidden`/state errors · 404 `NotFound` · 409 conflicts · 422 `IdempotencyConflict` · 429 `RateLimited` · 500 `InternalError` · 503 dependency down (health only). **A Case-2 Identity outage never produces a 5xx.**
 
@@ -242,7 +242,7 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 | `IdentityUnavailable` | 503 | a **must-succeed** Identity call is still failing (suspension reported as pending) |
 | `IdempotencyConflict` | 422 | same key, different body |
 | `NotFound` | 404 | absent, or not visible to the caller |
-| `Conflict` | 409 | generic uniqueness conflict |
+| `Conflict` | 409 | generic uniqueness conflict, or an `Idempotency-Key` whose first request is still in flight (with `Retry-After: 1`) |
 | `RateLimited` | 429 | limiter tripped |
 | `InternalError` | 500 | unhandled |
 

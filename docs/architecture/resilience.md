@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-15
-tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox]
-related: [integration, runbook, scheduling-slots, infrastructure, deployment, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement]
+last_verified: 2026-09-28
+tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
+related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement]
 ---
 
 # Resilience
@@ -21,8 +21,32 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | Video provider (room, join token) | 2 s | join/start fail cleanly; lifecycle state unchanged on failure |
 | Object storage from `care-api` (`complete`: `HEAD`, 16-byte `GET`, `DELETE` 2 s; `COPY` 10 s) | per ADR 0015 | `complete` fails, no row inserted, intent stays open for a retry until it expires |
 | Email provider | outside the request | async |
-| Postgres statement | 5 s default; hot paths are budgeted far lower | |
-| Redis command | 200 ms | cache miss path on timeout |
+| Postgres connect | 2 s (`connectionTimeoutMillis`, also the pool create timeout) | a connect that never completes fails instead of hanging |
+| Postgres pool acquire | 1 s for `care-api`/`care-worker`, 60 s for `care-migrate` | fast-fail when the pool is exhausted |
+| Postgres statement | 2 s server-side `statement_timeout` (none for `care-migrate`); hot paths are budgeted far lower | startup parameter, set per pool |
+| Postgres query (client side) | 3 s `query_timeout` (statement timeout + 1 s) | fires only when the server cannot answer (partition, failover without a TCP reset); the connection is then discarded (below) |
+| Postgres TCP keepalive | first probe after 10 s idle | detects a dead peer long before kernel retransmission gives up (~15 min) |
+| Readiness probes | 500 ms each (Postgres `SELECT 1` on the dedicated probe pool, Redis `PING`), run concurrently | a probe that rejects or times out reports `down` |
+| Redis connect / command | 2 s / **500 ms**; no offline queue; 1 retry per request; reconnect `min(n × 200, 2000)` ms forever | cache-miss / fallback path on timeout. A Redis that stalls while still connected costs the full 500 ms on every command; there is no breaker yet ([#10](https://github.com/OmarRedaX/vcare-care-api/issues/10)) |
+| HTTP server | `requestTimeout` 30 s, `headersTimeout` 66 s, `keepAliveTimeout` 65 s | |
+| Graceful shutdown | `SHUTDOWN_TIMEOUT_MS` (10 s) for drain **and** resource close | [infrastructure.md](./infrastructure.md) → Boot and shutdown |
+
+## Postgres failure modes
+- **Timed-out connections are discarded.** pg keeps a query whose client-side `query_timeout` fired after it was
+  sent as the connection's active query and does not destroy the socket. The pool's `validate`
+  (`lib/knex/pg-connection-state.ts`) therefore rejects any free connection that still has an active, queued, or
+  unanswered query, and the next acquire opens a fresh one. After a failover without a TCP reset each pool pays at
+  most one timed-out query per dead connection, instead of every later query on it timing out until the kernel drops
+  the socket.
+- **Readiness recovers on its own.** The probe pool has one connection: a probe stuck on a black-holed connection
+  reports `down` after 500 ms, and later probes report `down` while that query holds the connection. Once the query
+  reaches its 3 s `query_timeout`, the connection is discarded and the next probe reports `database: up` as soon as
+  the new primary accepts connections — at most one timed-out probe query (≤ 3 s), with no restart.
+- **The request pool cannot fail readiness.** Readiness never borrows a request-pool connection, so a saturated but
+  healthy task stays in the load balancer.
+- **Connection poolers.** `TimeZone=UTC` and `statement_timeout` travel as startup parameters. A pooler (PgBouncer,
+  RDS Proxy) must forward them or the settings move back to a pool `afterCreate` (infrastructure.md → Database
+  connection); verify this before adopting one.
 
 ## Retries, backoff, jitter
 - Only on network errors, timeouts, `429`, `502`, `503`, `504`, plus one token refresh on `401`. Never on other `4xx`.
@@ -87,8 +111,9 @@ Actions for each: [runbook.md](../runbook.md).
 | Layer | Mechanism |
 |---|---|
 | HTTP | `Idempotency-Key` UUID **required** on book, reschedule, cancel (missing → `400 ValidationFailed`); optional on other writes |
-| Redis | key `(route, principal, key)` → `{bodyHash, status, responseBody}` for 24 h; set to "in progress" with `SET NX` before the handler, so a concurrent duplicate waits or gets the stored response |
-| Replay | same key + same body hash → original status and body; different body → `422 IdempotencyConflict` |
+| Redis | key `idem:<METHOD path>:<principal>:<key>` → `{state, bodyHash, status, body}` for 24 h. Before the handler an "in progress" marker (with a per-attempt owner nonce) is set with `SET NX`, TTL 60 s; a concurrent duplicate with the same body gets an **immediate `409 Conflict` with `Retry-After: 1`** (no waiting) and its retry receives the replay. The result is stored as soon as the handler completes the response, even if the client already disconnected; a 5xx or 429 releases the marker so the client may retry. A marker is only ever released by compare-and-delete of its own owner nonce, including after a `SET NX` that timed out client-side but may still land |
+| Replay | same key + same body hash → original status and body (a stored error's `error.requestId` is replaced by the current request's id); different body → `422 IdempotencyConflict` |
+| Redis down | idempotency is skipped (`warn idempotency_skipped` + metric), never a 5xx; the database key below still protects booking. Not yet fixed (before the first route mounts it): a malformed stored record (e.g. a record-shape change during a rolling deploy) crashes the process through an unguarded async path ([#11](https://github.com/OmarRedaX/vcare-care-api/issues/11)); on a clinical route the stored body would keep clinical fields in Redis for 24 h and a replay would skip the audit ([#14](https://github.com/OmarRedaX/vcare-care-api/issues/14), needs a spec decision before `records`) |
 | Database (booking) | `idempotency_key` and `request_hash` on the consultation row, `uq_consultations_idempotency (patient_user_id, idempotency_key)`. If Redis lost the record, the insert collides; the service loads the existing row and replays (same hash) or returns 422 (different hash). A Redis loss cannot double-book. |
 | Reschedule / cancel | Redis record; on Redis loss, a replay is still safe: reschedule to the same start is a no-op update, and a second cancel is rejected as `409 InvalidTransition` without side effects |
 

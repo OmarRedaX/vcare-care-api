@@ -3,9 +3,9 @@ title: foundation — Manual QA (CURL)
 owner: care-team
 service: care-service
 module: foundation
-status: findings-open
+status: passed
 diataxis: how-to
-last_verified: 2026-09-26
+last_verified: 2026-09-28
 tags: [manual-qa, curl, foundation, health, request-id, error-envelope, readiness, redis, postgres, logging, cors]
 related: [foundation-spec, foundation-tasks, foundation-brainstorm, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0016-foundation-runtime-dependencies, quickstart, runbook]
 contracts: [contracts/openapi.yaml]
@@ -14,6 +14,10 @@ contracts: [contracts/openapi.yaml]
 # foundation — Manual QA (CURL)
 
 _Run: 2026-09-26 • Server: http://localhost:3001 (public) / http://localhost:3101 (internal) • Result: 50 pass / 1 fail / 1 known product bug reproduced (52 scenarios)_
+
+_Re-run: 2026-09-28 after `/develop foundation --fix-review` • Result: script 97 pass / 0 fail / 0 known (read-only),
+125 pass / 0 fail / 0 known (`RUN_INFRA_CASES=1`) • see [Re-run 2026-09-28](#re-run-2026-09-28) at the end. The
+2026-09-26 results below are kept as recorded._
 
 _(52 scenarios below. The script asserts each scenario's status, body, and headers separately:
 **94 pass / 3 fail** without infra cases, **121 pass / 3 fail / 1 known** with `RUN_INFRA_CASES=1`. All 3 failing
@@ -176,3 +180,33 @@ Checked against `contracts/openapi.yaml` (`getPublicLiveness`, `getPublicReadine
   §3.4.3. Matches. The exception is case 23, where `OPTIONS` bypasses the envelope.
 
 No contract drift. The only divergence is from the spec's method-handling rule (case 23).
+
+_Correction (2026-09-28, `/update-docs`):_ the bodies checked here are byte-compatible with identity-service's (spec
+§1.4), but the two contracts' schemas are not identical: Care's `HealthLive` and `HealthStatus` declare
+`additionalProperties: false`, identity's do not (spec §12.1 correction, §13.2). This does not change any result
+above.
+
+## Re-run 2026-09-28
+
+_After both `/develop foundation --fix-review` rounds • Server: the dev stack rebuilt from the current tree
+(`care-api` `NODE_ENV=production`, 3001 public / `127.0.0.1:3101` internal) •
+Script only: `scripts/curl-test-foundation.sh`, no manual case table re-recorded._
+
+| Mode | Pass | Fail | Known |
+|---|---|---|---|
+| read-only | 97 | 0 | 0 |
+| `RUN_INFRA_CASES=1` (Redis and Postgres stopped and restored) | 125 | 0 | 0 |
+
+- **Bug 4 fixed** ([GitHub #4](https://github.com/OmarRedaX/vcare-care-api/issues/4)): `OPTIONS /api/health/live` and
+  `OPTIONS /internal/health/ready` now answer `404 NotFound` with the envelope (case 23 passes; the 3 assertions that
+  failed on 2026-09-26 pass). The totals are unchanged (97 and 125 assertions); only their outcome changed.
+- **Known bug 2 no longer reproduces:** the Postgres-outage window produced no non-JSON line, so the script's
+  known-bug check for case 51 counted a pass, not a known failure (Knex messages are now `knex_warn` / `knex_error`
+  JSON lines).
+- **Dev database prepared for the new migration names:** the existing `care-pg-data` volume still recorded
+  `20260915000000_create_extension_btree_gist.js`; the `.js` suffix was stripped in `knex_migrations` before the run
+  (see [quickstart.md](../quickstart.md) → "If `npm run migrate` says 'migration directory is corrupt'").
+- Bugs 1 and 3 are still not observable through CURL on the foundation surface (see the 2026-09-26 notes); both are
+  covered by plain (no longer `test.failing`) tests.
+- Not re-exercised by hand: the 2026-09-26 "Not exercised, and why" list still applies.
+- No tokens, secrets, or PII were recorded; every marker the script sends is synthetic.

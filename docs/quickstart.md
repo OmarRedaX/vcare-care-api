@@ -4,54 +4,92 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-09-14
-tags: [tutorial, getting-started, care]
-related: [infrastructure, api, integration, scheduling-slots]
+last_verified: 2026-09-28
+tags: [tutorial, getting-started, care, docker, health]
+related: [infrastructure, api, integration, scheduling-slots, foundation-spec, runbook]
 ---
 
 # Quickstart (tutorial)
 
-From zero to a booked consultation on your machine.
+From zero to a running service on your machine, then (once the modules exist) to a booked consultation.
 
-> Application code does not exist yet. Commands marked `(planned)` show the intended shape once modules are
-> built through the workflow. All ids and text below are synthetic.
+> **Built today (foundation, 2026-09-28):** both listeners, the four health probes, migrations, and the worker
+> skeleton. Steps 1–3 work now. Steps 4–9 are marked `(planned)`: they show the intended shape once the business
+> modules are built through the workflow. All ids and text below are synthetic.
 
 ## 1. Prerequisites
-- Node.js 24 LTS
-- PostgreSQL 16 with the `btree_gist` extension available (`CREATE EXTENSION btree_gist;` must succeed)
-- Redis 7
-- A running identity-service on `3000` (public, JWKS) and `3100` (internal), or a local fake built from
-  `../vcare-hub/contracts/identity-service.openapi.yaml` that serves JWKS, `/internal/auth/token`,
-  `/internal/users`, and `/internal/users/:id/status`
-- A service client registered in Identity for Care with scopes `users:read users:status:write`
+- Node.js 24 LTS (`engines` is `>=24 <25`, enforced by `engine-strict`)
+- Docker with Compose — the local stack runs PostgreSQL 17 (with `btree_gist`) and Redis 7
+- For steps 4–9 only `(planned)`: a running identity-service on `3000` (public, JWKS) and `3100` (internal), or a
+  local fake built from `../vcare-hub/contracts/identity-service.openapi.yaml` that serves JWKS,
+  `/internal/auth/token`, `/internal/users`, and `/internal/users/:id/status`, plus a service client registered in
+  Identity for Care with scopes `users:read users:status:write`
 
 ## 2. Configure
 ```bash
-cp .env.example .env    # (planned)
+cp .env.example .env
 ```
-Minimum values (full list in [architecture/infrastructure.md](./architecture/infrastructure.md)):
+`.env.example` targets the compose infrastructure with the app on the host (full list in
+[architecture/infrastructure.md](./architecture/infrastructure.md)):
 ```bash
+NODE_ENV=development
 PORT=3001
 INTERNAL_PORT=3101
-DATABASE_URL=postgres://care:care@localhost:5432/care
-REDIS_URL=redis://localhost:6379
-IDENTITY_JWKS_URL=http://localhost:3000/.well-known/jwks.json
-IDENTITY_INTERNAL_URL=http://localhost:3100
-SERVICE_CLIENT_ID=care-service
-SERVICE_CLIENT_SECRET=<from Identity, never committed>
-UPLOAD_INTENT_TTL_SECONDS=900        # ADR 0013; no signing secret: uploads/downloads use S3 presigned URLs (ADR 0014)
+INTERNAL_HOST=127.0.0.1                                  # must be an IP literal, not "localhost"
+DATABASE_URL=postgres://care:care@localhost:5433/care    # no options/statement_timeout/query_timeout/application_name in the query string
+REDIS_URL=redis://localhost:6380
+CORS_ORIGINS=http://localhost:5173                       # honoured only in development
 ```
+Identity-related variables (`IDENTITY_JWKS_URL`, `IDENTITY_INTERNAL_URL`, `SERVICE_CLIENT_ID`,
+`SERVICE_CLIENT_SECRET`, …) arrive with the modules that use them `(planned)`. If a value is invalid, the process
+exits at once with one `invalid_environment` line naming the key (see [runbook.md](./runbook.md) → Boot and
+shutdown log lines).
 
 ## 3. Install, migrate, run
-```bash
-npm install          # (planned)
-npm run migrate      # (planned) creates btree_gist, all tables, the exclusion constraint
-npm run dev          # (planned) public listener :3001, internal listener :3101
-curl -s http://localhost:3001/api/health
-```
-Expect `{"status":"ok","service":"care-service","checks":{"postgres":"up","redis":"up",...}}`.
 
-## 4. Get tokens
+### Option A — app on the host (hot reload)
+```bash
+npm install
+docker compose up -d postgres redis   # Postgres 127.0.0.1:5433, Redis 127.0.0.1:6380 (host loopback only)
+npm run migrate                       # creates btree_gist (business tables arrive with their modules)
+npm run dev                           # public listener :3001, internal listener 127.0.0.1:3101
+```
+
+### Option B — everything in containers
+```bash
+docker compose up -d --build          # postgres, redis, migrate (one-off), care-api, care-worker
+```
+`care-api` runs with `NODE_ENV=production` here (so CORS is off); its public listener is published on `3001`, the
+internal listener on `127.0.0.1:3101` only.
+
+### Check it
+```bash
+curl -s http://localhost:3001/api/health/live       # {"status":"ok"}
+curl -s http://localhost:3001/api/health/ready      # {"status":"ok","checks":{"database":"up","redis":"up"}}
+curl -s http://127.0.0.1:3101/internal/health/ready # same body, internal listener
+```
+Stop Redis (`docker compose stop redis`) and readiness stays `200` with `"status":"degraded"`; stop Postgres and it
+turns `503` with `"status":"down"`. The old `GET /api/health` no longer exists and returns a `404 NotFound` envelope.
+Health requests are logged at `debug`, so they do not appear at `LOG_LEVEL=info`.
+
+Other useful commands: `npm run migrate:status`, `npm run migrate:rollback`, `npm run migrate:make <snake_name>`
+(all load `.env`), `npm run dev:worker`, `npm test`, and
+`npm run test:infra:up && npm run test:integration` (test stack on `127.0.0.1:5434` / `127.0.0.1:6381`).
+
+### If `npm run migrate` says "migration directory is corrupt"
+Migration names are recorded **without** the file extension since 2026-09-28. A dev volume migrated earlier still
+holds `20260915000000_create_extension_btree_gist.js`. Either recreate the dev database (this deletes all local data):
+```bash
+docker compose down -v
+```
+or rename the recorded rows in place:
+```bash
+docker compose exec postgres psql -U care -d care \
+  -c "UPDATE knex_migrations SET name = regexp_replace(name, '\.(js|ts)$', '')"
+```
+The test stack keeps its data on `tmpfs`, so it never needs this.
+
+## 4. Get tokens (planned)
 Log in through Identity (tokens come from Identity, never from Care):
 ```bash
 PATIENT=$(curl -s -X POST http://localhost:3000/api/auth/login \
@@ -63,7 +101,7 @@ ADMIN=$(curl -s -X POST http://localhost:3000/api/auth/login \
 ```
 The patient must have a verified email (`ev=true`) to book.
 
-## 5. Admin approves a doctor (Integration Case 1)
+## 5. Admin approves a doctor (Integration Case 1) (planned)
 A seeded doctor (user id `204`) has submitted an application (profile id `12`):
 ```bash
 curl -s -X PATCH http://localhost:3001/api/admin/applications/12/approve \
@@ -75,14 +113,14 @@ curl -s -X PATCH http://localhost:3001/api/admin/applications/12/approve \
 - `202` with `identitySync: "pending"` → Identity was unreachable; the decision is kept and a retry job runs.
   The doctor stays **unbookable** until synced. Stop your Identity fake to see this path.
 
-## 6. Search doctors
+## 6. Search doctors (planned)
 ```bash
 curl -s "http://localhost:3001/api/doctors?specialty=dermatology&language=ar&sort=earliest_availability&limit=10" \
   -H "Authorization: Bearer $PATIENT"
 ```
 If Identity is down, results still arrive with `displayName: null` and `profileHydrated: false`.
 
-## 7. See slots in your timezone
+## 7. See slots in your timezone (planned)
 ```bash
 curl -s "http://localhost:3001/api/doctors/204/slots?typeId=31&from=2026-09-21T00:00:00Z&to=2026-09-28T00:00:00Z&timezone=America/New_York" \
   -H "Authorization: Bearer $PATIENT"
@@ -90,7 +128,7 @@ curl -s "http://localhost:3001/api/doctors/204/slots?typeId=31&from=2026-09-21T0
 Each slot has `startsAt`/`endsAt` in UTC and `startsAtLocal`/`endsAtLocal` rendered in `America/New_York`.
 A doctor's Monday morning in `Africa/Cairo` may show as your Sunday night.
 
-## 8. Book with an Idempotency-Key
+## 8. Book with an Idempotency-Key (planned)
 ```bash
 KEY=$(uuidgen)
 curl -s -X POST http://localhost:3001/api/consultations \
@@ -100,9 +138,10 @@ curl -s -X POST http://localhost:3001/api/consultations \
 ```
 Expect `201` with `status: "booked"`. Run the **same** command again: you get the same consultation back, not a
 second booking. Change the body but keep the key: `422 IdempotencyConflict`. Book the same slot with a new key:
-`409 SlotUnavailable`.
+`409 SlotUnavailable`. Send the same key again while the first request is still running: an immediate
+`409 Conflict` with `Retry-After: 1`; retry after a second to get the replay.
 
-## 9. List your consultations
+## 9. List your consultations (planned)
 ```bash
 curl -s "http://localhost:3001/api/consultations?scope=upcoming" -H "Authorization: Bearer $PATIENT"
 ```

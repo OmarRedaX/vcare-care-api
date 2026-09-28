@@ -4,15 +4,17 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
 
-PostgreSQL 16, one database owned by Care. Written in the style migrations will use (`knex.raw`, see the
-`write-migration` skill). Conventions:
+PostgreSQL 17, one database owned by Care. **Built so far (foundation, 2026-09-28):** one migration,
+`20260915000000_create_extension_btree_gist` (the extension only, no tables); `knex_migrations` records migration names
+without the file extension. Everything below is the design the modules will build. Written in the style migrations
+will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
 - `id BIGSERIAL` everywhere; FKs `BIGINT` with named constraints and a leading-column index.
 - Identity references are `*_user_id BIGINT` with **no FK** (`-- Identity user id`).

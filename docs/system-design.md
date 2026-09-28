@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-26
+last_verified: 2026-09-28
 tags: [system-design, architecture, router, care]
 related: [overview, data-model, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
@@ -25,7 +25,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [architecture/rbac.md](./architecture/rbac.md) | check permissions, per-route policies, viewer-aware DTOs | reference |
 | [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–3 | explanation |
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts, retries, durable jobs, idempotency, alerts | explanation |
-| [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars, logging, errors, health | reference |
+| [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars, connection settings, logging, errors, health, boot and shutdown | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics and alerts | explanation |
 | [architecture/capacity.md](./architecture/capacity.md) | check Care's load, compute, database, storage, and Redis sizing and its 10× check | explanation |
 | [architecture/file-handling.md](./architecture/file-handling.md) | understand uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, contract changes | explanation |
@@ -49,6 +49,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0013](./adr/0013-verified-direct-upload-lifecycle.md) | Direct-to-S3 uploads via temporary intent; row only after verified `complete` |
 | [0014](./adr/0014-on-demand-download-urls.md) | On-demand, audited, 60 s presigned download URLs |
 | [0015](./adr/0015-aws-sdk-storage-adapter.md) | AWS SDK v3 modular packages behind `lib/storage` |
+| [0016](./adr/0016-foundation-runtime-dependencies.md) | Foundation runtime dependencies (`reflect-metadata`, in-house dev CORS, no `uuid`/`dotenv`) |
 | [0017](./adr/0017-generic-helpers-and-transaction-scoping.md) | Generic helpers live in `lib/`/`pkg/`; transactions use Knex's handler form |
 
 `/system-design` 2026-09-15 (Care runtime, capacity, notifications, reinstatement) also produced hub ADR 0009

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 tags: [api, reference, routes, rbac]
 related: [rbac, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
@@ -16,7 +16,9 @@ related: [rbac, integration, consultation-lifecycle, clinical-records, schedulin
 
 **Conventions.** Public base `http://localhost:3001/api`, internal base `http://localhost:3101/internal`.
 Success `{ success: true, data, meta? }`; errors use the shared envelope
-`{ success: false, error: { code, message, details?, requestId } }`. Every response echoes `X-Request-Id`.
+`{ success: false, error: { code, message, details, requestId } }` (`details` is always present, `[]` when empty).
+Every response echoes `X-Request-Id`: a valid incoming UUID is adopted **lower-cased**, anything else is replaced by a
+generated one.
 Lists are cursor-paginated (`cursor`, `limit` 1–100 default 20, `meta: { nextCursor, hasMore, count }`).
 Ids are int64 numbers; datetimes ISO-8601 with offset. Every route may also return `401`, `429`, and `500`.
 
@@ -26,9 +28,14 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 ## health
 | Method | Path | Roles | Ownership | Notes |
 |---|---|---|---|---|
-| GET | `/api/health/live` | public | none | 200 (planned, ADR 0006 — replaces `/api/health`) |
-| GET | `/api/health/ready` | public | none | 200 `ok`/`degraded` / 503 (Postgres down or draining) |
-| GET | `/internal/health/live`, `/internal/health/ready` | public (internal listener) | none | same as public (replaces `/internal/health`) |
+| GET | `/api/health/live` | public | none | 200 `{ status: "ok" }`; no dependency checks, never 503 (ADR 0006) |
+| GET | `/api/health/ready` | public | none | 200 `ok`/`degraded` (Redis down) · 503 `down` (Postgres down or draining); body `{ status, checks: { database, redis } }` |
+| GET | `/internal/health/live`, `/internal/health/ready` | public (internal listener only) | none | same bodies as the public pair |
+
+Implemented by the foundation (2026-09-28). Health bodies are bare JSON (not enveloped) with `Cache-Control: no-store`;
+unknown query parameters are ignored. The old `/api/health` and `/internal/health` paths no longer exist and return
+`404 NotFound`, as does any other method on a health path (including `OPTIONS`). Each listener serves only its own
+prefix: `/internal/*` on the public listener and `/api/*` on the internal listener are `404`.
 
 ## specialties
 | Method | Path | Roles | Ownership | Audit | Errors |

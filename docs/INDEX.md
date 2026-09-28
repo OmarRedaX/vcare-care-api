@@ -3,7 +3,7 @@ title: Care Service — Docs Index
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-09-26
+last_verified: 2026-09-28
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -18,8 +18,8 @@ Diátaxis type — a label, not a folder tree.
 |---|---|---|
 | [service-card.md](./service-card.md) | get the 30-second summary (owner, deps, endpoints, data) — synced to the hub | — |
 | [system-design.md](./system-design.md) | find the architecture shard for a concern | explanation |
-| [quickstart.md](./quickstart.md) | run the service locally for the first time and book a consultation | tutorial |
-| [runbook.md](./runbook.md) | respond to an alert or perform an on-call task | how-to |
+| [quickstart.md](./quickstart.md) | run the service locally for the first time (compose stack, migrate, health checks); later, book a consultation | tutorial |
+| [runbook.md](./runbook.md) | respond to an alert, read a boot/shutdown log line, or perform an on-call task | how-to |
 
 ## Architecture shards
 | Doc | Read it when you need to… | Lens |
@@ -32,8 +32,8 @@ Diátaxis type — a label, not a folder tree.
 | [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records, the 24 h lock, amendments, attachments, clinical audit | explanation |
 | [architecture/rbac.md](./architecture/rbac.md) | check who may call a route and what they see | reference |
 | [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–3 with identity-service | explanation |
-| [architecture/resilience.md](./architecture/resilience.md) | understand timeouts, retries, degrade policies, idempotency, durable jobs | explanation |
-| [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars, logging, error envelope, health, request ids | reference |
+| [architecture/resilience.md](./architecture/resilience.md) | understand timeouts (Postgres, Redis, HTTP, shutdown), Postgres failure modes, retries, degrade policies, idempotency, durable jobs | explanation |
+| [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars (implemented vs planned), database and Redis connection settings, logging and redaction, error envelope, health, request ids, boot and shutdown, the local compose stack | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics, alerts | explanation |
 | [architecture/capacity.md](./architecture/capacity.md) | check Care's load, compute, database, storage, Redis sizing, 10× check | explanation |
 | [architecture/file-handling.md](./architecture/file-handling.md) | understand document/attachment uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, required contract changes | explanation |
@@ -57,6 +57,7 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0013-verified-direct-upload-lifecycle.md](./adr/0013-verified-direct-upload-lifecycle.md) | direct-to-S3 uploads via a temporary intent; the real row only after `complete` verifies the bytes | explanation |
 | [adr/0014-on-demand-download-urls.md](./adr/0014-on-demand-download-urls.md) | download URLs issued per click, audited, 60 s presigned GET; no URLs in DTOs | explanation |
 | [adr/0015-aws-sdk-storage-adapter.md](./adr/0015-aws-sdk-storage-adapter.md) | AWS SDK v3 modular packages, only inside `lib/storage` | explanation |
+| [adr/0016-foundation-runtime-dependencies.md](./adr/0016-foundation-runtime-dependencies.md) | the foundation's runtime and dev dependencies: `reflect-metadata`, in-house dev CORS, no `uuid`/`dotenv`, deferred `jose`/`luxon`/`undici` | explanation |
 | [adr/0017-generic-helpers-and-transaction-scoping.md](./adr/0017-generic-helpers-and-transaction-scoping.md) | where a domain-free helper goes; how a service opens a transaction | explanation |
 
 ## Module docs
@@ -66,7 +67,9 @@ spec, tasks, manual-qa, reviews/). Each module gets rows here when it starts.
 | Doc | Read it when you need to… | Lens |
 |---|---|---|
 | [foundation/brainstorm.md](./foundation/brainstorm.md) | see the agreed scope of the runnable skeleton (what is in and out of the foundation) | explanation |
-| [foundation/spec.md](./foundation/spec.md) | build or change the skeleton: entrypoints, `lib/` APIs (errors, logger, idempotency, rate limit, health, shutdown, worker runner), env, tooling, Docker, CI, test plan | reference |
+| [foundation/spec.md](./foundation/spec.md) | build or change the skeleton: entrypoints, `lib/` APIs (errors, logger, idempotency, rate limit, health, shutdown, worker runner), env, tooling, Docker, CI, test plan; its As-built notes list the known latent gaps (#5–#17) | reference |
+| [foundation/tasks.md](./foundation/tasks.md) | see what the foundation build did, its fix-review rounds, and what is still open | — |
+| [foundation/manual-qa.md](./foundation/manual-qa.md) | see the CURL QA runs of the foundation (health, request id, envelope, listener isolation, outages) and re-run them with `scripts/curl-test-foundation.sh` | how-to |
 
 ## Contract (source of truth — prose above derives from it)
 | Contract | Defines |
