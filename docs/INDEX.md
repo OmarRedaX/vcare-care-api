@@ -3,7 +3,7 @@ title: Care Service — Docs Index
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -70,6 +70,8 @@ spec, tasks, manual-qa, reviews/). Each module gets rows here when it starts.
 | [foundation/spec.md](./foundation/spec.md) | build or change the skeleton: entrypoints, `lib/` APIs (errors, logger, idempotency, rate limit, health, shutdown, worker runner), env, tooling, Docker, CI, test plan; its As-built notes list the known latent gaps (#5–#17) | reference |
 | [foundation/tasks.md](./foundation/tasks.md) | see what the foundation build did, its fix-review rounds, and what is still open | — |
 | [foundation/manual-qa.md](./foundation/manual-qa.md) | see the CURL QA runs of the foundation (health, request id, envelope, listener isolation, outages) and re-run them with `scripts/curl-test-foundation.sh` | how-to |
+| [access/brainstorm.md](./access/brainstorm.md) | see the agreed scope of the shared access base (user guard + JWKS, deny-by-default `authorize`, append-only `audit_logs` + app DB role, worker partition loop, foundation fixes #5 #6 #10 #11) before `specialties` | explanation |
+| [access/spec.md](./access/spec.md) | build or use the access base: JWKS cache and `userGuard()`, the `Policy` shape and `authorize` step order, the boot route assertion, `AuditRecorder.record(trx, entry)`, the `audit_logs` migrations, DB roles (`care` / `vcare_app` / `care_app`, `ensure-app-login`), the worker `audit-partitions` loop, `checks.identityJwks`, env additions, the fixes for #5 #6 #10 #11, the test plan, the decided contract edits C1/C2, and the `audit` module hand-off (read indexes deferred) | reference |
 
 ## Contract (source of truth — prose above derives from it)
 | Contract | Defines |
