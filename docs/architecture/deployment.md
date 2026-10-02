@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, hub-deployment]
 ---
@@ -54,7 +54,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | 1 | Search at peak / mass cache invalidation | indexed SQL page, one `MGET`, worker refresh of `next-available` ([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)); alert `SearchLatencyHigh` |
 | 2 | Slot computation on hot doctors | fixed 5-query plan, 60 s cache; alert `SlotComputationLatencyHigh` |
 | 3 | `audit_logs` growth | monthly partitions, time-bounded queries ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
-| 4 | Connections / failover | pool per task, statement timeout, fast-fail on pool wait > 1 s; proxy past ~10 tasks; promotion drill |
+| 4 | Connections / failover | request pool per task (`DATABASE_POOL_MAX`) + a 1-connection readiness probe pool; statement timeout 2 s, client query timeout 3 s, connect timeout 2 s, TCP keepalive; fast-fail on pool wait > 1 s; a connection whose query timed out is discarded, not reused ([resilience.md](./resilience.md) → Postgres failure modes); proxy past ~10 tasks (verify it forwards the `options` / `statement_timeout` startup parameters first — [infrastructure.md](./infrastructure.md) → Database connection); promotion drill |
 | 5 | Replica lag → data loss window on failover | `DbReplicaLagHigh`; booking idempotency lets clients retry safely |
 | 6 | Outbox lag / provider slowness | SKIP LOCKED batches, 5 s provider timeout, backoff, `dead` after 8; scale worker to 2 |
 | 7 | Redis failover | Tier 2 fallbacks; readiness ignores Redis |
@@ -82,7 +82,8 @@ default partition non-empty, ticket) · `IdentityReinstatementSyncPending` (Case
 > 2× over 1 h, page). `HealthCheckFailing` now probes readiness.
 
 ## 6. Contract changes required (land via `/construct-spec` + `/develop`)
-- Replace `GET /api/health`, `GET /internal/health` with `…/health/live` and `…/health/ready` (ADR 0006).
+- ~~Replace `GET /api/health`, `GET /internal/health` with `…/health/live` and `…/health/ready` (ADR 0006).~~ Done:
+  contract changed 2026-09-15, implemented by the foundation (verified 2026-09-28); the old paths return 404.
 - Add `PATCH /api/admin/doctors/{doctorUserId}/reinstate` (ADR 0012) — 200 / 202 `identitySync: pending|failed` /
   404 / 409 `InvalidTransition`; `x-failure-policy: retry-report-pending`.
 - `GET /api/audit-logs` requires/defaults a time range (ADR 0009).

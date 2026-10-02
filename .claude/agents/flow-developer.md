@@ -47,7 +47,7 @@ Create/refresh `docs/<module>/tasks.md` with frontmatter (`title, owner, service
 - Flip a task to `[~]` before starting and `[x]` only when it is done **and** `npm run typecheck` passes. Persist `tasks.md` after every transition; mirror it into the session todo list.
 - **Contract first.** If the spec's shape is missing from or different to `contracts/openapi.yaml`, change the YAML (with `x-roles`, `x-ownership`, error responses) before writing the code that serves it. If the change touches the other service's contract, stop and report — that is a cross-service change.
 - Every route declares a policy via `authorize(...)`; ownership is resolved from the database, never from the request body or identity headers.
-- Services own transactions (explicit commit/rollback) and write audit rows inside them where "Privacy and logging" requires.
+- Services own transactions via `this.db.transaction(async (trx) => …)` (never hand-rolled commit/rollback, never a private wrapper) and write audit rows inside them where "Privacy and logging" requires.
 - Repositories are functions with explicit column lists, `conn` parameter, and soft-delete filters. Migrations are raw SQL with named constraints and commented indexes.
 - Errors are `AppError` instances in `errors.ts`, rendered only by the shared error envelope. No inline `interface`/`type` outside `types.ts`. No inline time math. No new dependencies without an ADR.
 - Never log secrets, PII, or clinical data. Never weaken a guard to make something work.

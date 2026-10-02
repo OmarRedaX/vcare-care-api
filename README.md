@@ -10,13 +10,18 @@ center, and the audit log.
 > **Status: foundation landed — domain modules next.** The service runs: Express 5 on a public and an
 > internal listener, config, DI, errors, logging, request ids, validation, Knex, Redis, idempotency, rate
 > limiting, graceful shutdown, worker loop, health probes, the `btree_gist` migration, Docker and CI.
-> `npm run lint`, `npm run typecheck`, and `npm run build` are green, and the health probes, migrations,
-> and error envelope were verified by hand against the compose test stack (Postgres 17 + Redis 7).
-> **One follow-up is open:** the unit and integration suites are scaffolding only (`/write-tests
-> foundation`). The env files from [`docs/foundation/spec.md`](./docs/foundation/spec.md) §3.8 are in
-> place: `.env.example`, `.env.test`, and `.env.test.example` are committed; `.env` and
-> `.env.test.bak.real` are local-only and gitignored. No domain endpoints exist yet;
+> The foundation test suites are written: `npm test` 30 suites / 367 tests pass (2026-09-26);
+> `npm run test:integration` last ran 9 suites, 72 passed, 2 SIGTERM cases skipped on Windows (green on Linux
+> CI). Manual QA ([`docs/foundation/manual-qa.md`](./docs/foundation/manual-qa.md),
+> `scripts/curl-test-foundation.sh`) passed 50 of 52 scenarios. No domain endpoints exist yet;
 > [`contracts/openapi.yaml`](./contracts/openapi.yaml) is the design they get built against.
+>
+> **Open:** 4 product bugs found by tests and QA, 3 of them pinned as `test.failing` (pg error messages leak
+> request values into logs, raw Knex console output during a Postgres outage, `INTERNAL_HOST` accepts
+> non-IPs, `OPTIONS` on a known path answers 200) — see
+> [`docs/foundation/tasks.md`](./docs/foundation/tasks.md). The foundation review
+> ([`docs/foundation/reviews/`](./docs/foundation/reviews/)) has 24 open findings (9 current: 4 Medium, 5
+> Low; 15 latent, surfacing once domain modules land). `/update-docs foundation` has not run yet.
 
 ## Stack
 
@@ -53,7 +58,7 @@ the image. See [`docs/quickstart.md`](./docs/quickstart.md) for the full walkthr
 ```bash
 npm run lint
 npm run typecheck
-npm test                      # unit — scaffolding only until /write-tests foundation runs
+npm test                      # unit
 npm run test:infra:up         # Postgres 5434 + Redis 6381 (tmpfs, hermetic)
 npm run test:integration      # reads .env.test (cp .env.test.example .env.test to reset it)
 npm run test:infra:down
@@ -67,8 +72,8 @@ npm run test:infra:down
 | [docs/INDEX.md](./docs/INDEX.md) | service docs router (architecture, runbook, quickstart, ADRs) |
 | [contracts/openapi.yaml](./contracts/openapi.yaml) | the HTTP API — source of truth |
 | [docs/architecture/](./docs/architecture/) | overview, api, data-model, rbac, scheduling-slots, clinical-records, file-handling, integration, resilience, infrastructure, deployment, capacity |
-| [docs/adr/](./docs/adr/) | service-level decisions (0001–0016) |
-| [docs/foundation/](./docs/foundation/) | the foundation module: brainstorm, spec, and live task list |
+| [docs/adr/](./docs/adr/) | service-level decisions (0001–0017) |
+| [docs/foundation/](./docs/foundation/) | the foundation module: brainstorm, spec, task list, manual QA, open review |
 
 Platform-wide docs (overview, deployment, capacity, integration, data ownership) live only in the hub —
 see hub [ADR 0008](https://github.com/OmarRedaX/Vcare/blob/main/adr/0008-doc-placement-by-scope.md).

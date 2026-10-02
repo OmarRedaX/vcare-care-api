@@ -15,10 +15,19 @@ export interface LoggerOptions {
     now?: () => Date;
 }
 
+/**
+ * What an error looks like in a log line. A database error (SQLSTATE `code`) carries NO `message`: Postgres copies
+ * the offending value into it (`invalid input syntax for type integer: "<value>"`). Only identifier fields are kept.
+ */
 export interface SerializedError {
     name: string;
-    message: string;
+    message?: string;
     code?: string;
+    severity?: string;
+    constraint?: string;
+    table?: string;
+    column?: string;
+    routine?: string;
     stack?: string;
 }
 

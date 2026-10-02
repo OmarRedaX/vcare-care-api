@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 tags: [architecture, capacity, sizing, load, storage, redis]
-related: [deployment, data-model, scheduling-slots, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, hub-capacity]
+related: [deployment, infrastructure, data-model, scheduling-slots, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, hub-capacity]
 ---
 
 # Capacity Derivation — care-service
@@ -56,7 +56,19 @@ Case 2 hydration reaching Identity and JWKS/service-token load are platform numb
 - **Class:** 2 vCPU / 8 GB; single-AZ primary + async replica in a second AZ ([ADR 0005](../adr/0005-availability-and-recovery-targets.md)).
 - **Load at peak:** ≈ 400 queries/s (search 3 queries, slots 5 on a cache miss, lists 1–2), ≈ 10 writes/s including
   audit and outbox rows.
-- **Connections:** `DATABASE_POOL_MAX=10` × 2 API tasks + 5 for the worker ≈ 25 (≈ 65 at max scale).
+- **Connections:** each `care-api` task opens up to `DATABASE_POOL_MAX` request connections **plus 1** for the
+  readiness probe pool (`application_name=care-api-probe`, foundation 2026-09-28); the worker is budgeted at 5
+  (it has no pool yet); `care-migrate` uses 1 during a release.
+
+  | `DATABASE_POOL_MAX` | Per API task | 2 tasks + worker | 6 tasks + worker |
+  |---|---|---|---|
+  | 20 (code default, `lib/config/env.ts`) | 21 | **47** | **131** |
+  | 10 (the value this derivation assumed on 2026-09-15; must then be set explicitly per task) | 11 | 27 | 71 |
+
+  Either fits the 2 vCPU / 8 GB class. Which value production sets is not decided yet; until it is, the
+  code default (20) applies, and the hub roll-up's "≈ 25 connections" is stale (it predates the probe connection and
+  assumed 10). At 10× (15–20 tasks) the default gives ≈ 320–425 connections, so the connection proxy in §7 is needed
+  either way.
 
 | Table | Rows/year | ≈ bytes/row incl. indexes | Year 1 |
 |---|---|---|---|
@@ -87,7 +99,7 @@ Soft-deleted objects are not purged in MVP.
 ## 7. 10× check (75 k consultations/day, ≈ 1 000 rps)
 | Resource | At 10× | Verdict |
 |---|---|---|
-| `care-api` | ≈ 15–20 tasks | holds — raise max; add a connection proxy past ~10 tasks |
+| `care-api` | ≈ 15–20 tasks | holds — raise max; add a connection proxy past ~10 tasks (each task holds up to `DATABASE_POOL_MAX + 1` connections) |
 | PostgreSQL | ≈ 4 000 qps, ≈ 520 GB/year (audit 360 GB) | holds with discovery reads on the replica and a 4–8 vCPU class; audit partitions archived by retention |
 | Redis | < 1 GB | holds |
 | Object storage | ≈ 20 TB/year | holds (cost, not architecture) |

@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import { getEnv } from "./lib/config/env";
+import { runMain } from "./lib/lifecycle/run-main";
 import { logger } from "./lib/logger/logger";
 import { LoopRunner } from "./lib/worker/loop-runner";
 import { buildWorkerLoops } from "./worker-loops";
@@ -52,4 +53,4 @@ function main(): void {
     });
 }
 
-main();
+runMain(main);

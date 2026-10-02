@@ -13,7 +13,7 @@ const PROBE_TIMEOUT_MS = 500;
 @injectable()
 export class HealthService {
     constructor(
-        @inject(TOKENS.Db) private readonly db: Knex,
+        @inject(TOKENS.ProbeDb) private readonly db: Knex,
         @inject(TOKENS.Redis) private readonly redis: Redis,
         @inject(TOKENS.ShutdownState) private readonly state: ShutdownState,
     ) {}
@@ -24,7 +24,8 @@ export class HealthService {
     }
 
     /**
-     * Postgres is fatal; Redis is Tier 2 and only reported (ADR 0006). Probes run concurrently, each
+     * Postgres is fatal; Redis is Tier 2 and only reported (ADR 0006). The database probe uses its own 1-connection
+     * pool (`TOKENS.ProbeDb`), so a busy request pool never reads as "down". Probes run concurrently, each
      * bounded by 500 ms, and run even during shutdown so the body stays truthful.
      */
     async ready(): Promise<ReadinessResult> {

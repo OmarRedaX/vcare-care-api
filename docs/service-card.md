@@ -3,7 +3,7 @@ title: Care Service — Service Card
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 tags: [service-card, catalog, care]
 related: [index, system-design, runbook, integration, data-model]
 sync_to_hub: catalog/care-service.card.md
@@ -19,10 +19,10 @@ sync_to_hub: catalog/care-service.card.md
 | **Name** | care-service |
 | **Repo** | `vcare-care-api` |
 | **Owner** | care-team |
-| **Status** | design (no code yet) |
+| **Status** | foundation built (2026-09-28): both listeners, health live/ready, migrations, `care-worker` skeleton; no business modules yet |
 | **Tier** | 1 (booking and consultations are on the synchronous patient path) · availability target **99.9 %** monthly (ADR 0005) |
 | **Runtime** | Node.js 24 LTS + TypeScript (strict), Express 5. `care-api`: two listeners, public `PORT=3001` (`/api/*`), internal `INTERNAL_PORT=3101` (`/internal/*`), 2–6 tasks. `care-worker`: sync retrier, notification outbox, reminders, cache refresh, audit partitions (1 task) |
-| **Datastores** | PostgreSQL 16 (own `care` database, `btree_gist`; primary + async replica) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
+| **Datastores** | PostgreSQL 17 (own `care` database, `btree_gist`; primary + async replica; up to `DATABASE_POOL_MAX` + 1 readiness-probe connection per API task) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
 
 ## Responsibilities
 The medical marketplace: doctor profiles and credentialing, specialties, working hours, schedule
@@ -58,13 +58,13 @@ Detail: [architecture/data-model.md](./architecture/data-model.md).
 | admin tooling / future ai-service | `GET /internal/doctors/{userId}/summary` (service token, scope `doctors:read`) | no MVP service client holds `doctors:read` yet |
 
 ## Endpoint families
-`/api/health/live`, `/api/health/ready` (planned, replaces `/api/health`) · `/api/specialties` · `/api/doctors/apply`, `/api/doctors/me`, `/api/doctors/me/documents`,
+`/api/health/live`, `/api/health/ready` (live; `/api/health` removed) · `/api/specialties` · `/api/doctors/apply`, `/api/doctors/me`, `/api/doctors/me/documents`,
 `/api/doctors/me/application` · `/api/doctors`, `/api/doctors/{doctorUserId}`, `/api/doctors/{doctorUserId}/slots` ·
 `/api/doctors/me/working-hours`, `/api/doctors/me/exceptions`, `/api/doctors/me/consultation-types` ·
 `/api/admin/applications` (approve, reject, reopen) · `/api/admin/doctors/{doctorUserId}/suspend`, `/reinstate` (planned) ·
 `/api/patients/me`, `/api/patients/{patientUserId}`, `/api/patients/{patientUserId}/records` ·
 `/api/consultations` (book, list, waiting-room, calendar, get, reschedule, cancel, join, start, complete, no-show, record) ·
-`/api/records/{id}` (+ attachment uploads, complete, download-url — planned) · document uploads and download-url (planned) · `/api/help-articles` · `/api/audit-logs` · `/internal/doctors/{userId}/summary` · `/internal/health`.
+`/api/records/{id}` (+ attachment uploads, complete, download-url — planned) · document uploads and download-url (planned) · `/api/help-articles` · `/api/audit-logs` · `/internal/doctors/{userId}/summary` · `/internal/health/live`, `/internal/health/ready` (live). Everything except health is designed in the contract, not yet built.
 
 ## Events
 None in MVP (HTTP-only). Future candidates (no AsyncAPI yet): `consultation.booked`,

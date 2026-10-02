@@ -15,6 +15,11 @@ export interface SendSuccessOptions {
     meta?: Record<string, unknown>;
 }
 
+/** Express types `req.route` as `any`; this is the only part of it Care reads. */
+export interface MatchedRequest {
+    route?: { path?: unknown };
+}
+
 export interface CorsOptions {
     origins: readonly string[];
 }

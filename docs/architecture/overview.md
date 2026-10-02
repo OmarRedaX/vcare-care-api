@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 tags: [architecture, overview, modules, layering]
-related: [system-design, data-model, api, integration, infrastructure]
+related: [system-design, data-model, api, integration, infrastructure, foundation-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
 
 # Architecture Overview — care-service
@@ -35,7 +35,7 @@ flowchart LR
         MAIL["lib/email port (async)"]
         STO["lib/storage port"]
     end
-    PG[("PostgreSQL 16<br/>care DB + btree_gist")]
+    PG[("PostgreSQL 17<br/>care DB + btree_gist")]
     R[("Redis 7")]
     OBJ[("Object storage<br/>private bucket")]
     IDP["identity-service<br/>:3000 JWKS · :3100 internal"]
@@ -94,11 +94,13 @@ Cross-module calls go through **services**, never another module's repository.
 
 ```
 src/app/<module>/   controller → service → repository     may import lib/, pkg/
-src/lib/            auth, rbac, audit, identity-client, storage (S3 presign/verify), video, email,
-                    idempotency, rate-limit, error, http, config, knex, redis, logger
+src/lib/            built (foundation): config, di, error, logger, request-id, http (response, no-store,
+                      pagination, cors, client-ip, route-pattern), validation, knex, redis, idempotency,
+                      rate-limit, lifecycle, worker, async, types
+                    planned: auth, rbac, audit, identity-client, storage (S3 presign/verify), video, email
                     may import pkg/; never app/<module>
-src/pkg/            pure functions: slots/, utils/time.ts, utils/interval.ts
-                    no env, no I/O, no clock (now is passed in)
+src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, utils/uuid.ts (built);
+                      slots/, utils/interval.ts (planned) — no env, no I/O, no clock (now is passed in)
 ```
 
 - Controllers validate DTOs and call one service method; no business logic.
@@ -133,7 +135,9 @@ sequenceDiagram
     Note over EH: any thrown AppError / unknown error → one ErrorEnvelope
 ```
 
-1. **request-id** — adopt a valid UUID `X-Request-Id` or generate one; echo it; bind it to the logger.
+1. **request-id** — adopt a valid UUID `X-Request-Id` (lower-cased) or generate one; echo it; open the
+   `AsyncLocalStorage` request context, so every log line written anywhere downstream (services, repositories,
+   promise continuations) carries `requestId` without passing a logger around.
 2. **helmet** (+ CORS allowlist in local development only — production is a single origin, hub ADR 0005); `Cache-Control: no-store` on clinical and consultation routes.
 3. **rate-limit** — search/slots 60/min per IP and 120/min per user; booking writes 10/min per user; uploads 20/h per user.
 4. **user-guard** — verifies the EdDSA token locally against Identity's JWKS; no network call per request.
@@ -144,3 +148,10 @@ sequenceDiagram
 
 The internal listener runs request-id → service-guard (service token, `aud` contains `vcare-care`, scope) →
 authorize → controller. It makes no outbound calls on its request path.
+
+**As built by the foundation (2026-09-28).** Both listeners start with request-id → in-flight counter (graceful
+drain) → request logger → `helmet()`; the public listener adds the dev-only CORS allowlist; then any `OPTIONS` not
+answered as an allowed preflight → `404 NotFound`; `express.json` (100 kB); the health router and the module routers;
+`notFound`; `errorHandler`. Rate-limit, guard, `authorize`, and idempotency are mounted **per router** by each module
+(step order above), not globally. Only the health routes exist today
+([infrastructure.md](./infrastructure.md) → HTTP hardening, Health).

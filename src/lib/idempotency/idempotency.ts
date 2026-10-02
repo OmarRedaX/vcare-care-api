@@ -1,15 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
-import type Redis from "ioredis";
 import { canonicalJson } from "../../pkg/utils/canonical-json";
-import { container } from "../di/container";
-import { TOKENS } from "../di/tokens";
+import { isUuid } from "../../pkg/utils/uuid";
 import { Conflict, IdempotencyConflict, ValidationFailed } from "../error/errors";
 import { clientIp } from "../http/client-ip";
+import { routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
-import { isRedisReady, redis as defaultRedis } from "../redis/redis";
-import { UUID_PATTERN } from "../request-id/request-id";
-import { acquireLock, readRecord, releaseLock, storeResult } from "./idempotency-store";
+import { isRedisReady, resolveRedis } from "../redis/redis";
+import { acquireLock, inProgressRecord, readRecord, releaseOwnLock, storeResult } from "./idempotency-store";
 import type { IdempotencyOptions } from "./types";
 
 const DEFAULT_LOCK_TTL_MS = 60_000;
@@ -38,21 +36,9 @@ export function hashBody(body: unknown): string {
     return createHash("sha256").update(canonicalJson(body ?? null)).digest("hex");
 }
 
-function resolveRedis(options: IdempotencyOptions): Redis {
-    if (options.redis !== undefined) {
-        return options.redis;
-    }
-    return container.isRegistered(TOKENS.Redis) ? container.resolve<Redis>(TOKENS.Redis) : defaultRedis;
-}
-
-function routePattern(req: Request): string {
-    const path = (req as { route?: { path?: string } }).route?.path;
-    return `${req.method} ${req.baseUrl}${typeof path === "string" ? path : ""}`;
-}
-
 /** Redis is Tier 2: when it is unavailable the middleware steps aside — DB-level guarantees still apply. */
 function skip(req: Request, reason: string): void {
-    logger.warn("idempotency_skipped", { requestId: req.requestId, route: routePattern(req), reason });
+    logger.warn("idempotency_skipped", { requestId: req.requestId, route: routeLabel(req), reason });
     logger.metric("idempotency_skipped", 1, { reason });
 }
 
@@ -91,12 +77,12 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
             );
             return;
         }
-        if (!UUID_PATTERN.test(key)) {
+        if (!isUuid(key)) {
             next(ValidationFailed.withDetails([{ field: "Idempotency-Key", issue: "must be a UUID" }]));
             return;
         }
 
-        const client = resolveRedis(options);
+        const client = resolveRedis(options.redis);
         if (!isRedisReady(client)) {
             skip(req, "redis_not_ready");
             next();
@@ -105,12 +91,16 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
 
         const storeKey = buildIdempotencyKey(req, key);
         const bodyHash = hashBody(req.body);
+        const lockValue = inProgressRecord(bodyHash);
 
         void (async () => {
             let acquired: boolean;
             try {
-                acquired = await acquireLock(client, storeKey, bodyHash, lockTtlMs);
+                acquired = await acquireLock(client, storeKey, lockValue, lockTtlMs);
             } catch {
+                // The SET may still land after the client-side timeout. Redis runs this later EVAL after it on the
+                // same connection, so a lock that nobody would settle is not left to block retries for lockTtlMs.
+                releaseOwnLock(client, storeKey, lockValue).catch(() => undefined);
                 skip(req, "redis_error");
                 next();
                 return;
@@ -153,17 +143,30 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
                 return originalJson(body);
             };
 
-            res.on("finish", () => {
+            // Settle exactly once, when the HANDLER completes the response — not when the socket finishes: a client
+            // that timed out and disconnected emits only `close`, and its retry must still get the original result.
+            let settled = false;
+            const settle = (): void => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
                 const status = res.statusCode;
-                const settle =
+                const work =
                     status >= 500 || status === 429
-                        ? releaseLock(client, storeKey)
+                        ? releaseOwnLock(client, storeKey, lockValue)
                         : storeResult(client, storeKey, bodyHash, status, captured, ttlMs);
-                settle.catch(() => {
+                work.catch(() => {
                     // Response is already sent; the lock expires after lockTtlMs.
-                    logger.warn("idempotency_store_failed", { requestId: req.requestId, route: routePattern(req) });
+                    logger.warn("idempotency_store_failed", { requestId: req.requestId, route: routeLabel(req) });
                 });
-            });
+            };
+            const originalEnd = res.end.bind(res) as (...args: unknown[]) => Response;
+            res.end = ((...args: unknown[]) => {
+                settle();
+                return originalEnd(...args);
+            }) as Response["end"];
+            res.on("finish", settle); // fallback only; settle() is idempotent
 
             next();
         })();

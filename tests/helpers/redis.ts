@@ -1,6 +1,22 @@
 import Redis from "ioredis";
 import { redis } from "../../src/lib/redis/redis";
 
+/** Connects the app's lazy client (the server does this at boot) and waits until it reports `ready`. */
+export async function ensureRedisReady(client: Redis = redis): Promise<void> {
+    if (client.status === "wait") {
+        await client.connect();
+    }
+    if (client.status !== "ready") {
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`redis not ready (status ${client.status})`)), 5_000);
+            client.once("ready", () => {
+                clearTimeout(timer);
+                resolve();
+            });
+        });
+    }
+}
+
 /** Deletes only this suite's keys — never `KEYS` and never `FLUSHALL`. */
 export async function flushByPrefix(prefixes: string[] = ["idem:", "rl:"], client: Redis = redis): Promise<void> {
     if (client.status !== "ready") {
@@ -31,10 +47,4 @@ export function createUnreachableRedis(): Redis {
     });
 }
 
-export async function closeRedis(client: Redis = redis): Promise<void> {
-    try {
-        await client.quit();
-    } catch {
-        client.disconnect();
-    }
-}
+export { closeRedis } from "../../src/lib/redis/redis";

@@ -2611,7 +2611,10 @@ components:
 
   headers:
     XRequestId:
-      description: Request id (UUID) — the incoming `X-Request-Id` if it is a valid UUID, else generated. Echoed on every response.
+      description: |
+        Request id (UUID) — the incoming `X-Request-Id` if it is a valid UUID (any version, either case), **lower-cased**;
+        otherwise a newly generated one. Echoed on every response (success, error, 404, health) and equal to
+        `error.requestId` in error bodies. Compare ids case-insensitively.
       schema:
         type: string
         format: uuid
@@ -2621,7 +2624,11 @@ components:
         type: string
         const: no-store
     RetryAfter:
-      description: Seconds until the limiter allows another request.
+      description: |
+        Seconds to wait before retrying. On `429 RateLimited`: until the limiter allows another request. On
+        `409 Conflict` from an operation that takes `Idempotency-Key`: always `1` — a request with the same key is still
+        being processed (or has just failed and released its key), so the same request should be retried after the
+        delay; it is not a final conflict. Absent on every other 409.
       schema:
         type: integer
         minimum: 1
@@ -2631,7 +2638,10 @@ components:
       name: X-Request-Id
       in: header
       required: false
-      description: Optional caller-supplied UUID; propagated to logs, audit rows, and every call to Identity.
+      description: |
+        Optional caller-supplied UUID (any version, either case). A valid value is adopted **lower-cased**; a missing,
+        empty, repeated, or non-UUID value is replaced by a generated UUID. The adopted id is propagated to logs, audit
+        rows, and every call to Identity.
       schema:
         type: string
         format: uuid
@@ -2642,6 +2652,9 @@ components:
       description: |
         Required UUID. Stored 24 h in Redis keyed by (route, principal, key) with a body hash. Same key + same body → replay
         of the original response; same key + different body → `422 IdempotencyConflict`. Missing → `400 ValidationFailed`.
+        Same key + same body while the first attempt is still being processed → immediate `409 Conflict` with
+        `Retry-After: 1` (message `A request with this idempotency key is still being processed`); retry after the delay
+        to receive the replay. The in-flight marker expires after 60 s if the first attempt never completes.
         Booking also persists the key on the consultation row (`uq_consultations_idempotency`).
       schema:
         type: string
@@ -2650,7 +2663,10 @@ components:
       name: Idempotency-Key
       in: header
       required: false
-      description: Optional UUID with the same replay semantics as on booking writes.
+      description: |
+        Optional UUID with the same semantics as on booking writes: same key + same body → replay of the original
+        response; same key + different body → `422 IdempotencyConflict`; same key + same body while the first attempt is
+        still being processed → immediate `409 Conflict` with `Retry-After: 1` (retry after the delay).
       schema:
         type: string
         format: uuid
@@ -3149,10 +3165,12 @@ components:
               message: Resource not found
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     Conflict:
-      description: '`Conflict` — generic uniqueness or state conflict (e.g. duplicate slug, application already submitted).'
+      description: '`Conflict` — generic uniqueness or state conflict (e.g. duplicate slug, application already submitted). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
       content:
         application/json:
           schema:
@@ -3164,10 +3182,12 @@ components:
               message: The resource already exists
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     BookingConflict:
-      description: '`DoctorNotBookable` (not approved+synced, suspended, not accepting, or no active type) or `SlotUnavailable` (taken, incl. exclusion violation).'
+      description: '`DoctorNotBookable` (not approved+synced, suspended, not accepting, or no active type) or `SlotUnavailable` (taken, incl. exclusion violation). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
       content:
         application/json:
           schema:
@@ -3179,10 +3199,12 @@ components:
               message: The selected slot is no longer available
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RescheduleConflict:
-      description: '`PolicyWindowViolation`, `InvalidTransition`, `DoctorNotBookable`, or `SlotUnavailable`.'
+      description: '`PolicyWindowViolation`, `InvalidTransition`, `DoctorNotBookable`, or `SlotUnavailable`. Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
       content:
         application/json:
           schema:
@@ -3194,10 +3216,12 @@ components:
               message: This consultation can no longer be changed by the patient
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     CancelConflict:
-      description: '`PolicyWindowViolation` (patient inside the window) or `InvalidTransition` (terminal or not cancellable).'
+      description: '`PolicyWindowViolation` (patient inside the window) or `InvalidTransition` (terminal or not cancellable). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
       content:
         application/json:
           schema:
@@ -3254,10 +3278,12 @@ components:
               message: A no-show can be marked only after the grace period
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordCreateConflict:
-      description: '`RecordRequiresCompleted` (consultation not `completed`) or `Conflict` (a record already exists).'
+      description: '`RecordRequiresCompleted` (consultation not `completed`) or `Conflict` (a record already exists). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
       content:
         application/json:
           schema:
@@ -3299,14 +3325,18 @@ components:
               message: Only submitted applications can be reviewed
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ScheduleConflictsUnconfirmed:
-      description: '`ScheduleConflictsUnconfirmed` (body lists the affected consultation ids; resubmit with `confirmConflicts=true`) or `Conflict` (a live exception already exists for a date).'
+      description: '`ScheduleConflictsUnconfirmed` (body lists the affected consultation ids; resubmit with `confirmConflicts=true`) or `Conflict` (a live exception already exists for a date). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict). `Conflict` bodies are the plain envelope.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ScheduleConflicts'
+            anyOf:
+              - $ref: '#/components/schemas/ScheduleConflicts'
+              - $ref: '#/components/schemas/ErrorEnvelope'
     BookingUnprocessable:
       description: '`OutsideWorkingHours`, `BookingInPast`, `BeyondBookingHorizon`, or `IdempotencyConflict`.'
       headers:

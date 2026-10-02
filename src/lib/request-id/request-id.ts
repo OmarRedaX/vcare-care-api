@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { RequestHandler } from "express";
+import { isUuid } from "../../pkg/utils/uuid";
 import { logger } from "../logger/logger";
 import { requestContext } from "../logger/request-context";
-
-export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Mounted FIRST on both listeners: adopts a valid incoming `X-Request-Id` (any UUID version, lower-cased)
@@ -13,7 +12,7 @@ export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 export function requestId(): RequestHandler {
     return (req, res, next) => {
         const incoming = req.get("X-Request-Id");
-        const id = incoming !== undefined && UUID_PATTERN.test(incoming) ? incoming.toLowerCase() : randomUUID();
+        const id = incoming !== undefined && isUuid(incoming) ? incoming.toLowerCase() : randomUUID();
 
         req.requestId = id;
         req.log = logger.child({ requestId: id });

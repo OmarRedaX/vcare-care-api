@@ -3,12 +3,12 @@ title: foundation — Spec
 owner: care-team
 service: care-service
 module: foundation
-status: ready
-version: 1.0.0
+status: implemented
+version: 1.1.0
 diataxis: reference
-last_verified: 2026-09-15
+last_verified: 2026-09-28
 tags: [spec, foundation, bootstrap, infrastructure, health, idempotency, rate-limit, logging, testing, ci, docker]
-related: [foundation-brainstorm, infrastructure, deployment, overview, quickstart, resilience, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component]
+related: [foundation-brainstorm, foundation-tasks, foundation-manual-qa, infrastructure, deployment, overview, quickstart, resilience, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -16,6 +16,10 @@ contracts: [contracts/openapi.yaml]
 
 The runnable skeleton every later module builds on. Scope follows [brainstorm.md](./brainstorm.md) exactly: nothing
 here exists "for later" unless a later module would otherwise have to change a foundation file's shape.
+
+> **Built (2026-09-28).** Sections 1–9 include the spec-first edits made by both `/develop foundation --fix-review`
+> rounds. Where the code differs from the text, and for the known latent gaps deferred to GitHub issues #5–#17, see
+> [§13 As-built notes](#13-as-built-notes-2026-09-28).
 Binding rules: CLAUDE.md → "Tech stack (locked)", "Folder structure and layering", "Database rules",
 "API conventions", "Security rules", "Privacy and logging", "Testing policy". Env/logging/health facts:
 [architecture/infrastructure.md](../architecture/infrastructure.md); runtime components:
@@ -94,7 +98,10 @@ export async function down(knex: Knex): Promise<void> {
 ```
 - `btree_gist` is a trusted extension (PostgreSQL ≥ 13): the database owner role can create it; no superuser needed.
 - Migration table: `knex_migrations` / `knex_migrations_lock` (Knex defaults).
-- Every pool connection runs `SET TIME ZONE 'UTC'` (§3.4.8).
+- Every pool connection starts with `TimeZone=UTC` (startup parameter, §3.4.8); `DATABASE_URL` cannot override it
+  (§3.4.1 rejects a URL carrying `options`).
+- Migration names are recorded **without** the file extension (`20260915000000_create_extension_btree_gist`), so the
+  compiled (`dist/*.js`) and source (`src/*.ts`) migrators agree on one database (§3.4.8 `migrationConfig`).
 
 ---
 
@@ -125,7 +132,9 @@ export async function down(knex: Knex): Promise<void> {
 | `…/health/ready` | both up | 200 | `{ "status": "ok", "checks": { "database": "up", "redis": "up" } }` |
 | `…/health/<other>` or any unmatched path | — | 404 | error envelope, `NotFound` |
 
-Probes run **concurrently**, each bounded by 500 ms: database = `SELECT 1` on the primary pool; redis = `PING`
+Probes run **concurrently**, each bounded by 500 ms: database = `SELECT 1` on the **dedicated probe pool**
+(`probeDb`, 1 connection, `application_name=care-api-probe`, §3.4.8) — never the request pool, so a busy but healthy
+task whose 20 request connections are all in use does not report `database: down`; redis = `PING`
 (skipped and reported `down` without a round trip when `redis.status !== "ready"`). A probe that rejects or
 times out is `down`. Probes run even during shutdown so the body stays truthful; shutdown only forces
 `status: "down"` and 503. The auth module later adds an informational `checks.identityJwks`
@@ -154,7 +163,7 @@ src/
     http/response.ts  http/no-store.ts  http/cors.ts  http/client-ip.ts  http/types.ts
     http/pagination/cursor.ts  http/pagination/page.ts  http/pagination/pagination.request.dto.ts  http/pagination/types.ts
     validation/validate.ts  validation/types.ts
-    knex/knex.ts  knex/knexfile.ts  knex/probe.ts  knex/types.ts
+    knex/knex.ts  knex/knexfile.ts  knex/probe.ts  knex/knex-log.ts  knex/pg-connection-state.ts  knex/types.ts
     redis/redis.ts  redis/types.ts
     idempotency/idempotency.ts  idempotency/idempotency-store.ts  idempotency/types.ts
     rate-limit/rate-limit.ts  rate-limit/sliding-window.lua.ts  rate-limit/memory-limiter.ts  rate-limit/subjects.ts  rate-limit/types.ts
@@ -186,13 +195,18 @@ registrations (foundation: `HealthService`, `HealthController` as singletons). T
 1. `app.disable("x-powered-by")`; Express `trust proxy` stays **off** — client IPs come only from `clientIp(req)`
    (§3.4.6), so there is one IP rule.
 2. `requestId()` (opens the AsyncLocalStorage context) → `inFlight()` → `requestLogger()` → `helmet()`.
-3. `cors({ origins: env.CORS_ORIGINS })` **only when** `env.NODE_ENV === "development"` and the list is non-empty.
-4. `express.json({ limit: "100kb", strict: true, type: "application/json" })`.
-5. `app.use("/api/health", buildHealthRouter())`; `app.use("/api", buildPublicRoutes())`; each `extraRouters` entry.
-6. `notFound` → `errorHandler`.
+3. `cors({ origins: env.CORS_ORIGINS })` **only when** `env.NODE_ENV === "development"` and the list is non-empty
+   (an allowed preflight is answered 204 here, before step 4).
+4. `optionsNotFound` (`lib/error/not-found.ts`): every other `OPTIONS` request → `next(NotFound)`. Without it Express 5's
+   router answers `OPTIONS` on a known path itself (`200 text/plain`, `Allow: …`), bypassing the one envelope and
+   revealing route shapes to anonymous callers.
+5. `express.json({ limit: "100kb", strict: true, type: "application/json" })`.
+6. `app.use("/api/health", buildHealthRouter())`; `app.use("/api", buildPublicRoutes())`; each `extraRouters` entry.
+7. `notFound` → `errorHandler`.
 
 #### `src/internal-app.ts`
-`export function createInternalApp(options?: AppOptions): express.Express` — same as above minus CORS; mounts
+`export function createInternalApp(options?: AppOptions): express.Express` — same as above minus CORS (so
+`optionsNotFound` follows `helmet()` directly); mounts
 `/internal/health` and `/internal` → `buildInternalRoutes()`.
 
 #### `src/routes.ts`, `src/internal-routes.ts`
@@ -200,6 +214,9 @@ registrations (foundation: `HealthService`, `HealthController` as singletons). T
 modules mount here.
 
 #### `src/server.ts` (`node dist/server.js`, component `care-api`)
+0. `main` runs through `runMain(main)` (`lib/lifecycle/run-main.ts`, shared by all three entrypoints): a synchronous
+   throw or a rejection during boot writes **one** JSON line `error boot_failed` (serialized error, §3.4.4) and exits
+   1 — never Node's default multi-line stack on stderr.
 1. `import "reflect-metadata"`; `const env = getEnv()` (exits 1 on invalid env, §3.4.1); `registerDependencies(env)`.
 2. Install `process.on("uncaughtException" | "unhandledRejection")` → log `error` `uncaught_error` (serialized
    error) → `shutdown("uncaught_error", 1)`.
@@ -210,11 +227,12 @@ modules mount here.
    On each: `keepAliveTimeout = 65_000`, `headersTimeout = 66_000`, `requestTimeout = 30_000`.
    Listen error (e.g. `EADDRINUSE`) → log `error server_listen_failed` → exit 1.
 5. Log `info server_started` with `port`, `internalPort`.
-6. `SIGTERM`/`SIGINT` → `shutdown(signal)` built by `createGracefulShutdown` (§3.4.13). A second signal while
-   shutting down logs `warn shutdown_forced` and exits 1.
+6. `SIGTERM`/`SIGINT` → `shutdown(signal)` built by `createGracefulShutdown` (§3.4.13) with `closeResources`
+   `[db.destroy, probeDb.destroy, closeRedis(redis)]`. A second signal while shutting down logs `warn shutdown_forced`
+   and exits 1.
 
 #### `src/worker.ts` (`node dist/worker.js`, component `care-worker`)
-1. `import "reflect-metadata"`; `getEnv()`; root logger.
+1. `import "reflect-metadata"`; `getEnv()`; root logger; `main` runs through `runMain` (`boot_failed`, as `server.ts`).
 2. `const runner = new LoopRunner(buildWorkerLoops(), { logger })`; `runner.start()`; log `info worker_started` with
    `loops` (names).
 3. `SIGTERM`/`SIGINT` → log `info worker_stopping` → `await` `runner.stop()` raced against `SHUTDOWN_TIMEOUT_MS` →
@@ -224,6 +242,7 @@ modules mount here.
 `src/worker-loops.ts`: `export function buildWorkerLoops(): WorkerLoop[]` returns `[]`.
 
 #### `src/migrate.ts` (`node dist/migrate.js <cmd>`, component `care-migrate`)
+Runs through `runMain` (`boot_failed`, as `server.ts`).
 Commands: `latest` (default), `rollback` (last batch), `status`, `make <snake_name>` (dev only: writes
 `src/migrations/<YYYYMMDDHHMMSS>_<snake_name>.ts` from a raw-SQL `up`/`down` template; refuses names not matching
 `^[a-z][a-z0-9_]{2,80}$`). Uses `createKnex({ …, statementTimeoutMs: null, applicationName: "care-migrate" })` and
@@ -248,9 +267,9 @@ export function getEnv(): Env;  // memoized parseEnv(process.env); on InvalidEnv
 | `NODE_ENV` | `enum(["development","test","production"])` | `development` | | CORS gate, log level rule |
 | `PORT` | `coerce.number().int().min(1).max(65535)` | `3001` | | public listener |
 | `INTERNAL_PORT` | same; refine `≠ PORT` | `3101` | | internal listener |
-| `INTERNAL_HOST` | `string().ip()` | `127.0.0.1` | | internal listener bind address (compose/deploy set the private interface; parity with identity) |
+| `INTERNAL_HOST` | `string()` refined to an IPv4 or IPv6 literal (`net.isIP(value) !== 0`; host names and out-of-range octets rejected) | `127.0.0.1` | | internal listener bind address (compose/deploy set the private interface; parity with identity) |
 | `TRUST_PROXY_HOPS` | `coerce.number().int().min(0).max(5)` | `0` | | `lib/http/client-ip.ts` (correct client IP for per-IP limits and idempotency principals behind the edge) |
-| `DATABASE_URL` | `string().url()` refined to `postgres:`/`postgresql:` scheme | **none** | yes | Knex |
+| `DATABASE_URL` | `string().url()` refined to `postgres:`/`postgresql:` scheme; rejected when its query string carries a session setting Care owns — `options`, `statement_timeout`, `query_timeout`, `application_name` ("must not set …; Care sets it per pool") | **none** | yes | Knex |
 | `DATABASE_POOL_MAX` | `coerce.number().int().min(1).max(100)` | `20` | | Knex pool |
 | `REDIS_URL` | `string().url()` refined to `redis:`/`rediss:` | **none** | yes | Redis |
 | `CORS_ORIGINS` | comma-separated string → `string[]`, each entry must equal `new URL(entry).origin` | `""` → `[]` | | dev CORS |
@@ -261,14 +280,23 @@ export function getEnv(): Env;  // memoized parseEnv(process.env); on InvalidEnv
 
 Empty strings are treated as unset. Later modules add their own variables to the same schema.
 
+**Why `DATABASE_URL` may not carry session settings (review 2026-09-28, Low).** pg merges the connection string
+**over** the explicit config (`Object.assign({}, config, parse(connectionString))`), so `?options=-c …` silently
+replaced `-c TimeZone=UTC` (and `?statement_timeout=0` / `?query_timeout=` / `?application_name=` would silently undo
+the other per-pool settings in §3.4.8). Two fixes were possible: reject those keys at boot, or parse the URL and merge
+so Care's values always win. **Rejection was chosen:** it is one zod refine with no URL re-parsing in `lib/knex` and
+no new direct dependency (`pg-connection-string` is only transitive — ADR 0016), it fails at boot with
+`invalid_environment` instead of silently rewriting an operator's value, and it keeps every session setting in one
+place (`buildConnectionConfig`). Other query parameters (`sslmode`, `sslrootcert`, …) are still accepted.
+
 #### 3.4.2 `lib/di/`
 - `tokens.ts`: `export const TOKENS = { Env: Symbol.for("Env"), Logger: Symbol.for("Logger"), Db:
-  Symbol.for("Db"), Redis: Symbol.for("Redis"), ShutdownState: Symbol.for("ShutdownState"), InFlightCounter:
+  Symbol.for("Db"), ProbeDb: Symbol.for("ProbeDb"), Redis: Symbol.for("Redis"), ShutdownState: Symbol.for("ShutdownState"), InFlightCounter:
   Symbol.for("InFlightCounter"), HealthService:
   Symbol.for("HealthService"), HealthController: Symbol.for("HealthController") } as const;`
 - `container.ts`: `export { container } from "tsyringe";` (single root container).
 - `register-core.ts`: `export function registerCore(env: Env): void` — registers `Env`, `Logger` (root), `Db`
-  (`db`), `Redis` (`redis`), `ShutdownState`, `InFlightCounter` as instances.
+  (`db`), `ProbeDb` (`probeDb`), `Redis` (`redis`), `ShutdownState`, `InFlightCounter` as instances.
 
 #### 3.4.3 `lib/error/`
 ```ts
@@ -331,8 +359,8 @@ export class Logger {
 export const requestContext: AsyncLocalStorage<RequestContext>;   // RequestContext { requestId: string; userId?: number; role?: Role; clientId?: string }
 export function currentRequestId(): string | undefined;
 export const logger: Logger;             // root logger from getEnv()
-export function serializeError(err: unknown): SerializedError; // { name, message, code?, stack? } — never pg `detail`,
-                                                                // `where`, `parameters`, `query`, or `bindings`
+export function serializeError(err: unknown): SerializedError; // rules below — never pg `detail`, `where`, `hint`,
+                                                                // `parameters`, `query`, or `bindings`
 // redact.ts
 export const REDACTED_KEYS: readonly string[];
 export function redact(value: unknown): unknown;
@@ -349,6 +377,18 @@ export function requestLogger(): RequestHandler;
   Foundation metric names: `rate_limiter_degraded` (dims `limiter`), `worker_heartbeat` (dims `loop`),
   `idempotency_skipped` (dims `reason`). `http_requests`/`http_latency_ms` are derived from `request_completed` lines.
 - `fields` pass through `redact()` (mechanics §1.4). Field `error` holding an `Error` is replaced by `serializeError`.
+- **`serializeError` rules** (privacy: Postgres copies the offending *value* into its own message —
+  `22P02 invalid input syntax for type integer: "<value>"`, `22007`, `22008`, `22003` — and Knex prefixes the SQL):
+
+  | Input | Output |
+  |---|---|
+  | **database error**: an `Error` whose `code` is a SQLSTATE (`/^[0-9A-Z]{5}$/`) | `{ name, code, severity?, constraint?, table?, column?, routine?, stack? }` — **no `message`** |
+  | any other `Error` (incl. `AppError`, `KnexTimeoutError`, network errors) | `{ name, message, code?, stack? }` |
+  | a non-`Error` value | `{ name: "NonError", message: "A non-Error value was thrown" }` — the value itself is never logged |
+
+  `stack` is always **rebuilt** as `name` + the `    at …` frame lines only: V8 formats `err.stack` lazily, so its
+  header repeats a message that was mutated after construction (Knex's SQL prefix) and may span several lines. Every
+  field is a string; nothing else from the error object is copied.
 - **`REDACTED_KEYS`** (compared after normalisation): `complaintText, examinationNotes, diagnosisText, diagnosisCode,
   treatmentPlan, allergies, chronicConditions, bloodType, dateOfBirth, objectKey, downloadUrl, uploadUrl, joinToken,
   authorization, cookie, setCookie, fullName, displayName, firstName, lastName, email, phone, password, token,
@@ -359,7 +399,8 @@ export function requestLogger(): RequestHandler;
   `"unmatched"`), `status`, `code` (`res.locals.errorCode` if set), `durationMs` (1 decimal). Level: `error` when
   status ≥ 500, `debug` for `/health/` routes with status < 500, else `info`. On `close` without `finish` logs
   `warn request_aborted`. **Never** logs URL, query string, headers, or bodies.
-- `console.*` is banned in `src/` (ESLint); everything goes through `Logger`.
+- `console.*` is banned in `src/` (ESLint); everything goes through `Logger` — including Knex's own messages, which
+  `createKnex` routes through `buildKnexLog(logger)` (§3.4.8).
 
 #### 3.4.5 `lib/request-id/request-id.ts`
 `export function requestId(): RequestHandler` — parity rule §1.4; sets `req.requestId`, `req.log =
@@ -427,18 +468,54 @@ export function toErrorDetails(errors: ValidationError[]): ErrorDetail[];
 ```ts
 // knex.ts
 export function createKnex(options: KnexOptions): Knex;
-      // { url; poolMax; statementTimeoutMs: number | null; applicationName: "care-api" | "care-worker" | "care-migrate" | "care-test" }
+      // { url; poolMax; statementTimeoutMs: number | null;
+      //   applicationName: "care-api" | "care-api-probe" | "care-worker" | "care-migrate" | "care-test" }
 export const db: Knex;       // createKnex({ url: env.DATABASE_URL, poolMax: env.DATABASE_POOL_MAX, statementTimeoutMs: 2000, applicationName: "care-api" })
+export const probeDb: Knex;  // createKnex({ url: env.DATABASE_URL, poolMax: 1, statementTimeoutMs: 2000, applicationName: "care-api-probe" })
+                             // readiness only (§3.1); lazy like `db`; destroyed on shutdown; DI token `TOKENS.ProbeDb`
+// knex-log.ts
+export function buildKnexLog(logger: Logger): Knex.Logger;  // Knex warn/error/deprecate → logger.warn/error
+      // `knex_warn` / `knex_error` / `knex_deprecated`, `summary` = the FIRST line of Knex's text, at most 200 chars
+      // (Knex embeds multi-line stacks); `debug` → `knex_debug` with no text (Knex's debug output is raw SQL);
+      // `enableColors: false`. No Knex text ever reaches `console`.
 export function parseInt8(value: string): number;  // throws if outside Number.MAX_SAFE_INTEGER
+// pg-connection-state.ts
+export function isConnectionIdle(connection: unknown): boolean;  // pool `validate`: false while a query is active,
+      // queued, or sent-but-unanswered (pg 8.23 private fields, read only here); unknown shape → true
 // knexfile.ts
-export const migrationConfig: Knex.MigratorConfig; // directory = path.join(__dirname, "../../migrations");
-      // loadExtensions [".ts"] when running from src, [".js"] from dist; tableName "knex_migrations"
+export const migrationConfig: Knex.MigratorConfig; // { migrationSource: new MigrationFiles(), tableName: "knex_migrations" }
+export class MigrationFiles implements Knex.MigrationSource<string>;
+      // lists path.join(__dirname, "../../migrations") for ".ts" (running from src) or ".js" (from dist), sorted;
+      // getMigrationName strips the extension, so knex_migrations.name never depends on how the migrator was run
 // probe.ts
 export function probeDatabase(conn: Knex, timeoutMs: number): Promise<boolean>;  // SELECT 1 raced against timeoutMs
 ```
-- `client: "pg"`, `connection: { connectionString, application_name }`, `pool: { min: 0, max: poolMax,
-  afterCreate }` where `afterCreate` runs `SET TIME ZONE 'UTC'` and, when non-null,
-  `SET statement_timeout = <ms>` before handing out the connection.
+- `client: "pg"`, `compileSqlOnError: false` (Knex never interpolates bindings into an error message),
+  `log: buildKnexLog(logger)`, `pool: { min: 0, max: poolMax, createTimeoutMillis: 2000 }`, and `connection`:
+
+  | Key | Value | Why |
+  |---|---|---|
+  | `connectionString`, `application_name` | `url`, `applicationName` | |
+  | `options` | `"-c TimeZone=UTC"` | UTC as a startup parameter — no extra round trip inside the acquire window |
+  | `statement_timeout` | `statementTimeoutMs` (omitted when `null`) | server-side bound, also a startup parameter |
+  | `query_timeout` | `statementTimeoutMs + 1000` (omitted when `null`) | client-side bound: fires when the server cannot (partition, failover without RST). The connection it fired on is **discarded, never reissued** — see `pool.validate` below |
+  | `connectionTimeoutMillis` | `2000` | a connect that never completes fails instead of hanging |
+  | `keepAlive`, `keepAliveInitialDelayMillis` | `true`, `10000` | TCP keepalive detects a dead peer long before kernel retransmission gives up (~15 min) |
+
+  If a connection pooler that rejects the `options` startup parameter is ever introduced, `TimeZone` moves back to a
+  pool `afterCreate` running `SET TIME ZONE 'UTC'`.
+- `pool.validate: isConnectionIdle` (`pg-connection-state.ts`, review 2026-09-28, re-opened Medium). pg 8.23 without
+  pipelining keeps a query that timed out **after it was sent** as the client's active query and neither destroys the
+  socket nor emits `error`, so Knex's own validation passes and the pool would hand the dead connection out again —
+  every later query on it queues behind the dead one and fails at `query_timeout` until the kernel drops the socket
+  (~15 min). `isConnectionIdle(connection)` returns `false` when the free connection still has an active, queued, or
+  sent-but-unanswered query; tarn then destroys it (Knex's `destroyRawConnection` → pg `end()`, which force-destroys
+  the stream when a query is active) and the acquire gets a fresh connection. It applies to every `createKnex` pool
+  (`db`, `probeDb`, worker, migrate). Neither pg nor Knex exposes a public "this connection timed out" signal (pg
+  emits no event; Knex's `query-error` event carries no connection), so the check reads pg-private fields
+  `_activeQuery`, `_queryQueue`, `_sentQueryQueue`. They are isolated in that one helper, pinned to pg 8.23 by a
+  unit test that fails if their shape changes, and when the shape is unrecognised the helper keeps the connection
+  (the pre-fix behaviour) rather than discarding every connection.
 - `acquireConnectionTimeout`: 1000 ms for `care-api`/`care-worker` (fast-fail on pool wait, deployment.md →
   Bottlenecks 4); 60 000 ms for `care-migrate`.
 - `pg` type parsers set once in `knex.ts`: OID 20 (`int8`) → `parseInt8` (BIGSERIAL ids and `COUNT(*)` are numbers,
@@ -453,7 +530,9 @@ export function probeRedis(client: Redis, timeoutMs: number): Promise<boolean>;
 ```
 ioredis options: `lazyConnect: true`, `enableOfflineQueue: false` (commands fail fast while down → Tier 2
 fallbacks engage immediately), `maxRetriesPerRequest: 1`, `connectTimeout: 2000`, `commandTimeout: 500`,
-`retryStrategy: (n) => Math.min(n * 200, 2000)` (reconnects forever). Events: first `error` after `ready` logs
+`retryStrategy: (n) => Math.min(n * 200, 2000)` (reconnects forever), `autoResendUnfulfilledCommands: false` (a
+command that was on the wire when the connection dropped is never replayed after the reconnect, long after its request
+gave up — e.g. an idempotency `SET NX` that would strand a lock, or a double-counted rate-limit hit). Events: first `error` after `ready` logs
 `warn redis_unavailable`; next `ready` logs `info redis_recovered` (one line per transition, never per error).
 
 #### 3.4.10 `lib/idempotency/`
@@ -465,8 +544,11 @@ export function resolvePrincipal(req: Request): string;                  // "use
 export function hashBody(body: unknown): string;                         // sha256 hex of canonicalJson(body ?? null)
 ```
 Mounted after the guard and `authorize` (so `req.auth` sets the principal) and after `express.json`.
-Redis records (JSON): in progress `{ "state": "in_progress", "bodyHash" }` set with `SET key value PX lockTtlMs NX`;
-completed `{ "state": "done", "bodyHash", "status", "body" }` set with `PX ttlMs` (overwrites the lock).
+Redis records (JSON): in progress `{ "state": "in_progress", "bodyHash", "owner" }` (`owner` = a random UUID per
+attempt, so two attempts never write the same value) set with `SET key value PX lockTtlMs NX`; completed
+`{ "state": "done", "bodyHash", "status", "body" }` set with `PX ttlMs` (overwrites the lock). A lock is released only
+by **compare-and-delete** (`EVAL`: `DEL` iff the stored value still equals this attempt's in-progress record), never
+by a blind `DEL`.
 
 | # | Situation | Behaviour |
 |---|---|---|
@@ -474,10 +556,10 @@ completed `{ "state": "done", "bodyHash", "status", "body" }` set with `PX ttlMs
 | 2 | Header absent, `required: false` | `next()` |
 | 3 | Header absent, `required: true` | `400 ValidationFailed` `[{ field: "Idempotency-Key", issue: "is required" }]` — even when Redis is down |
 | 4 | Header present but not a UUID | `400 ValidationFailed` `[{ field: "Idempotency-Key", issue: "must be a UUID" }]` |
-| 5 | Redis not ready, or any Redis command throws before the handler runs | log `warn idempotency_skipped` (`route` pattern, no key) + `metric("idempotency_skipped", 1, { reason })`; `next()` — DB-level guarantees apply (booking `uq_consultations_idempotency`, ADR 0006) |
+| 5 | Redis not ready, or any Redis command throws before the handler runs | log `warn idempotency_skipped` (`route` pattern, no key) + `metric("idempotency_skipped", 1, { reason })`; `next()` — DB-level guarantees apply (booking `uq_consultations_idempotency`, ADR 0006). When the **`SET NX`** itself threw (e.g. the 500 ms client-side `commandTimeout`), a best-effort compare-and-delete of this attempt's record is issued too: the `SET` may still land, and Redis runs the later `EVAL` after it on the same connection, so no lock that nobody will settle is left to block retries for `lockTtlMs` |
 | 6 | `SET NX` succeeds (first request) | run handler; capture status + JSON body (wrap `res.json`; `sendNoContent` → body `null`) |
-| 6a | …response status 2xx or 4xx except 429 | on `finish`, store `done` record for `ttlMs` |
-| 6b | …response status 5xx or 429 | on `finish`, `DEL` the lock so the client may retry |
+| 6a | …response status 2xx or 4xx except 429 | **when the handler completes the response** (wrapped `res.end`; `finish` only as a fallback; settled exactly once), store `done` record for `ttlMs`. Settling does not wait for the socket: when the client disconnected before the response (timeout-then-retry), its retry still gets the original result replayed |
+| 6b | …response status 5xx or 429 | at the same point as 6a, compare-and-delete the lock so the client may retry |
 | 6c | …storing fails (Redis dropped mid-request) | log `warn idempotency_store_failed`; response already sent; the lock expires after `lockTtlMs` |
 | 7 | Record `done`, same `bodyHash` | replay: `res.status(stored.status)` + stored body (`204` → empty); handler **not** run; when the stored body is an error envelope, `error.requestId` is **replaced with the current request's id** (matching the `X-Request-Id` header) |
 | 8 | Record exists (either state), different `bodyHash` | `422 IdempotencyConflict` |
@@ -517,7 +599,9 @@ readiness reads it).
 ```ts
 export class InFlightCounter { get count(): number; increment(): void; decrement(): void; whenIdle(): Promise<void> }
 export function inFlight(counter?: InFlightCounter /* default TOKENS.InFlightCounter */): RequestHandler;
-      // increments on entry; decrements exactly once on res "finish" or "close"
+      // increments on entry; decrements exactly once on res "finish" or "close";
+      // while ShutdownState.isShuttingDown(), every response gets `Connection: close` (set when its headers are
+      // written), so Node closes a keep-alive socket after its last response instead of leaving it idle and open
 ```
 `TOKENS` gains `InFlightCounter: Symbol.for("InFlightCounter")`.
 
@@ -525,16 +609,22 @@ export function inFlight(counter?: InFlightCounter /* default TOKENS.InFlightCou
 ```ts
 export function createGracefulShutdown(deps: GracefulShutdownDeps): (reason: string, exitCode?: 0 | 1) => Promise<void>;
       // { servers: http.Server[]; state: ShutdownState; inFlight: InFlightCounter; timeoutMs: number; closeResources: Array<() => Promise<void>>;
-      //   logger: Logger; exit: (code: number) => void; setTimer?: typeof setTimeout }
+      //   logger: Logger; exit: (code: number) => void; setTimer?: typeof setTimeout; now?: () => number }
 ```
 Sequence (repeated calls return the first call's promise):
 1. `state.markShuttingDown()` → readiness returns 503; log `info shutdown_started` with `reason`.
 2. `server.close()` on **both** listeners (stop accepting; in-flight requests continue), then
-   `server.closeIdleConnections()`.
-3. Wait for `inFlight.whenIdle()` and both `close` callbacks, or `timeoutMs`. On timeout: log
-   `error shutdown_timeout` with `unfinishedRequests: inFlight.count`, `closeAllConnections()`, mark exit code 1.
-4. `closeResources` in order: `db.destroy()`, then `redis.quit()` (falls back to `redis.disconnect()` if `quit`
-   rejects). A failing resource logs `error shutdown_resource_failed` and continues.
+   `server.closeIdleConnections()`. From step 1 on, responses carry `Connection: close` (§3.4.12).
+3. Wait for `inFlight.whenIdle()`; once it resolves, call `closeIdleConnections()` on both listeners again (on the next
+   macrotask, when the last response's socket is idle) — a keep-alive socket that carried an in-flight request is
+   otherwise left open and its listener's `close` callback never fires. Then wait for both `close` callbacks. All of
+   step 3 is bounded by `timeoutMs`. On timeout: log `error shutdown_timeout` with `unfinishedRequests: inFlight.count`,
+   `closeAllConnections()`, mark exit code 1.
+4. `closeResources` in order: `db.destroy()`, `probeDb.destroy()`, then `redis.quit()` (falls back to
+   `redis.disconnect()` if `quit` rejects). Each is bounded by what remains of the `timeoutMs` deadline (at least
+   250 ms), so a hung pool (connections stuck on a dead primary) cannot hold the process until the orchestrator kills
+   it. A failing resource logs `error shutdown_resource_failed`; one that overruns logs `error shutdown_resource_timeout`
+   and marks exit code 1; either way the next resource is closed.
 5. Log `info shutdown_complete`; `exit(exitCode ?? 0)` (1 if step 3 timed out or `exitCode` was 1).
 
 #### 3.4.14 `lib/worker/loop-runner.ts`
@@ -580,7 +670,7 @@ export function canonicalJson(value: unknown): string;                 // JSON w
 |---|---|
 | `enums.ts` | `enum HealthStatus { Ok = "ok", Degraded = "degraded", Down = "down" }`; `enum ProbeStatus { Up = "up", Down = "down" }` |
 | `types.ts` | `ReadinessResult { httpStatus: 200 \| 503; report: ReadyReport }`, `ReadyReport`, `LiveReport` |
-| `service/health.service.ts` | `@injectable() class HealthService` — ctor `@inject(TOKENS.Db) db`, `@inject(TOKENS.Redis) redis`, `@inject(TOKENS.ShutdownState) state`; `live(): LiveReport`; `ready(): Promise<ReadinessResult>` implementing §3.1 (`PROBE_TIMEOUT_MS = 500`) |
+| `service/health.service.ts` | `@injectable() class HealthService` — ctor `@inject(TOKENS.ProbeDb) db`, `@inject(TOKENS.Redis) redis`, `@inject(TOKENS.ShutdownState) state`; `live(): LiveReport`; `ready(): Promise<ReadinessResult>` implementing §3.1 (`PROBE_TIMEOUT_MS = 500`) |
 | `dto/health.response.dto.ts` | `LiveResponseDto.from(report)`, `ReadyResponseDto.from(report)` — explicit field copy |
 | `controller/health.controller.ts` | `live = (req, res) => …`, `ready = async (req, res) => …`; sends bare JSON (health is the documented non-enveloped exception) with `Cache-Control: no-store` |
 | `routes.ts` | `export function buildHealthRouter(): Router` — `GET /live`, `GET /ready`; resolves the controller from the container |
@@ -614,7 +704,7 @@ Scripts:
 | `test:integration` | `jest -c jest.integration.config.js --runInBand` |
 | `test:infra:up` / `test:infra:down` | `docker compose -f docker-compose.test.yml up -d --wait` / `… down -v` |
 | `migrate` / `migrate:rollback` / `migrate:status` | `tsx --env-file-if-exists=.env src/migrate.ts latest` / `rollback` / `status` |
-| `migrate:make` | `tsx src/migrate.ts make` (name as the next argument) |
+| `migrate:make` | `tsx --env-file-if-exists=.env src/migrate.ts make` (name as the next argument; loads `.env` like its siblings) |
 
 `tsx` (esbuild) honours `experimentalDecorators` but emits no `design:paramtypes`; tsyringe still resolves because every
 constructor parameter carries `@inject(TOKENS.X)` (§1.2). Jest keeps `ts-jest` with `isolatedModules`.
@@ -668,15 +758,16 @@ Cross-module repository imports are not lint-enforced (review checks them).
 **`docker-compose.yml`** (`name: vcare-care`, so it never collides with identity's stack):
 | Service | Image / build | Ports (host:container) | Notes |
 |---|---|---|---|
-| `postgres` | `postgres:17-alpine` | `5433:5432` | `POSTGRES_USER=care`, `POSTGRES_PASSWORD=care`, `POSTGRES_DB=care`; volume `care-pg-data`; healthcheck `pg_isready -U care -d care` |
-| `redis` | `redis:7-alpine` | `6380:6379` | healthcheck `redis-cli ping` |
+| `postgres` | `postgres:17-alpine` | `127.0.0.1:5433:5432` | `POSTGRES_USER=care`, `POSTGRES_PASSWORD=care`, `POSTGRES_DB=care`; volume `care-pg-data`; healthcheck `pg_isready -U care -d care` |
+| `redis` | `redis:7-alpine` | `127.0.0.1:6380:6379` | healthcheck `redis-cli ping` |
 | `migrate` | build `.` | — | `command: ["node", "dist/migrate.js", "latest"]`; depends on `postgres` healthy; `restart: "no"` |
 | `care-api` | build `.` | `3001:3001`, `127.0.0.1:3101:3101` | `INTERNAL_HOST=0.0.0.0` (inside the container); `DATABASE_URL=postgres://care:care@postgres:5432/care`; `REDIS_URL=redis://redis:6379`; depends on `migrate` `service_completed_successfully` and `redis` `service_started` (Tier 2); healthcheck `wget -qO- http://127.0.0.1:3001/api/health/ready`; `init: true` |
 | `care-worker` | build `.` | — | `command: ["node", "dist/worker.js"]`; depends on `migrate` completed; `init: true` |
-Host ports 5433/6380 leave 5432/6379 to identity; app ports stay 3001/3101 (identity uses 3000/3100).
+Host ports 5433/6380 leave 5432/6379 to identity; app ports stay 3001/3101 (identity uses 3000/3100). Postgres (known
+`care`/`care` credentials) and Redis (no auth) are published on **host loopback only**, never on all interfaces.
 
-**`docker-compose.test.yml`** (`name: vcare-care-test`): `postgres:17-alpine` on `5434:5432` (`care`/`care`,
-`POSTGRES_DB=care_test`, `tmpfs: /var/lib/postgresql/data`, healthcheck) and `redis:7-alpine` on `6381:6379`
+**`docker-compose.test.yml`** (`name: vcare-care-test`): `postgres:17-alpine` on `127.0.0.1:5434:5432` (`care`/`care`,
+`POSTGRES_DB=care_test`, `tmpfs: /var/lib/postgresql/data`, healthcheck) and `redis:7-alpine` on `127.0.0.1:6381:6379`
 (healthcheck). Only infrastructure — tests run on the host (`npm run test:infra:up && npm run test:integration`).
 
 **`.env.example`** (committed, local dev against `docker-compose.yml` infra, app on the host):
@@ -712,7 +803,7 @@ Ports match `.env.test`, so CI and local runs use the same configuration.
 | F5 | Malformed/oversized/unreadable JSON → `400 ValidationFailed` | `errorHandler` body-parser mapping |
 | F6 | Unknown properties in a DTO → `400 ValidationFailed`; rejected values are never echoed | `lib/validation` |
 | F7 | Logs never contain redacted keys' values, request bodies, query strings, or headers | `Logger` + `requestLogger` |
-| F8 | Every pool connection uses `TIME ZONE 'UTC'`; `int8` returns as a safe `number` | `createKnex` `afterCreate` + type parser |
+| F8 | Every pool connection uses `TIME ZONE 'UTC'`; `int8` returns as a safe `number` | `createKnex` startup parameters + type parser |
 | F9 | Liveness is 200 regardless of dependencies or shutdown | `HealthService.live` |
 | F10 | Readiness is 503 iff Postgres is down or shutdown is in progress; Redis down → 200 `degraded` | `HealthService.ready` |
 | F11 | Health routes are served only on their own listener (`/api/health/*` public, `/internal/health/*` internal) | `createPublicApp` / `createInternalApp` |
@@ -723,7 +814,7 @@ Ports match `.env.test`, so CI and local runs use the same configuration.
 | F16 | Redis unavailable → idempotency skipped, never a 5xx | `idempotency` row 5 |
 | F17 | A limiter admits at most `limit` requests per sliding `windowMs` per subject; excess → `429 RateLimited` + `Retry-After ≥ 1` | Lua sliding window |
 | F18 | Redis unavailable → per-instance limit `max(1, floor(limit / RATE_LIMIT_FALLBACK_DIVISOR))` (or fail-open when configured) | `MemoryLimiter` |
-| F19 | Shutdown: not-ready → close listeners → drain ≤ `SHUTDOWN_TIMEOUT_MS` → destroy Knex → quit Redis → exit 0 (1 on timeout) | `createGracefulShutdown` |
+| F19 | Shutdown: not-ready → close listeners → drain ≤ `SHUTDOWN_TIMEOUT_MS` (keep-alive sockets closed as their last response ends) → destroy the Knex pools → quit Redis, each bounded by the remaining deadline → exit 0 (1 on timeout) | `createGracefulShutdown` + `inFlight` |
 | F20 | The worker stops after the current tick of every loop | `LoopRunner.stop` |
 | F21 | The first migration installs `btree_gist` and rolls back cleanly | migration file |
 | F22 | CORS headers are emitted only in `development` and only for allowlisted origins; never on the internal listener | `createPublicApp` + `cors()` |
@@ -779,7 +870,12 @@ emits neither.
   1 `SET` on first use; 1 `GET` on replay), rate limit (1 `EVALSHA`). No database query in any foundation middleware.
 - Redis commands time out at 500 ms and never queue while disconnected, so a Redis outage adds at most one failed
   command's latency before the Tier 2 path.
-- Pool: `DATABASE_POOL_MAX=20`, acquire timeout 1 s, statement timeout 2 s on `care-api`/`care-worker`.
+- Pool: `DATABASE_POOL_MAX=20`, acquire timeout 1 s, statement timeout 2 s (server) + query timeout 3 s (client),
+  connect timeout 2 s, TCP keepalive after 10 s idle on `care-api`/`care-worker`. Readiness uses its own 1-connection
+  pool (`probeDb`), so a saturated request pool never fails readiness.
+- A connection whose query hit the client-side `query_timeout` is discarded on its next acquire (`pool.validate`,
+  §3.4.8), so after a failover without RST each pool pays at most one timed-out query per dead connection, and
+  readiness returns to `database: up` on the first probe after the new primary accepts connections.
 - No foundation query needs an index (no tables).
 
 ---
@@ -840,6 +936,38 @@ Synthetic fixture strings used for log assertions: `SYNTHETIC-COMPLAINT-7731`, `
 
 Concurrency, RBAC, and Case 1–3 mandatory scenarios do not apply (no business routes, no Identity calls).
 
+### 9.4 Regression tests added by `/develop foundation --fix-review` (2026-09-28)
+- `lib/logger/logger.test.ts`: should drop the message and rebuild the stack from frames when a pg error's message was
+  mutated after construction · should keep pg identifier fields when serializing a database error · should never log a
+  non-Error value.
+- `logs.test.ts` (integration): should not leak a request value into logs when Postgres rejects it (22P02, 22007,
+  22008, 23514 CHECK).
+- `lib/idempotency/idempotency.test.ts`: should store the result when the client disconnects before the response ·
+  should compare-and-delete its own lock when SET NX throws but lands · should never delete another attempt's lock.
+  `idempotency.test.ts` (integration): should replay the stored 2xx and run the handler once when the first attempt was
+  aborted by the client.
+- `lib/lifecycle/graceful-shutdown.test.ts`: should exit 0 well before the deadline when a keep-alive socket carried an
+  in-flight request (real `http.Server`) · should bound each resource by the remaining deadline.
+- `lib/lifecycle/in-flight.test.ts`: should set Connection: close on responses while shutting down.
+- `health.test.ts` (integration): should report database up when every request-pool connection is busy.
+- `lib/knex/knex.test.ts`: connection timeouts / keepalive / startup parameters / `compileSqlOnError` / Knex log routing
+  / extension-free migration names. `knex-timeouts.test.ts` (integration): should fail a query within the connect
+  timeout when the server accepts and never replies.
+- `lib/config/env.test.ts`: INTERNAL_HOST rejects `999.999.999.999`, `cafe`, `1.2.3`.
+- Round 2 (2026-09-28): `lib/knex/pg-connection-state.test.ts` (unit): should find the pg 8.23 private query fields on
+  a real `pg.Client` · should report a connection idle / busy per active, queued, and sent queries · should keep a
+  connection whose shape is unrecognised. `lib/config/env.test.ts`: should reject DATABASE_URL when its query string
+  sets options / statement_timeout / query_timeout / application_name · should accept other query parameters.
+  `knex-dead-connection.test.ts` (integration, a TCP proxy to the test Postgres that black-holes established sockets
+  and forwards new ones): should run the next query on a fresh connection after a query timed out on a black-holed
+  one (request pool) · should report database up on the next readiness probe after the probe connection was
+  black-holed. `migrations.test.ts`: `SHOW TIME ZONE` is `UTC` on every pool built by `createKnex`.
+- `envelope.test.ts` (integration): OPTIONS on a known path → 404 envelope on both listeners; dev preflight still 204.
+- `lib/lifecycle/run-main.test.ts`: should write one boot_failed line and exit 1 when main throws or rejects.
+- `contract/idempotency-contract.test.ts` (unit): every operation with an `Idempotency-Key` parameter declares a 409
+  response with a `Retry-After` header.
+- `tooling/package-scripts.test.ts` (unit): every `migrate*` script loads `.env`.
+
 ---
 
 ## 10. Out of scope
@@ -862,6 +990,9 @@ None.
 In `contracts/openapi.yaml`:
 1. **Remove** paths `/api/health` (`getHealth`) and `/internal/health` (`getInternalHealth`) and responses `HealthOk`
    and `HealthDown`; **replace** schema `HealthStatus` with the readiness body below (name kept, identical to identity).
+   _Correction 2026-09-28:_ the **bodies** match identity's byte for byte (§1.4), but the **schemas** are not
+   identical: Care's `HealthLive` and `HealthStatus` add `additionalProperties: false` (and a description on
+   `checks.redis`); identity's do not (§13.2).
 2. **Add** paths (all `tags: [health]` — internal ones `[health, internal]` with the `http://localhost:3101` server
    override — `security: []`, `x-roles: [public]`, `x-ownership: none`, parameter `RequestId`):
    | Path | operationId | Responses |
@@ -920,3 +1051,81 @@ their modules; lists dev dependencies (`tsx` for dev/migrate, `ts-jest`, `supert
 - `docs/runbook.md`: readiness semantics if it still references `/api/health`.
 - `docs/INDEX.md`: rows for `foundation/brainstorm.md`, `foundation/spec.md` (added with this spec), later `tasks.md`,
   `manual-qa.md`, ADR 0016.
+
+---
+
+## 13. As-built notes (2026-09-28)
+
+Version history: **1.0.0** (2026-09-15, `ready`) → spec-first edits during `/develop foundation --fix-review`
+rounds 1 and 2 (2026-09-28, folded into §2, §3.1, §3.3, §3.4.1, §3.4.3, §3.4.4, §3.4.8–§3.4.10, §3.4.12, §3.4.13,
+§3.8, §8, §9.4) → **1.1.0** (2026-09-28, `implemented`; this section, by `/update-docs foundation`).
+
+### 13.1 What the two fix-review rounds changed (review `review-20260926-0822`, deleted once every fix was verified)
+Round 1 (11 fixes; scope fixed by the user on 2026-09-26):
+- `serializeError` drops the message of database errors and rebuilds stacks from frames only; Knex
+  `compileSqlOnError: false` (bug 1, Critical).
+- Idempotency settles when the handler completes the response (`res.end`), not on socket `finish`; per-attempt owner
+  nonce and compare-and-delete release, including after a `SET NX` that threw; Redis
+  `autoResendUnfulfilledCommands: false`; an in-flight duplicate gets `409 Conflict` + `Retry-After: 1` (contract
+  updated).
+- Graceful shutdown: `Connection: close` while draining, `closeIdleConnections()` once idle, each resource bounded by
+  the remaining deadline (`shutdown_resource_timeout`).
+- Readiness probes run on a dedicated 1-connection pool (`probeDb`, `care-api-probe`).
+- pg connect timeout 2 s, client `query_timeout`, TCP keepalive, session settings as startup parameters.
+- Knex `log` routed through `Logger` (`knex_warn` / `knex_error` / `knex_deprecated` / `knex_debug`) (bug 2).
+- `INTERNAL_HOST` must be an IP literal (bug 3).
+- `OPTIONS` on a known path → `404 NotFound` envelope on both listeners (`optionsNotFound`; bug 4, GitHub #4).
+- `migrate:make` loads `.env`; compose publishes Postgres and Redis on `127.0.0.1` only.
+- Parity items: a `boot_failed` JSON line + exit 1 via `runMain` on all three entrypoints; migration names recorded
+  without the file extension.
+
+Round 2 (one re-opened and one new finding):
+- A connection whose query hit `query_timeout` is discarded by the pool (`pool.validate: isConnectionIdle`,
+  `lib/knex/pg-connection-state.ts`) instead of being reissued.
+- `DATABASE_URL` carrying `options`, `statement_timeout`, `query_timeout`, or `application_name` is rejected at env
+  validation (rationale in §3.4.1).
+
+### 13.2 Where the code differs from the text above (code wins)
+| Section | Text says | As built |
+|---|---|---|
+| §3.2 file list | — | also `lib/async/settle-within.ts` (bounded wait), `lib/http/route-pattern.ts` (`routePattern`, `routeLabel`, `unmatched` fallback), `pkg/utils/uuid.ts` (`UUID_PATTERN`, `isUuid`), `lib/lifecycle/run-main.ts`; `lib/redis/redis.ts` also exports `resolveRedis` and `closeRedis` — the generic-helper moves of ADR 0017. Tests add `tests/helpers/{contract,test-routers,black-hole-proxy}.ts` and the integration suites `pagination`, `process`, `knex-timeouts`, `knex-dead-connection` |
+| §3.4.5 | `lib/request-id` exports `UUID_PATTERN` | it lives in `pkg/utils/uuid.ts` (with `isUuid`), imported by `lib/request-id` and `lib/idempotency` (ADR 0017) |
+| §3.3 `src/migrate.ts` | pool size unstated | `createKnex({ poolMax: 1, statementTimeoutMs: null, applicationName: "care-migrate" })` |
+| §3.4.8 `buildKnexLog` | `summary` = the first line of Knex's text | the same for strings; when Knex passes an `Error`, `summary` is the error's **name only** (stricter: no message) |
+| §3.4.9 | `redis_recovered` follows a `redis_unavailable` | the first `ready` at boot also logs `redis_recovered` (manual QA observation, 2026-09-26; cosmetic) |
+| §12.1 item 1 | health schemas "identical to identity" | bodies identical; schemas differ (`additionalProperties: false` on Care's `HealthLive`/`HealthStatus`). Identity's `/internal/health/*` is likewise public (`security: []`) |
+| contract `XRequestId` / `RequestId` | "the incoming id if it is a valid UUID" | now states that the adopted id is **lower-cased** (contract edited 2026-09-28 by `/update-docs`; §1.4 already said so) |
+
+### 13.3 Known latent gaps (deferred, not fixed)
+Deferred by the user on 2026-09-26 (each was a `DISPUTED — deferred` finding). Where it differs, the text above
+describes the intended behaviour; this table describes the current behaviour. Each must be fixed before the trigger
+in the last column.
+
+| Issue | Section | Current behaviour | Fix before |
+|---|---|---|---|
+| [#5](https://github.com/OmarRedaX/vcare-care-api/issues/5) | §3.4.3 | a malformed percent-encoded path parameter (router `URIError`, or any non-`AppError` with a 4xx `status`) is treated as unknown: `500 InternalError` and an `unhandled_error` log line with the raw value | the first `:param` route |
+| [#6](https://github.com/OmarRedaX/vcare-care-api/issues/6) | §3.4.4 | when a handler throws inside a nested router, `request_completed.route` loses the mount prefix (`/boom/:id`), corrupting route-keyed metrics | the first module that mounts routes |
+| [#7](https://github.com/OmarRedaX/vcare-care-api/issues/7) | §3.4.6 | keyset cursors encode `TIMESTAMPTZ` as `Date.toISOString()` (milliseconds) while Postgres stores microseconds, so rows in the same millisecond are skipped (DESC) or repeated (ASC) at page boundaries | the first paginated list |
+| [#8](https://github.com/OmarRedaX/vcare-care-api/issues/8) | §3.4.7 | `enableImplicitConversion: true` for query/params turns `"false"` into `true` for a boolean field under `tsc` (not under `tsx`, so dev and prod differ) | the first non-string query/param DTO field |
+| [#9](https://github.com/OmarRedaX/vcare-care-api/issues/9) | §3.4.11 | the sliding-window member is `"<now>-<requestId>"` and the request id can be caller-supplied, so a same-millisecond burst with one `X-Request-Id` under-counts | the first rate-limited route |
+| [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10) | §3.4.9, §8 | a Redis that stalls while connected keeps `status === "ready"`, so every command waits the full 500 ms `commandTimeout` (no breaker); §8's "at most one failed command's latency" holds only for a hard disconnect | the first route using rate-limit or idempotency |
+| [#11](https://github.com/OmarRedaX/vcare-care-api/issues/11) | §3.4.10 | a stored `done` record without a numeric `status` makes `replay()` throw inside an unguarded async block → `unhandledRejection` → shutdown with exit 1 (same pattern in the rate-limit middleware) | the first route using idempotency |
+| [#12](https://github.com/OmarRedaX/vcare-care-api/issues/12) | §3.4.12 | the in-flight counter decrements on `close` of an aborted request while its handler may still run, so shutdown can destroy the pools and quit Redis under it | the first multi-step write flow (e.g. Case 3) |
+| [#13](https://github.com/OmarRedaX/vcare-care-api/issues/13) | §3.4.4 | only the `error` field goes through `serializeError`; an error logged under another key (e.g. `cause`) is only redacted, so a pg error's `detail`/`where`/`hint` would be written (every current call site uses `error`) | the first module that writes clinical data |
+| [#14](https://github.com/OmarRedaX/vcare-care-api/issues/14) | §3.4.10 | with a key on a clinical route (the contract allows one on `POST /consultations/{id}/record`), the full response body sits in Redis for 24 h and a replay returns it without an audit row | the `records` module (needs a spec decision) |
+| [#15](https://github.com/OmarRedaX/vcare-care-api/issues/15) | §3.4.11 | `warn rate_limited` takes `route` from the matched route; a limiter mounted with `router.use`/`app.use` has no `req.route`, and the label can carry the concrete path (ids) | the first router-level limiter |
+| [#16](https://github.com/OmarRedaX/vcare-care-api/issues/16) | §3.4.1, §3.4.6 | `TRUST_PROXY_HOPS` defaults to `0`, with no production value recorded and no boot guard; behind the edge every caller resolves to the proxy address | the first production deploy with per-IP limits (the hop count is a hub `deployment.md` fact) |
+| [#17](https://github.com/OmarRedaX/vcare-care-api/issues/17) | §3.4.8 | only OID 20 (`int8`) has a parser; `int8[]` (OID 1016) returns string ids, e.g. from `array_agg(id)` | the first query that aggregates ids (e.g. `ScheduleConflictsUnconfirmed`) |
+
+### 13.4 Verification (2026-09-28)
+- `npm run typecheck` 0 errors · `npm run lint` 0 problems · `npm test` 34 suites / 442 passed ·
+  `npm run test:integration` 11 suites / 85 passed + 2 skipped (SIGTERM process tests, win32 only; they run on CI),
+  against the test stack (5434/6381), as recorded in [tasks.md](./tasks.md).
+- `scripts/curl-test-foundation.sh` against the rebuilt dev stack: 97 pass / 0 fail / 0 known (read-only) and
+  125 pass / 0 fail / 0 known with `RUN_INFRA_CASES=1` ([manual-qa.md](./manual-qa.md) → Re-run 2026-09-28).
+
+### 13.5 Follow-ups outside this repo's docs
+- CLAUDE.md → "API conventions" `Conflict` row should mention the in-flight idempotency case (`409 Conflict` +
+  `Retry-After: 1`). Agents do not edit CLAUDE.md, so this needs the user.
+- identity-service shares the §1.4 parity items; its contract does not yet say that the adopted `X-Request-Id` is
+  lower-cased.

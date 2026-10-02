@@ -16,8 +16,6 @@
       "Read(../vcare-hub/**)"
     ],
     "deny": [
-      "Read(./.env)",
-      "Read(./.env.*)",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
       "Bash(git reset --hard*)",
