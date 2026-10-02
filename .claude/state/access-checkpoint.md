@@ -19,8 +19,6 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 - Q1 2026-10-02: SEPARATE `access` unit first (lib/auth, lib/rbac, lib/audit + audit_logs + worker partition loop, foundation #5 #6 #10 #11), no business routes. specialties follows as a thin module (+ #7 #8 #9).
 - Q2: Owner + app role — migrations as owner `care`; migration creates NOLOGIN `vcare_app` + grants; API/worker log in as `care_app` (MIGRATION_DATABASE_URL vs DATABASE_URL). Hub deployment secrets list = platform delta (open question).
 
-## ▶ NEXT STEP
-Next: /develop access in a NEW session (contract C1/C2 first). Care docs committed on feature/access; hub + identity edits still uncommitted.
 - Q3: worker `audit-partitions` loop NOW (worker gets Postgres wiring).
 - Q4: user guard only; service guard lands with doctors.
 - Q5: readiness gets informational `checks.identityJwks: up|down` (contract change, never fails readiness).
@@ -44,3 +42,24 @@ Next: /develop access in a NEW session (contract C1/C2 first). Care docs committ
   NOTE: care AGENTS.md (untracked, belongs to PR #1 chore/codex-setup) still has the old JWKS wording — mirror when PR #1 is updated.
 - Spec author RESUMED to fold answers → status ready v1.0.0. Contract C1 (identityJwks) + C2 (bearerUser JWKS wording) applied in /develop step 0.
 - SPEC READY: docs/access/spec.md v1.0.0 (1129 lines; §11 none, §12 foundation fixes, §13 follow-ups, §14 decisions/C1/C2/applied platform changes).
+
+## /develop access (started 2026-10-02, new session)
+- Preconditions OK: spec ready v1.0.0; contract changes C1/C2 are care-only. Docker Desktop was NOT running at start.
+- flow-developer DISPATCHED (default mode): step 0 contract C1/C2 + hub sync, then tasks.md, then code; it appends progress here.
+- DONE (orchestrator): hub deployment.md §6 'Cross-service alerts' table with IdentityJwksStale (uncommitted on docs/care-access-deltas; check-freshness OK).
+- Orchestrator (me) owns: hub deployment.md → Observability `IdentityJwksStale` alert (branch docs/care-access-deltas), final verification.
+- dev: step 0 DONE (contract C1/C2 applied; hub sync ran — catalog card + contract copy refreshed). docs/access/tasks.md written.
+- dev: DONE tooling (jose 6.2.12, undici 7.30.0, eslint), env, errors/redact/id, 3 migrations (NOT run: Docker down), app-login + migrate.ts, fixes #5 #6 #10 #11. Unit tests green.
+- dev: DONE lib/auth (jwks cache/fetcher/dto/verifier/guard), lib/rbac, lib/audit (+partition loop), worker (--once, own pool), DI, health identityJwks, boot route assertion. npm test now runs jest via node --experimental-vm-modules (jose is ESM; identity parity). typecheck/lint/unit green (34 suites/448).
+- dev: DONE QA server + test routers, integration infra (global-setup owner+ensureAppLogin, db.ts ownerDb), ADR 0018, skills (write-migration, rbac-ownership-guard; identity copies now differ - report). Smoke-checked guard/authorize/JWKS/#5/#6 with tsx (no DB).
+- dev: /develop access DONE (all build + docs tasks [x]; tests/manual-qa left). typecheck/lint/build clean, unit 34 suites/448 pass. Docs: rbac, overview, infrastructure, resilience, data-model, deployment, api, integration, runbook, quickstart, foundation spec, service card (+hub re-sync OK), INDEX. Docker down: migrations + integration NOT run.
+
+- /develop access VERIFIED by orchestrator 2026-10-02: typecheck clean, lint clean, unit 34 suites / 448 tests pass; tasks.md 27 [x], open = (tests), (manual-qa). Integration + migrations NOT run (Docker down). Dev .env needs the new vars (see .env.example) before any local run. Hub IdentityJwksStale alert DONE.
+- Pending user decision: mirror write-migration + rbac-ownership-guard SKILL.md changes into ../vcare-identity-api (feature/auth)?
+
+- 2026-10-02 LOCAL DEV SWITCHED to native Postgres 18 on 5432 (user postgres) + native Redis 6379 DB 1 (Identity uses DB 0); new DB `vcare_care` created; .env rewritten (old backed up in session scratchpad); IDENTITY_JWKS_URL → localhost:3020. `npm run migrate` + `ensure-app-login` OK (4 migrations, care_app created); app booted: ready {database up, redis up, identityJwks down (Identity not running)}; care_app on audit_logs INSERT yes / UPDATE,DELETE no; partitions default + 2026m10..m12. Docker test stack (5434/6381) still not run.
+
+- 2026-10-02 Docker up. Test stack reset; integration: 11 suites, 85 pass, 2 skipped (POSIX-signal tests, win32 only), 0 fail — after fixing one fixture in tests/integration/process.test.ts (invalid DATABASE_URL used role `care`, same as the owner URL → role-collision check also fired; fixture now `care_app`).
+
+## ▶ NEXT STEP
+/write-tests access → /manual-qa access (real Identity on 3020/3120) → /review-code access → /update-docs access → PR "Closes #19 #5 #6 #10 #11". No commits without asking. Pending: mirror 2 skills to identity?

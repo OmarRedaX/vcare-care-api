@@ -221,7 +221,7 @@ describe("lib/idempotency/idempotency middleware", () => {
         const { app, runs } = harness(redis);
         redis.set.mockImplementationOnce(() => Promise.resolve(null));
         redis.get.mockImplementationOnce(() =>
-            Promise.resolve(JSON.stringify({ state: "in_progress", bodyHash: hashBody({ other: true }) })),
+            Promise.resolve(JSON.stringify({ state: "in_progress", bodyHash: hashBody({ other: true }), owner: "synthetic-owner" })),
         );
         const res = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
         expect(res.status).toBe(422);
@@ -234,7 +234,7 @@ describe("lib/idempotency/idempotency middleware", () => {
         const { app, runs } = harness(redis);
         redis.set.mockImplementationOnce(() => Promise.resolve(null));
         redis.get.mockImplementationOnce(() =>
-            Promise.resolve(JSON.stringify({ state: "in_progress", bodyHash: hashBody({ a: 1 }) })),
+            Promise.resolve(JSON.stringify({ state: "in_progress", bodyHash: hashBody({ a: 1 }), owner: "synthetic-owner" })),
         );
 
         const startedAt = Date.now();

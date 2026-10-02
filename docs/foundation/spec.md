@@ -6,7 +6,7 @@ module: foundation
 status: implemented
 version: 1.1.0
 diataxis: reference
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [spec, foundation, bootstrap, infrastructure, health, idempotency, rate-limit, logging, testing, ci, docker]
 related: [foundation-brainstorm, foundation-tasks, foundation-manual-qa, infrastructure, deployment, overview, quickstart, resilience, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
@@ -63,7 +63,7 @@ Binding rules: CLAUDE.md → "Tech stack (locked)", "Folder structure and layeri
 | Success envelope | `{ "success": true, "data": <payload>, "meta"?: {…} }` — `meta` omitted when not provided |
 | Request id | adopt incoming `X-Request-Id` iff it matches the UUID regex (any version, case-insensitive), lower-cased; else `crypto.randomUUID()`; header set **before** `next()` so every response (errors, health, 404) carries it; the rest of the request runs inside an `AsyncLocalStorage` context so every log line (including from services and repositories) carries `requestId` |
 | Live body | `{ "status": "ok" }` |
-| Ready body | `{ "status": "ok" \| "degraded" \| "down", "checks": { "database": "up" \| "down", "redis": "up" \| "down" } }`; not enveloped |
+| Ready body | `{ "status": "ok" \| "degraded" \| "down", "checks": { "database": "up" \| "down", "redis": "up" \| "down" } }`; not enveloped. **Stated exception (access, decided 2026-10-02):** Care adds an optional, informational `checks.identityJwks: "up" \| "down"` (its JWKS cache state; Identity signs tokens and has no remote JWKS to report). The shared `{ status, checks.database, checks.redis }` part stays byte-identical ([access spec](../access/spec.md) §1.4) |
 | Redaction | key-name match after normalisation `key.toLowerCase().replace(/[_-]/g, "")`; value replaced by the string `"[REDACTED]"`; recursive through objects and arrays; depth > 8 → `"[Truncated]"`; cycles → `"[Circular]"`; the `message` string is never rewritten |
 | Idempotency key | `idem:<route>:<principal>:<key>` — `<route>` = `<METHOD> <baseUrl+path>` (concrete path, no query string), `<principal>` = `user:<userId>` (user token) \| `client:<clientId>` (service token) \| `ip:<clientIp>`, `<key>` = the lower-cased UUID |
 | Idempotency in-flight | a duplicate arriving while the first is in flight → immediate `409 Conflict` with `Retry-After: 1`; the in-flight marker has a 60 s TTL; no waiting |
@@ -1097,19 +1097,22 @@ Round 2 (one re-opened and one new finding):
 | contract `XRequestId` / `RequestId` | "the incoming id if it is a valid UUID" | now states that the adopted id is **lower-cased** (contract edited 2026-09-28 by `/update-docs`; §1.4 already said so) |
 
 ### 13.3 Known latent gaps (deferred, not fixed)
+**Fixed by `access` (2026-10-02):** #5, #6, #10, #11 — see [access spec](../access/spec.md) §12; their rows below are
+kept as history and marked fixed.
+
 Deferred by the user on 2026-09-26 (each was a `DISPUTED — deferred` finding). Where it differs, the text above
 describes the intended behaviour; this table describes the current behaviour. Each must be fixed before the trigger
 in the last column.
 
 | Issue | Section | Current behaviour | Fix before |
 |---|---|---|---|
-| [#5](https://github.com/OmarRedaX/vcare-care-api/issues/5) | §3.4.3 | a malformed percent-encoded path parameter (router `URIError`, or any non-`AppError` with a 4xx `status`) is treated as unknown: `500 InternalError` and an `unhandled_error` log line with the raw value | the first `:param` route |
-| [#6](https://github.com/OmarRedaX/vcare-care-api/issues/6) | §3.4.4 | when a handler throws inside a nested router, `request_completed.route` loses the mount prefix (`/boom/:id`), corrupting route-keyed metrics | the first module that mounts routes |
+| [#5](https://github.com/OmarRedaX/vcare-care-api/issues/5) (**fixed by access**) | §3.4.3 | a malformed percent-encoded path parameter (router `URIError`, or any non-`AppError` with a 4xx `status`) is treated as unknown: `500 InternalError` and an `unhandled_error` log line with the raw value | the first `:param` route |
+| [#6](https://github.com/OmarRedaX/vcare-care-api/issues/6) (**fixed by access**) | §3.4.4 | when a handler throws inside a nested router, `request_completed.route` loses the mount prefix (`/boom/:id`), corrupting route-keyed metrics | the first module that mounts routes |
 | [#7](https://github.com/OmarRedaX/vcare-care-api/issues/7) | §3.4.6 | keyset cursors encode `TIMESTAMPTZ` as `Date.toISOString()` (milliseconds) while Postgres stores microseconds, so rows in the same millisecond are skipped (DESC) or repeated (ASC) at page boundaries | the first paginated list |
 | [#8](https://github.com/OmarRedaX/vcare-care-api/issues/8) | §3.4.7 | `enableImplicitConversion: true` for query/params turns `"false"` into `true` for a boolean field under `tsc` (not under `tsx`, so dev and prod differ) | the first non-string query/param DTO field |
 | [#9](https://github.com/OmarRedaX/vcare-care-api/issues/9) | §3.4.11 | the sliding-window member is `"<now>-<requestId>"` and the request id can be caller-supplied, so a same-millisecond burst with one `X-Request-Id` under-counts | the first rate-limited route |
-| [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10) | §3.4.9, §8 | a Redis that stalls while connected keeps `status === "ready"`, so every command waits the full 500 ms `commandTimeout` (no breaker); §8's "at most one failed command's latency" holds only for a hard disconnect | the first route using rate-limit or idempotency |
-| [#11](https://github.com/OmarRedaX/vcare-care-api/issues/11) | §3.4.10 | a stored `done` record without a numeric `status` makes `replay()` throw inside an unguarded async block → `unhandledRejection` → shutdown with exit 1 (same pattern in the rate-limit middleware) | the first route using idempotency |
+| [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10) (**fixed by access**) | §3.4.9, §8 | a Redis that stalls while connected keeps `status === "ready"`, so every command waits the full 500 ms `commandTimeout` (no breaker); §8's "at most one failed command's latency" holds only for a hard disconnect | the first route using rate-limit or idempotency |
+| [#11](https://github.com/OmarRedaX/vcare-care-api/issues/11) (**fixed by access**) | §3.4.10 | a stored `done` record without a numeric `status` makes `replay()` throw inside an unguarded async block → `unhandledRejection` → shutdown with exit 1 (same pattern in the rate-limit middleware) | the first route using idempotency |
 | [#12](https://github.com/OmarRedaX/vcare-care-api/issues/12) | §3.4.12 | the in-flight counter decrements on `close` of an aborted request while its handler may still run, so shutdown can destroy the pools and quit Redis under it | the first multi-step write flow (e.g. Case 3) |
 | [#13](https://github.com/OmarRedaX/vcare-care-api/issues/13) | §3.4.4 | only the `error` field goes through `serializeError`; an error logged under another key (e.g. `cause`) is only redacted, so a pg error's `detail`/`where`/`hint` would be written (every current call site uses `error`) | the first module that writes clinical data |
 | [#14](https://github.com/OmarRedaX/vcare-care-api/issues/14) | §3.4.10 | with a key on a clinical route (the contract allows one on `POST /consultations/{id}/record`), the full response body sits in Redis for 24 h and a replay returns it without an audit row | the `records` module (needs a spec decision) |

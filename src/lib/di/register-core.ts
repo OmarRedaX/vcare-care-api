@@ -1,3 +1,6 @@
+import { AuditRecorder } from "../audit/audit";
+import { JwksCache } from "../auth/jwks-cache";
+import { UserTokenVerifier } from "../auth/user-token-verifier";
 import type { Env } from "../config/types";
 import { db, probeDb } from "../knex/knex";
 import { InFlightCounter } from "../lifecycle/in-flight";
@@ -16,4 +19,9 @@ export function registerCore(env: Env): void {
     container.registerInstance(TOKENS.Redis, redis);
     container.registerInstance(TOKENS.ShutdownState, new ShutdownState());
     container.registerInstance(TOKENS.InFlightCounter, new InFlightCounter());
+
+    const jwks = new JwksCache({ url: env.IDENTITY_JWKS_URL, logger });
+    container.registerInstance(TOKENS.JwksCache, jwks);
+    container.registerInstance(TOKENS.UserTokenVerifier, new UserTokenVerifier({ jwks }));
+    container.registerInstance(TOKENS.AuditRecorder, new AuditRecorder({ logger }));
 }

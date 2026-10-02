@@ -31,3 +31,14 @@ export interface PgClientQueryState {
     _queryQueue?: unknown;
     _sentQueryQueue?: unknown;
 }
+
+/** The app login parsed from `DATABASE_URL` (ADR 0018). Never logged. */
+export interface AppLoginCredentials {
+    user: string;
+    password: string;
+}
+
+export interface AppLoginResult {
+    /** `true` when the login was created; `false` when it existed and its password and membership were re-synced. */
+    created: boolean;
+}

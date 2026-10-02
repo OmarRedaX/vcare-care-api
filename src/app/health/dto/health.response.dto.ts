@@ -15,12 +15,16 @@ export class LiveResponseDto {
 /** Contract schema `HealthStatus`. Explicit field copy — nothing else is ever exposed by a probe. */
 export class ReadyResponseDto {
     status!: HealthStatus;
-    checks!: { database: ProbeStatus; redis: ProbeStatus };
+    checks!: { database: ProbeStatus; redis: ProbeStatus; identityJwks: ProbeStatus };
 
     static from(report: ReadyReport): ReadyResponseDto {
         const dto = new ReadyResponseDto();
         dto.status = report.status;
-        dto.checks = { database: report.checks.database, redis: report.checks.redis };
+        dto.checks = {
+            database: report.checks.database,
+            redis: report.checks.redis,
+            identityJwks: report.checks.identityJwks,
+        };
         return dto;
     }
 }

@@ -4,11 +4,18 @@ import { canonicalJson } from "../../pkg/utils/canonical-json";
 import { isUuid } from "../../pkg/utils/uuid";
 import { Conflict, IdempotencyConflict, ValidationFailed } from "../error/errors";
 import { clientIp } from "../http/client-ip";
-import { routeLabel } from "../http/route-pattern";
+import { captureRoute, routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
-import { isRedisReady, resolveRedis } from "../redis/redis";
-import { acquireLock, inProgressRecord, readRecord, releaseOwnLock, storeResult } from "./idempotency-store";
-import type { IdempotencyOptions } from "./types";
+import { isRedisReady, isRedisUsable, resolveRedis } from "../redis/redis";
+import {
+    acquireLock,
+    deleteIfEquals,
+    inProgressRecord,
+    readRecord,
+    releaseOwnLock,
+    storeResult,
+} from "./idempotency-store";
+import type { IdempotencyDoneRecord, IdempotencyOptions } from "./types";
 
 const DEFAULT_LOCK_TTL_MS = 60_000;
 const DEFAULT_TTL_MS = 86_400_000;
@@ -42,8 +49,12 @@ function skip(req: Request, reason: string): void {
     logger.metric("idempotency_skipped", 1, { reason });
 }
 
-/** Replays a stored response; a stored error envelope gets THIS request's id so it matches `X-Request-Id`. */
-function replay(req: Request, res: Response, status: number, body: unknown): void {
+/**
+ * Replays a stored response (already shape-checked by `readRecord`); a stored error envelope gets THIS request's id
+ * so it matches `X-Request-Id`.
+ */
+function replay(req: Request, res: Response, record: IdempotencyDoneRecord): void {
+    const { status, body } = record;
     if (body === null || body === undefined || status === 204) {
         res.status(status).end();
         return;
@@ -62,6 +73,7 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
     const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
 
     return (req, res, next) => {
+        captureRoute(req, res);
         if (SAFE_METHODS.has(req.method)) {
             next();
             return;
@@ -88,10 +100,33 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
             next();
             return;
         }
+        if (!isRedisUsable(client)) {
+            skip(req, "redis_breaker_open");
+            next();
+            return;
+        }
 
         const storeKey = buildIdempotencyKey(req, key);
         const bodyHash = hashBody(req.body);
         const lockValue = inProgressRecord(bodyHash);
+
+        // `next` is called at most once from the async block; an unexpected throw is forwarded exactly once, or logged
+        // when the request already moved on (fix #11: no promise here can reject unobserved).
+        let forwarded = false;
+        const forward = (error?: unknown): void => {
+            if (forwarded) {
+                return;
+            }
+            forwarded = true;
+            next(error);
+        };
+        const fail = (error: unknown): void => {
+            if (!forwarded && !res.headersSent) {
+                forward(error);
+                return;
+            }
+            logger.error("idempotency_internal_error", { requestId: req.requestId, route: routeLabel(req), error });
+        };
 
         void (async () => {
             let acquired: boolean;
@@ -102,36 +137,47 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
                 // same connection, so a lock that nobody would settle is not left to block retries for lockTtlMs.
                 releaseOwnLock(client, storeKey, lockValue).catch(() => undefined);
                 skip(req, "redis_error");
-                next();
+                forward();
                 return;
             }
 
             if (!acquired) {
-                let record;
+                let result;
                 try {
-                    record = await readRecord(client, storeKey);
+                    result = await readRecord(client, storeKey);
                 } catch {
                     skip(req, "redis_error");
-                    next();
+                    forward();
                     return;
                 }
 
-                if (record === null) {
+                if (result.kind === "absent") {
                     // The first request just released the lock (5xx/429): tell the client to retry.
                     res.setHeader("Retry-After", "1");
-                    next(IN_FLIGHT_CONFLICT);
+                    forward(IN_FLIGHT_CONFLICT);
                     return;
                 }
+                if (result.kind === "invalid") {
+                    // A malformed stored value is neither a lock nor a result: remove exactly it (unless it changed
+                    // meanwhile) and let the handler run — DB-level guarantees still apply (fix #11).
+                    deleteIfEquals(client, storeKey, result.raw).catch(() => undefined);
+                    logger.warn("idempotency_record_invalid", { requestId: req.requestId, route: routeLabel(req) });
+                    logger.metric("idempotency_skipped", 1, { reason: "invalid_record" });
+                    forward();
+                    return;
+                }
+                const record = result.record;
                 if (record.bodyHash !== bodyHash) {
-                    next(IdempotencyConflict);
+                    forward(IdempotencyConflict);
                     return;
                 }
                 if (record.state === "in_progress") {
                     res.setHeader("Retry-After", "1");
-                    next(IN_FLIGHT_CONFLICT);
+                    forward(IN_FLIGHT_CONFLICT);
                     return;
                 }
-                replay(req, res, record.status, record.body);
+                forwarded = true; // the response is written here; `next` is never called
+                replay(req, res, record);
                 return;
             }
 
@@ -168,7 +214,7 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
             }) as Response["end"];
             res.on("finish", settle); // fallback only; settle() is idempotent
 
-            next();
-        })();
+            forward();
+        })().catch(fail);
     };
 }

@@ -3,7 +3,7 @@ title: Care Service — Service Card
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [service-card, catalog, care]
 related: [index, system-design, runbook, integration, data-model]
 sync_to_hub: catalog/care-service.card.md
@@ -19,10 +19,10 @@ sync_to_hub: catalog/care-service.card.md
 | **Name** | care-service |
 | **Repo** | `vcare-care-api` |
 | **Owner** | care-team |
-| **Status** | foundation built (2026-09-28): both listeners, health live/ready, migrations, `care-worker` skeleton; no business modules yet |
+| **Status** | foundation built (2026-09-28): both listeners, health live/ready, migrations, `care-worker`; access base built (2026-10-02): user-token verification via Identity's JWKS, deny-by-default `authorize` with a boot route assertion, append-only `audit_logs` (monthly partitions, `audit-partitions` worker loop), owner/app database roles; no business modules yet |
 | **Tier** | 1 (booking and consultations are on the synchronous patient path) · availability target **99.9 %** monthly (ADR 0005) |
 | **Runtime** | Node.js 24 LTS + TypeScript (strict), Express 5. `care-api`: two listeners, public `PORT=3001` (`/api/*`), internal `INTERNAL_PORT=3101` (`/internal/*`), 2–6 tasks. `care-worker`: sync retrier, notification outbox, reminders, cache refresh, audit partitions (1 task) |
-| **Datastores** | PostgreSQL 17 (own `care` database, `btree_gist`; primary + async replica; up to `DATABASE_POOL_MAX` + 1 readiness-probe connection per API task) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
+| **Datastores** | PostgreSQL 17 (own `care` database, `btree_gist`; primary + async replica; up to `DATABASE_POOL_MAX` + 1 readiness-probe connection per API task, 2 per worker task; two roles — owner `care` for migrations only, app login `care_app` in the `NOLOGIN` group `vcare_app` for `care-api`/`care-worker`, explicit per-table grants, `audit_logs` append-only by grant — ADR 0018) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
 
 ## Responsibilities
 The medical marketplace: doctor profiles and credentialing, specialties, working hours, schedule
@@ -40,7 +40,7 @@ Detail: [architecture/data-model.md](./architecture/data-model.md).
 ## Depends on
 | Dependency | Interface | For | Failure policy |
 |---|---|---|---|
-| identity-service | `GET /.well-known/jwks.json` (public, port 3000) | local verification of user access tokens (cached; refresh on unknown `kid` ≤ 1/min) | cached keys keep working; no matching key → `401 Unauthorized` |
+| identity-service | `GET /.well-known/jwks.json` (public, port 3000; `IDENTITY_JWKS_URL`) | local verification of user access tokens: in-memory cache refreshed every 5 min (Identity's `max-age`), demand refetch on an unknown `kid` ≤ 1/min | **degrade to cache, fail closed**: cached keys trusted ≤ 1 h after the last successful fetch, then none; no matching key → `401 Unauthorized`, never a skipped verification; readiness reports `checks.identityJwks: up\|down` (informational, never fails readiness); alert `IdentityJwksStale` at 30 min |
 | identity-service | `POST /internal/auth/token` (internal, port 3100) | client-credentials service token, scopes `users:read users:status:write` | retry per call; needed by the cases below |
 | identity-service | `PATCH /internal/users/:id/status` → `active` / `rejected` / `pending` — **Case 1** | verification decision, re-open, resubmission | **retry-report-pending**: 3 attempts, then 202 `identitySync: pending` + durable job; Identity 409 → `failed` + alert |
 | identity-service | `GET /internal/users?ids=` — **Case 2** | display name (`fullName` → `displayName`), avatar on search and lists | **degrade**: cache 300 s, 1 retry, misses render `profileHydrated: false`, never 5xx |
@@ -58,7 +58,7 @@ Detail: [architecture/data-model.md](./architecture/data-model.md).
 | admin tooling / future ai-service | `GET /internal/doctors/{userId}/summary` (service token, scope `doctors:read`) | no MVP service client holds `doctors:read` yet |
 
 ## Endpoint families
-`/api/health/live`, `/api/health/ready` (live; `/api/health` removed) · `/api/specialties` · `/api/doctors/apply`, `/api/doctors/me`, `/api/doctors/me/documents`,
+`/api/health/live`, `/api/health/ready` (live; body `checks: { database, redis, identityJwks }`; `/api/health` removed) · `/api/specialties` · `/api/doctors/apply`, `/api/doctors/me`, `/api/doctors/me/documents`,
 `/api/doctors/me/application` · `/api/doctors`, `/api/doctors/{doctorUserId}`, `/api/doctors/{doctorUserId}/slots` ·
 `/api/doctors/me/working-hours`, `/api/doctors/me/exceptions`, `/api/doctors/me/consultation-types` ·
 `/api/admin/applications` (approve, reject, reopen) · `/api/admin/doctors/{doctorUserId}/suspend`, `/reinstate` (planned) ·

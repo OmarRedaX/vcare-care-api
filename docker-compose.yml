@@ -31,11 +31,16 @@ services:
 
   migrate:
     build: .
-    command: ["node", "dist/migrate.js", "latest"]
+    # Owner runs the migrations, then creates/updates the app login from DATABASE_URL (ADR 0018).
+    command: ["sh", "-c", "node dist/migrate.js latest && node dist/migrate.js ensure-app-login"]
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgres://care:care@postgres:5432/care
+      MIGRATION_DATABASE_URL: postgres://care:care@postgres:5432/care
+      DATABASE_URL: postgres://care_app:care_app@postgres:5432/care
       REDIS_URL: redis://redis:6379
+      IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,9 +54,12 @@ services:
       PORT: 3001
       INTERNAL_PORT: 3101
       INTERNAL_HOST: 0.0.0.0
-      DATABASE_URL: postgres://care:care@postgres:5432/care
+      DATABASE_URL: postgres://care_app:care_app@postgres:5432/care
       REDIS_URL: redis://redis:6379
+      IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}
       LOG_LEVEL: info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "3001:3001"
       - "127.0.0.1:3101:3101"
@@ -72,9 +80,13 @@ services:
     command: ["node", "dist/worker.js"]
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgres://care:care@postgres:5432/care
+      DATABASE_URL: postgres://care_app:care_app@postgres:5432/care
       REDIS_URL: redis://redis:6379
+      IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}
+      AUDIT_PARTITION_MONTHS_AHEAD: 2
       LOG_LEVEL: info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       migrate:
         condition: service_completed_successfully

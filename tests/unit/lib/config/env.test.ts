@@ -4,8 +4,9 @@ import type { EnvSource } from "../../../../src/lib/config/types";
 
 const SECRET_DB = "postgres://synthetic-user:synthetic-pass-9931@localhost:5434/care_test";
 const SECRET_REDIS = "redis://:synthetic-redis-pass-4417@localhost:6381/0";
+const JWKS_URL = "http://127.0.0.1:1/.well-known/jwks.json";
 
-const secretsOnly = (): EnvSource => ({ DATABASE_URL: SECRET_DB, REDIS_URL: SECRET_REDIS });
+const secretsOnly = (): EnvSource => ({ DATABASE_URL: SECRET_DB, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
 
 function captureInvalid(source: EnvSource): InvalidEnvError {
     try {
@@ -30,6 +31,8 @@ describe("lib/config/env parseEnv", () => {
             DATABASE_URL: SECRET_DB,
             DATABASE_POOL_MAX: 20,
             REDIS_URL: SECRET_REDIS,
+            IDENTITY_JWKS_URL: JWKS_URL,
+            AUDIT_PARTITION_MONTHS_AHEAD: 2,
             CORS_ORIGINS: [],
             LOG_LEVEL: "info",
             RATE_LIMIT_FALLBACK_DIVISOR: 2,
@@ -39,12 +42,12 @@ describe("lib/config/env parseEnv", () => {
     });
 
     it("should throw InvalidEnvError naming DATABASE_URL when it is missing (F1)", () => {
-        const error = captureInvalid({ REDIS_URL: SECRET_REDIS });
+        const error = captureInvalid({ REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
         expect(error.keys).toEqual(["DATABASE_URL"]);
     });
 
     it("should throw naming REDIS_URL when it is missing (F2: no default on secrets)", () => {
-        expect(captureInvalid({ DATABASE_URL: SECRET_DB }).keys).toEqual(["REDIS_URL"]);
+        expect(captureInvalid({ DATABASE_URL: SECRET_DB, IDENTITY_JWKS_URL: JWKS_URL }).keys).toEqual(["REDIS_URL"]);
     });
 
     it("should never include a value in the error message when parsing fails (F1)", () => {
@@ -82,18 +85,18 @@ describe("lib/config/env parseEnv", () => {
     it.each(["http://localhost:6379", "localhost:6379", "not a url"])(
         "should reject REDIS_URL when the scheme is not redis or rediss (%p)",
         (url) => {
-            expect(captureInvalid({ DATABASE_URL: SECRET_DB, REDIS_URL: url }).keys).toEqual(["REDIS_URL"]);
+            expect(captureInvalid({ DATABASE_URL: SECRET_DB, REDIS_URL: url, IDENTITY_JWKS_URL: JWKS_URL }).keys).toEqual(["REDIS_URL"]);
         },
     );
 
     it("should accept rediss and postgresql schemes when they are used", () => {
-        const env = parseEnv({ DATABASE_URL: "postgresql://u:p@db/care", REDIS_URL: "rediss://cache:6380" });
+        const env = parseEnv({ DATABASE_URL: "postgresql://u:p@db/care", REDIS_URL: "rediss://cache:6380", IDENTITY_JWKS_URL: JWKS_URL });
         expect(env.DATABASE_URL).toBe("postgresql://u:p@db/care");
         expect(env.REDIS_URL).toBe("rediss://cache:6380");
     });
 
     it("should reject DATABASE_URL when the scheme is not postgres", () => {
-        expect(captureInvalid({ DATABASE_URL: "mysql://u:p@db/care", REDIS_URL: SECRET_REDIS }).keys).toEqual([
+        expect(captureInvalid({ DATABASE_URL: "mysql://u:p@db/care", REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL }).keys).toEqual([
             "DATABASE_URL",
         ]);
     });
@@ -108,11 +111,11 @@ describe("lib/config/env parseEnv", () => {
         ["application_name", "sslmode=require&application_name=psql"],
     ])("should reject DATABASE_URL when its query string sets %s", (_name, query) => {
         const url = `${SECRET_DB}?${query}`;
-        const error = captureInvalid({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS });
+        const error = captureInvalid({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
         expect(error.keys).toEqual(["DATABASE_URL"]);
         expect(error.message).not.toContain("synthetic-pass-9931");
 
-        const result = envSchema.safeParse({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS });
+        const result = envSchema.safeParse({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
         expect(result.success).toBe(false);
         expect(result.error?.issues.map((issue) => issue.message)).toEqual([
             "must not set options, statement_timeout, query_timeout, application_name — Care sets them per pool",
@@ -121,7 +124,7 @@ describe("lib/config/env parseEnv", () => {
 
     it("should accept DATABASE_URL when its query string carries only other parameters", () => {
         const url = `${SECRET_DB}?sslmode=require&sslrootcert=%2Fetc%2Fssl%2Frds.pem`;
-        expect(parseEnv({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS }).DATABASE_URL).toBe(url);
+        expect(parseEnv({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL }).DATABASE_URL).toBe(url);
     });
 
     it("should treat an empty string as unset when a default exists", () => {
@@ -132,7 +135,7 @@ describe("lib/config/env parseEnv", () => {
     });
 
     it("should treat an empty secret as missing when it has no default", () => {
-        expect(captureInvalid({ DATABASE_URL: "", REDIS_URL: SECRET_REDIS }).keys).toEqual(["DATABASE_URL"]);
+        expect(captureInvalid({ DATABASE_URL: "", REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL }).keys).toEqual(["DATABASE_URL"]);
     });
 
     it.each([

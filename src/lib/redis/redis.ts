@@ -4,6 +4,7 @@ import { getEnv } from "../config/env";
 import { container } from "../di/container";
 import { TOKENS } from "../di/tokens";
 import { logger } from "../logger/logger";
+import { breakerFor } from "./breaker";
 import type { CreateRedisOptions } from "./types";
 
 /**
@@ -55,6 +56,27 @@ export function resolveRedis(override?: Redis): Redis {
 
 export function isRedisReady(client: Redis): boolean {
     return client.status === "ready";
+}
+
+/**
+ * Ready AND its breaker admits a command (fix #10). Request-path middleware (idempotency, rate limit) checks this
+ * instead of `isRedisReady`, so a Redis that stalls while connected stops costing a command timeout per request.
+ */
+export function isRedisUsable(client: Redis): boolean {
+    return isRedisReady(client) && breakerFor(client).canAttempt();
+}
+
+/** Runs one Redis command and reports its outcome to the client's breaker. Every request-path command goes through it. */
+export async function withRedis<T>(client: Redis, command: () => Promise<T>): Promise<T> {
+    const breaker = breakerFor(client);
+    try {
+        const result = await command();
+        breaker.recordSuccess();
+        return result;
+    } catch (error) {
+        breaker.recordFailure();
+        throw error;
+    }
 }
 
 /** Graceful `QUIT`, falling back to a hard disconnect when the connection is already gone. */

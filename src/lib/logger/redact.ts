@@ -34,6 +34,10 @@ export const REDACTED_KEYS: readonly string[] = [
     "clientSecret",
     "body",
     "requestBody",
+    // access: database URLs carry credentials (ensure-app-login, pool configs).
+    "connectionString",
+    "databaseUrl",
+    "migrationDatabaseUrl",
 ];
 
 const MAX_DEPTH = 8;

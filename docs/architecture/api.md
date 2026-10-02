@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [api, reference, routes, rbac]
 related: [rbac, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
@@ -29,7 +29,7 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 | Method | Path | Roles | Ownership | Notes |
 |---|---|---|---|---|
 | GET | `/api/health/live` | public | none | 200 `{ status: "ok" }`; no dependency checks, never 503 (ADR 0006) |
-| GET | `/api/health/ready` | public | none | 200 `ok`/`degraded` (Redis down) · 503 `down` (Postgres down or draining); body `{ status, checks: { database, redis } }` |
+| GET | `/api/health/ready` | public | none | 200 `ok`/`degraded` (Redis down) · 503 `down` (Postgres down or draining); body `{ status, checks: { database, redis, identityJwks? } }` — `identityJwks` is informational (JWKS cache state, no network call) and never changes `status` or the code |
 | GET | `/internal/health/live`, `/internal/health/ready` | public (internal listener only) | none | same bodies as the public pair |
 
 Implemented by the foundation (2026-09-28). Health bodies are bare JSON (not enveloped) with `Cache-Control: no-store`;

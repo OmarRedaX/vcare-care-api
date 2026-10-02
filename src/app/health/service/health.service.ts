@@ -1,6 +1,7 @@
 import { inject, injectable } from "tsyringe";
 import type Redis from "ioredis";
 import type { Knex } from "knex";
+import type { JwksStatusSource } from "../../../lib/auth/types";
 import { TOKENS } from "../../../lib/di/tokens";
 import { probeDatabase } from "../../../lib/knex/probe";
 import type { ShutdownState } from "../../../lib/lifecycle/shutdown-state";
@@ -16,6 +17,7 @@ export class HealthService {
         @inject(TOKENS.ProbeDb) private readonly db: Knex,
         @inject(TOKENS.Redis) private readonly redis: Redis,
         @inject(TOKENS.ShutdownState) private readonly state: ShutdownState,
+        @inject(TOKENS.JwksCache) private readonly jwks: JwksStatusSource,
     ) {}
 
     /** Never checks a dependency and is unaffected by shutdown — a liveness failure means "restart me". */
@@ -26,7 +28,8 @@ export class HealthService {
     /**
      * Postgres is fatal; Redis is Tier 2 and only reported (ADR 0006). The database probe uses its own 1-connection
      * pool (`TOKENS.ProbeDb`), so a busy request pool never reads as "down". Probes run concurrently, each
-     * bounded by 500 ms, and run even during shutdown so the body stays truthful.
+     * bounded by 500 ms, and run even during shutdown so the body stays truthful. `identityJwks` is read from the
+     * in-memory JWKS cache (no network call) and is informational only: it never changes `status` or the HTTP code.
      */
     async ready(): Promise<ReadinessResult> {
         const [databaseUp, redisUp] = await Promise.all([
@@ -37,6 +40,7 @@ export class HealthService {
         const checks = {
             database: databaseUp ? ProbeStatus.Up : ProbeStatus.Down,
             redis: redisUp ? ProbeStatus.Up : ProbeStatus.Down,
+            identityJwks: this.jwks.status() === "up" ? ProbeStatus.Up : ProbeStatus.Down,
         };
 
         if (this.state.isShuttingDown() || !databaseUp) {

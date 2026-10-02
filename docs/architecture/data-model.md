@@ -4,16 +4,18 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [data-model, postgresql, schema, indexes, erd]
-related: [scheduling-slots, clinical-records, integration, file-handling, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
+related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
 
-PostgreSQL 17, one database owned by Care. **Built so far (foundation, 2026-09-28):** one migration,
-`20260915000000_create_extension_btree_gist` (the extension only, no tables); `knex_migrations` records migration names
-without the file extension. Everything below is the design the modules will build. Written in the style migrations
+PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09-28) —
+`20260915000000_create_extension_btree_gist` (the extension only); access (2026-10-02) — `create_app_role` (the
+`NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
+below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
+modules will build. Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
 - `id BIGSERIAL` everywhere; FKs `BIGINT` with named constraints and a leading-column index.
@@ -24,6 +26,10 @@ will use (`knex.raw`, see the `write-migration` skill). Conventions:
   working hours. Uniqueness among live rows uses partial unique indexes.
 - `ON DELETE RESTRICT` everywhere; clinical tables never cascade.
 - Every index names the query it serves. There is **no slots or availability table** ([ADR 0002](../adr/0002-slots-never-stored.md)).
+- **Roles and grants** ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)): the owner `care`
+  owns everything and runs migrations; the app login `care_app` (member of `vcare_app`) is what `care-api` and
+  `care-worker` use. Every table migration grants `vcare_app` explicitly (no `ALTER DEFAULT PRIVILEGES`); append-only
+  tables get `INSERT, SELECT` only (+ `USAGE` on their sequence).
 
 ## ERD
 
@@ -548,34 +554,60 @@ CREATE UNIQUE INDEX uq_help_articles_audience_title ON help_articles (audience, 
 ```
 
 ## `audit_logs`
-Range-partitioned by month from the first migration ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md));
-`care-worker` pre-creates `AUDIT_PARTITION_MONTHS_AHEAD` months; a `DEFAULT` partition alerts if non-empty;
-grants are applied to every partition; retention ≥ 6 years (detach + archive, never `DELETE`).
+**Built by `access` (2026-10-02)** — migrations `20261002120100_create_audit_logs` and
+`20261002120200_create_audit_logs_ensure_partitions`. Range-partitioned by month from the first migration
+([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)); `care-worker` keeps the current UTC month and the next
+`AUDIT_PARTITION_MONTHS_AHEAD` months through `audit_logs_ensure_partitions(int)`; the `DEFAULT` partition must stay
+empty (alert otherwise); retention ≥ 6 years (detach + archive, never `DELETE`). Append-only **by grant**
+([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)): `vcare_app` holds `INSERT, SELECT` on the
+parent, the default partition, and every monthly partition, plus `USAGE` on the sequence — no `UPDATE`, `DELETE`, or
+`TRUNCATE` anywhere. Rows are written only by `lib/audit` `AuditRecorder.record(trx, entry)` inside the caller's
+transaction.
 ```sql
 CREATE TABLE audit_logs (
     id              BIGSERIAL,
-    actor_user_id   BIGINT,                             -- Identity user id; NULL for system actors (retry jobs)
+    actor_user_id   BIGINT,                             -- Identity user id (no FK); NULL for service and system actors
     actor_role      VARCHAR(16) NOT NULL,
-    action          VARCHAR(64) NOT NULL,               -- e.g. record.read, consultation.cancelled, doctor.suspended
-    entity_type     VARCHAR(64) NOT NULL,
-    entity_id       BIGINT NOT NULL,
-    request_id      UUID,
+    action          VARCHAR(64) NOT NULL,               -- <entity>.<verb>, e.g. record.read, consultation.cancelled
+    entity_type     VARCHAR(64) NOT NULL,               -- snake_case, e.g. medical_record
+    entity_id       BIGINT NOT NULL,                    -- polymorphic by entity_type: no FK
+    request_id      UUID,                               -- the request's X-Request-Id; NULL for worker actors
     metadata        JSONB NOT NULL,                     -- ids, statuses, reasons only; never clinical text or PII
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT pk_audit_logs PRIMARY KEY (id, created_at),
     CONSTRAINT chk_audit_logs_actor_role CHECK (actor_role IN ('patient', 'doctor', 'admin', 'service', 'system')),
+    CONSTRAINT chk_audit_logs_actor_user_id CHECK ((actor_role IN ('patient', 'doctor', 'admin')) = (actor_user_id IS NOT NULL)),
+    CONSTRAINT chk_audit_logs_entity_id_positive CHECK (entity_id > 0),
     CONSTRAINT chk_audit_logs_metadata_object CHECK (jsonb_typeof(metadata) = 'object'),
-    CONSTRAINT pk_audit_logs PRIMARY KEY (id, created_at)
+    CONSTRAINT chk_audit_logs_metadata_size CHECK (octet_length(metadata::text) <= 4096)
 ) PARTITION BY RANGE (created_at);
-CREATE TABLE audit_logs_y2026m09 PARTITION OF audit_logs FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');  -- example
 CREATE TABLE audit_logs_default PARTITION OF audit_logs DEFAULT;
+GRANT INSERT, SELECT ON audit_logs TO vcare_app;
+GRANT INSERT, SELECT ON audit_logs_default TO vcare_app;
+GRANT USAGE ON SEQUENCE audit_logs_id_seq TO vcare_app;
+
+-- Owner-defined; the only SECURITY DEFINER object. Bounded 0..12, search_path pinned, lock_timeout 2 s.
+-- Creates audit_logs_yYYYYmMM for the current UTC month + p_months_ahead and grants INSERT, SELECT to vcare_app.
+CREATE FUNCTION audit_logs_ensure_partitions(p_months_ahead integer)
+    RETURNS TABLE (partition_name text, created boolean) LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp SET lock_timeout = '2s' AS $fn$ … $fn$;
+REVOKE ALL ON FUNCTION audit_logs_ensure_partitions(integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION audit_logs_ensure_partitions(integer) TO vcare_app;
+SELECT partition_name, created FROM audit_logs_ensure_partitions(2);   -- the migration creates current + 2 months
+```
+The three `chk_audit_logs_actor_user_id`, `chk_audit_logs_entity_id_positive`, and `chk_audit_logs_metadata_size`
+checks turn `lib/audit` validation rules into database guarantees (the recorder itself caps metadata at 2 KB, ≤ 20
+flat scalar keys, no redacted key names).
+
+**Read indexes — deferred to the `audit` module** (decision D1, access spec §14.1: indexes exist only for a query in
+code). Its migration creates them on the partitioned parent (they cascade to every partition, including the default):
+```sql
 -- GET /audit-logs?entityType=&entityId= newest first
 CREATE INDEX idx_audit_logs_entity_type_entity_id_created_at ON audit_logs (entity_type, entity_id, created_at DESC, id DESC);
 -- GET /audit-logs?actorUserId= newest first
 CREATE INDEX idx_audit_logs_actor_user_id_created_at ON audit_logs (actor_user_id, created_at DESC, id DESC);
 -- GET /audit-logs (unfiltered, or action/time-range filtered) newest first
 CREATE INDEX idx_audit_logs_created_at_id ON audit_logs (created_at DESC, id DESC);
--- Append-only.
-REVOKE UPDATE, DELETE ON audit_logs FROM vcare_app;
 ```
 
 ## `identity_sync_jobs`

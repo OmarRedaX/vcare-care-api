@@ -4,10 +4,11 @@ export interface LiveReport {
     status: HealthStatus.Ok;
 }
 
-/** `checks` stays open for additive informational probes (e.g. `identityJwks`, added with `lib/auth`). */
 export interface HealthChecks {
     database: ProbeStatus;
     redis: ProbeStatus;
+    /** Informational: the in-memory JWKS cache state (no network call). Never affects `status` or the HTTP code. */
+    identityJwks: ProbeStatus;
 }
 
 export interface ReadyReport {

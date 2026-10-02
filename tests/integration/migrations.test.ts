@@ -1,5 +1,6 @@
 import type { Knex } from "knex";
 import { InvalidEnvError, parseEnv } from "../../src/lib/config/env";
+import { ensureAppLogin } from "../../src/lib/knex/app-login";
 import { createKnex, db, probeDb } from "../../src/lib/knex/knex";
 import { migrationConfig } from "../../src/lib/knex/knexfile";
 import { closeDb } from "../helpers/db";
@@ -15,8 +16,9 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
     let migrator: Knex;
 
     beforeAll(() => {
+        // Migrations run as the OWNER (ADR 0018); the app login cannot create, drop, or read knex_migrations.
         migrator = createKnex({
-            url: process.env.DATABASE_URL ?? "",
+            url: process.env.MIGRATION_DATABASE_URL ?? "",
             poolMax: 1,
             statementTimeoutMs: null,
             applicationName: "care-migrate",
@@ -36,7 +38,7 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
     });
 
     it("should record migration names without the file extension (parity d)", async () => {
-        const rows = await db("knex_migrations").select("name").orderBy("id");
+        const rows = await migrator("knex_migrations").select("name").orderBy("id");
         const names = rows.map((row: { name: string }) => row.name);
         expect(names).toContain("20260915000000_create_extension_btree_gist");
         expect(names.every((name) => !/\.(ts|js)$/.test(name))).toBe(true);
@@ -66,6 +68,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             expect(pending.length).toBeGreaterThanOrEqual(1);
         } finally {
             await migrator.migrate.latest(migrationConfig);
+            // Rolling back create_app_role drops vcare_app and with it care_app's membership: re-provision the login.
+            await ensureAppLogin(migrator, process.env.DATABASE_URL ?? "");
         }
         expect(await hasBtreeGist(migrator)).toBe(true);
     });

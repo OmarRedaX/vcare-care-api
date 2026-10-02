@@ -9,6 +9,11 @@ export const TOKENS = {
     Redis: Symbol.for("Redis"),
     ShutdownState: Symbol.for("ShutdownState"),
     InFlightCounter: Symbol.for("InFlightCounter"),
+    /** Identity's JWKS in memory (`lib/auth`); started by `server.ts`, never by the worker. */
+    JwksCache: Symbol.for("JwksCache"),
+    UserTokenVerifier: Symbol.for("UserTokenVerifier"),
+    /** `record(trx, entry)` — one audit row in the caller's transaction (`lib/audit`). */
+    AuditRecorder: Symbol.for("AuditRecorder"),
     HealthService: Symbol.for("HealthService"),
     HealthController: Symbol.for("HealthController"),
 } as const;

@@ -20,6 +20,11 @@ export interface MatchedRequest {
     route?: { path?: unknown };
 }
 
+/** The members of `res.locals` written by `lib/http` (fix #6). */
+export interface RouteLocals {
+    routePattern?: string;
+}
+
 export interface CorsOptions {
     origins: readonly string[];
 }

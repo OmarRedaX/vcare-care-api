@@ -10,9 +10,18 @@ import { sendNoContent, sendSuccess } from "../../src/lib/http/response";
 import { idempotency } from "../../src/lib/idempotency/idempotency";
 import { db } from "../../src/lib/knex/knex";
 import { logger } from "../../src/lib/logger/logger";
+import { actorFromAuth } from "../../src/lib/audit/audit";
+import type { AuditRecorder } from "../../src/lib/audit/audit";
+import { userGuard } from "../../src/lib/auth/user-guard";
+import { container } from "../../src/lib/di/container";
+import { TOKENS } from "../../src/lib/di/tokens";
+import { sealRouter } from "../../src/lib/http/route-pattern";
 import { rateLimit } from "../../src/lib/rate-limit/rate-limit";
 import { byIp } from "../../src/lib/rate-limit/subjects";
+import { authorize } from "../../src/lib/rbac/authorize";
+import type { AccessContext, OwnershipDecision, UserPolicy } from "../../src/lib/rbac/types";
 import { validateBody, validateQuery } from "../../src/lib/validation/validate";
+import { parsePositiveId } from "../../src/pkg/utils/id";
 
 /** Test DTO: every field validated; unknown properties rejected by `validateBody`. */
 export class EchoItemDto {
@@ -188,4 +197,145 @@ export function buildPaginationRouter(total: number): Router {
         );
     });
     return router;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// access (spec §9.3): test-only routes, mounted at `/api` through `extraRouters` — never in src/routes.ts, never in
+// the contract. Each still declares userGuard() → authorize(policy) like a production route.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** The owner of synthetic resource `:id` from a real query (no table): 1 → user 101, 2 → user 102. */
+async function resolveTestOwner(ctx: AccessContext): Promise<OwnershipDecision> {
+    const id = parsePositiveId(ctx.params.id);
+    if (id === undefined) {
+        return "deny-not-found";
+    }
+    const result = await db.raw<{ rows: Array<{ owner_user_id: number }> }>(
+        "SELECT owner_user_id FROM (VALUES (1, 101), (2, 102)) AS t(id, owner_user_id) WHERE id = ?",
+        [id],
+    );
+    const owner = result.rows[0]?.owner_user_id;
+    if (owner === undefined) {
+        return "deny-not-found";
+    }
+    if (owner === ctx.auth.userId) {
+        return "allow";
+    }
+    // Private to patients (404 hides existence); visible-but-forbidden for doctors.
+    return ctx.auth.role === "patient" ? "deny-not-found" : "deny-forbidden";
+}
+
+/** A "locally suspended doctor" stand-in: user 9001 is blocked, from a real query. */
+async function testBlockedDoctor(ctx: AccessContext): Promise<"allow" | "deny-forbidden"> {
+    const result = await db.raw<{ rows: Array<{ blocked: boolean }> }>("SELECT ?::bigint = ANY (ARRAY[9001]::bigint[]) AS blocked", [
+        ctx.auth.userId,
+    ]);
+    return result.rows[0]?.blocked === true ? "deny-forbidden" : "allow";
+}
+
+export const ACCESS_TEST_POLICIES: Record<string, UserPolicy> = {
+    any: { kind: "user", roles: ["patient", "doctor", "admin"], owner: { kind: "none" } },
+    admin: { kind: "user", roles: ["admin"], owner: { kind: "none" } },
+    onboarding: {
+        kind: "user",
+        roles: ["doctor"],
+        owner: { kind: "self" },
+        accountState: { statuses: { doctor: ["pending", "active", "rejected"] } },
+    },
+    verified: { kind: "user", roles: ["patient"], owner: { kind: "self" }, accountState: { emailVerified: true } },
+    owned: {
+        kind: "user",
+        roles: ["patient", "doctor"],
+        owner: { kind: "resolver", name: "test_owner", resolve: resolveTestOwner },
+    },
+    checked: {
+        kind: "user",
+        roles: ["doctor", "admin"],
+        owner: { kind: "none" },
+        checks: [{ name: "test_blocked_doctor", appliesTo: ["doctor"], run: testBlockedDoctor }],
+    },
+    audit: { kind: "user", roles: ["admin"], owner: { kind: "none" }, audit: "admin-action" },
+    params: { kind: "user", roles: ["patient"], owner: { kind: "none" } },
+};
+
+function echoPrincipal(req: Request, res: Response, status: 200 | 201 = 200): void {
+    sendSuccess(res, { userId: req.auth?.userId, role: req.auth?.role }, { status });
+}
+
+/** `/api/__test/access/*` — the RBAC matrix routes (also served by scripts/access-qa-server.ts). Mount at `/api`. */
+export function buildAccessTestRouter(): Router {
+    const router = Router();
+    const p = ACCESS_TEST_POLICIES;
+
+    router.get("/__test/access/any", userGuard(), authorize(p.any), (req, res) => echoPrincipal(req, res));
+    router.get("/__test/access/admin", userGuard(), authorize(p.admin), (req, res) => echoPrincipal(req, res));
+    router.get("/__test/access/onboarding", userGuard(), authorize(p.onboarding), (req, res) => echoPrincipal(req, res));
+    router.post(
+        "/__test/access/verified",
+        userGuard(),
+        authorize(p.verified),
+        idempotency({ required: false }),
+        (req, res) => echoPrincipal(req, res, 201),
+    );
+    router.get("/__test/access/owned/:id", userGuard(), authorize(p.owned), (req, res) => echoPrincipal(req, res));
+    router.get("/__test/access/checked", userGuard(), authorize(p.checked), (req, res) => echoPrincipal(req, res));
+
+    return sealRouter(router);
+}
+
+/**
+ * `POST /api/__test/audit` body `{ fail?: boolean }`: one audit row in a transaction that commits (201) or rolls back
+ * (500). Mount at `/api`.
+ */
+export function buildAuditTestRouter(): Router {
+    const router = Router();
+    router.post("/__test/audit", userGuard(), authorize(ACCESS_TEST_POLICIES.audit), async (req: Request, res: Response) => {
+        const fail = (req.body as { fail?: unknown } | undefined)?.fail === true;
+        const auth = req.auth;
+        if (auth === undefined) {
+            throw new Error("unreachable: authorize requires a principal");
+        }
+        const audit = container.resolve<AuditRecorder>(TOKENS.AuditRecorder);
+        await db.transaction(async (trx) => {
+            await audit.record(trx, {
+                actor: actorFromAuth(auth),
+                action: "test.performed",
+                entityType: "test_entity",
+                entityId: 1,
+                metadata: { reason: "synthetic" },
+            });
+            if (fail) {
+                throw new Error("synthetic rollback");
+            }
+        });
+        sendSuccess(res, { recorded: true }, { status: 201 });
+    });
+    return sealRouter(router);
+}
+
+/** Nested sealed routers whose handlers throw (fix #6: the route label keeps the full prefix). Mount at `/api`. */
+export function buildNestedRouter(): Router {
+    const inner = Router();
+    inner.get("/boom/:id", () => {
+        throw new Error("synthetic nested failure");
+    });
+
+    const guarded = Router();
+    guarded.get("/boom/:id", userGuard(), authorize(ACCESS_TEST_POLICIES.admin), () => {
+        throw new Error("synthetic nested failure");
+    });
+
+    const outer = Router();
+    outer.use("/__test/nested/inner", sealRouter(inner));
+    outer.use("/__test/nested/guarded", sealRouter(guarded));
+    return sealRouter(outer);
+}
+
+/** `GET /api/__test/params/:value` — exercises fix #5 (malformed percent-encoding). Mount at `/api`. */
+export function buildParamRouter(): Router {
+    const router = Router();
+    router.get("/__test/params/:value", userGuard(), authorize(ACCESS_TEST_POLICIES.params), (req: Request, res: Response) => {
+        sendSuccess(res, { value: req.params.value });
+    });
+    return sealRouter(router);
 }

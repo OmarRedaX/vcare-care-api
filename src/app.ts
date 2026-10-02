@@ -8,6 +8,7 @@ import { cors } from "./lib/http/cors";
 import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
 import { requestLogger } from "./lib/logger/request-logger";
+import { assertRoutesAuthorized } from "./lib/rbac/assert-routes-authorized";
 import { requestId } from "./lib/request-id/request-id";
 import { buildPublicRoutes } from "./routes";
 
@@ -33,6 +34,9 @@ export function createPublicApp(options?: AppOptions): express.Express {
 
     app.use("/api/health", buildHealthRouter());
     app.use("/api", buildPublicRoutes());
+    // Fail closed at boot: every route needs a guard before authorize(policy); health is exempt by marker. Test-only
+    // routers (extraRouters) are mounted after the check and never exist in production (access spec §3.2).
+    assertRoutesAuthorized(app.router);
     for (const mounted of options?.extraRouters ?? []) {
         app.use(mounted.path, mounted.router);
     }

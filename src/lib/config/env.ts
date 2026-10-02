@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import { z } from "zod";
-import type { Env, EnvSource } from "./types";
+import type { Env, EnvSource, MigrationEnv } from "./types";
 
 /** Thrown when the environment is invalid. Carries KEYS ONLY — never values (CLAUDE.md → Security rules). */
 export class InvalidEnvError extends Error {
@@ -46,6 +46,15 @@ const databaseUrl = urlWithScheme(["postgres:", "postgresql:"], "postgres").refi
     { message: `must not set ${CARE_OWNED_PG_PARAMS.join(", ")} — Care sets them per pool` },
 );
 
+/** The decoded user name of a postgres URL, or `undefined` when the URL cannot be parsed. */
+function databaseUser(value: string): string | undefined {
+    try {
+        return decodeURIComponent(new URL(value).username);
+    } catch {
+        return undefined;
+    }
+}
+
 /** An IPv4 or IPv6 literal — never a host name (the internal listener must bind exactly where configured). */
 const ipv4Or6 = z.string().refine((value) => isIP(value) !== 0, {
     message: "must be an IPv4 or IPv6 address",
@@ -85,9 +94,15 @@ export const envSchema = z
         INTERNAL_PORT: port.default(3101),
         INTERNAL_HOST: ipv4Or6.default("127.0.0.1"),
         TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+        /** The app login (`care_app`, member of `vcare_app`) for `care-api` and `care-worker` (ADR 0018). */
         DATABASE_URL: databaseUrl,
+        /** The owner credential: only `care-migrate` and the integration-test setup need it (ADR 0018). */
+        MIGRATION_DATABASE_URL: databaseUrl.optional(),
         DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
         REDIS_URL: urlWithScheme(["redis:", "rediss:"], "redis"),
+        /** No default: a wrong default would answer 401 to every request silently (access spec §3.10). */
+        IDENTITY_JWKS_URL: urlWithScheme(["http:", "https:"], "http(s)"),
+        AUDIT_PARTITION_MONTHS_AHEAD: z.coerce.number().int().min(1).max(12).default(2),
         CORS_ORIGINS: corsOrigins,
         LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
         RATE_LIMIT_FALLBACK_DIVISOR: z.coerce.number().int().min(1).default(2),
@@ -101,6 +116,16 @@ export const envSchema = z
                 path: ["INTERNAL_PORT"],
                 message: "must differ from PORT",
             });
+        }
+        if (value.MIGRATION_DATABASE_URL !== undefined) {
+            const owner = databaseUser(value.MIGRATION_DATABASE_URL);
+            if (owner !== undefined && owner === databaseUser(value.DATABASE_URL)) {
+                ctx.addIssue({
+                    code: "custom",
+                    path: ["MIGRATION_DATABASE_URL"],
+                    message: "must use a different role than DATABASE_URL",
+                });
+            }
         }
         if (value.NODE_ENV === "production" && value.LOG_LEVEL === "debug") {
             ctx.addIssue({
@@ -134,7 +159,32 @@ export function parseEnv(source: EnvSource): Env {
     return env;
 }
 
+/** `env` narrowed to a migration environment, or throws naming `MIGRATION_DATABASE_URL` (never its value). */
+export function parseMigrationEnv(env: Env): MigrationEnv {
+    const url = env.MIGRATION_DATABASE_URL;
+    if (url === undefined) {
+        throw new InvalidEnvError(["MIGRATION_DATABASE_URL"]);
+    }
+    return { ...env, MIGRATION_DATABASE_URL: url };
+}
+
+/** ONE JSON line naming the offending keys (never their values), then exit 1. */
+function exitInvalid(error: InvalidEnvError): never {
+    process.stderr.write(
+        `${JSON.stringify({
+            level: "error",
+            message: "invalid_environment",
+            timestamp: new Date().toISOString(),
+            service: "care-service",
+            keys: error.keys,
+        })}
+`,
+    );
+    process.exit(1);
+}
+
 let cached: Env | undefined;
+let cachedMigration: MigrationEnv | undefined;
 
 /**
  * Memoized process environment. On invalid env it writes ONE JSON line naming the offending keys
@@ -149,16 +199,26 @@ export function getEnv(): Env {
         return cached;
     } catch (error) {
         if (error instanceof InvalidEnvError) {
-            process.stderr.write(
-                `${JSON.stringify({
-                    level: "error",
-                    message: "invalid_environment",
-                    timestamp: new Date().toISOString(),
-                    service: "care-service",
-                    keys: error.keys,
-                })}\n`,
-            );
-            process.exit(1);
+            exitInvalid(error);
+        }
+        throw error;
+    }
+}
+
+/**
+ * Memoized environment of `care-migrate`: `getEnv()` plus a required `MIGRATION_DATABASE_URL` (the owner
+ * credential). `care-api` and `care-worker` never call it, so they never need the owner secret (ADR 0018).
+ */
+export function getMigrationEnv(): MigrationEnv {
+    if (cachedMigration !== undefined) {
+        return cachedMigration;
+    }
+    try {
+        cachedMigration = parseMigrationEnv(getEnv());
+        return cachedMigration;
+    } catch (error) {
+        if (error instanceof InvalidEnvError) {
+            exitInvalid(error);
         }
         throw error;
     }

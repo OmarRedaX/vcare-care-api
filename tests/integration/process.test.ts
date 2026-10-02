@@ -73,7 +73,7 @@ function jsonLines(text: string): Array<Record<string, unknown>> {
 
 describe("entrypoint environment validation (F1)", () => {
     it("should exit 1 and name the key without its value when DATABASE_URL is invalid", async () => {
-        const secretUrl = "mysql://care:synthetic-db-secret-6612@localhost:5434/care_test";
+        const secretUrl = "mysql://care_app:synthetic-db-secret-6612@localhost:5434/care_test";
         const result = await run("src/server.ts", childEnv({ DATABASE_URL: secretUrl }));
 
         expect(result.code).toBe(1);

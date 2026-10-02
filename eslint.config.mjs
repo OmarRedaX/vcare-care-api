@@ -42,6 +42,55 @@ const FORBIDDEN_PATTERNS = [
     },
 ];
 
+/**
+ * Narrow homes for two locked-stack libraries (access spec §3.11): `jose` only under `src/lib/auth`, `undici` only in
+ * `src/lib/auth/jwks-fetcher.ts` (and later `src/lib/identity-client`). Tests are exempt (they sign tokens with jose).
+ */
+const JOSE_RESTRICTION = {
+    paths: [{ name: "jose", message: "jose is imported only under src/lib/auth" }],
+    patterns: [{ group: ["jose/*"], message: "jose is imported only under src/lib/auth" }],
+};
+const UNDICI_RESTRICTION = {
+    paths: [
+        {
+            name: "undici",
+            message: "undici is imported only in src/lib/auth/jwks-fetcher.ts and src/lib/identity-client",
+        },
+    ],
+    patterns: [
+        {
+            group: ["undici/*"],
+            message: "undici is imported only in src/lib/auth/jwks-fetcher.ts and src/lib/identity-client",
+        },
+    ],
+};
+
+const LIB_NO_APP_PATTERN = {
+    group: ["**/app/**"],
+    message: "lib/ must not import app/; register modules in src/bootstrap.ts",
+};
+
+/** `no-restricted-imports` options for a file group: a later config object replaces the rule, so each lists all. */
+function restrictedImports({ paths = [], patterns = [], allowJose = false, allowUndici = false } = {}) {
+    return [
+        "error",
+        {
+            paths: [
+                ...FORBIDDEN_PATHS,
+                ...paths,
+                ...(allowJose ? [] : JOSE_RESTRICTION.paths),
+                ...(allowUndici ? [] : UNDICI_RESTRICTION.paths),
+            ],
+            patterns: [
+                ...FORBIDDEN_PATTERNS,
+                ...patterns,
+                ...(allowJose ? [] : JOSE_RESTRICTION.patterns),
+                ...(allowUndici ? [] : UNDICI_RESTRICTION.patterns),
+            ],
+        },
+    ];
+}
+
 export default tseslint.config(
     {
         ignores: ["dist/", "coverage/", "node_modules/"],
@@ -77,53 +126,70 @@ export default tseslint.config(
         },
     },
     {
+        // Production code: jose and undici only in their narrow homes (overridden below for lib/auth).
+        files: ["src/**/*.ts"],
+        rules: {
+            "no-restricted-imports": restrictedImports(),
+        },
+    },
+    {
         // pkg/ is pure: no I/O, no DI, no framework, no imports from lib/ or app/.
         files: ["src/pkg/**/*.ts"],
         rules: {
-            "no-restricted-imports": [
-                "error",
-                {
-                    paths: [
-                        ...FORBIDDEN_PATHS,
-                        ...["express", "knex", "pg", "ioredis", "tsyringe"].map((name) => ({
-                            name,
-                            message: "pkg/ is pure: no I/O, no DI, no framework",
-                        })),
-                    ],
-                    patterns: [
-                        ...FORBIDDEN_PATTERNS,
-                        {
-                            group: ["**/lib/**", "**/app/**"],
-                            message: "pkg/ is pure: no I/O, no DI, no framework",
-                        },
-                    ],
-                },
-            ],
+            "no-restricted-imports": restrictedImports({
+                paths: ["express", "knex", "pg", "ioredis", "tsyringe"].map((name) => ({
+                    name,
+                    message: "pkg/ is pure: no I/O, no DI, no framework",
+                })),
+                patterns: [
+                    {
+                        group: ["**/lib/**", "**/app/**"],
+                        message: "pkg/ is pure: no I/O, no DI, no framework",
+                    },
+                ],
+            }),
         },
     },
     {
         // lib/ must not import app/; modules are registered in src/bootstrap.ts.
         files: ["src/lib/**/*.ts"],
         rules: {
-            "no-restricted-imports": [
-                "error",
-                {
-                    paths: FORBIDDEN_PATHS,
-                    patterns: [
-                        ...FORBIDDEN_PATTERNS,
-                        {
-                            group: ["**/app/**"],
-                            message: "lib/ must not import app/; register modules in src/bootstrap.ts",
-                        },
-                    ],
-                },
-            ],
+            "no-restricted-imports": restrictedImports({ patterns: [LIB_NO_APP_PATTERN] }),
+        },
+    },
+    {
+        files: ["src/lib/auth/**/*.ts"],
+        rules: {
+            "no-restricted-imports": restrictedImports({ patterns: [LIB_NO_APP_PATTERN], allowJose: true }),
+        },
+    },
+    {
+        files: ["src/lib/auth/jwks-fetcher.ts"],
+        rules: {
+            "no-restricted-imports": restrictedImports({
+                patterns: [LIB_NO_APP_PATTERN],
+                allowJose: true,
+                allowUndici: true,
+            }),
+        },
+    },
+    {
+        files: ["src/lib/identity-client/**/*.ts"],
+        rules: {
+            "no-restricted-imports": restrictedImports({ patterns: [LIB_NO_APP_PATTERN], allowUndici: true }),
         },
     },
     {
         files: ["src/**/*.ts"],
         rules: {
             "no-console": "error",
+            "no-restricted-globals": [
+                "error",
+                {
+                    name: "fetch",
+                    message: "Use undici (src/lib/auth/jwks-fetcher.ts, src/lib/identity-client) — CLAUDE.md → Tech stack",
+                },
+            ],
             "no-restricted-properties": [
                 "error",
                 {

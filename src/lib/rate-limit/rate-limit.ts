@@ -2,9 +2,9 @@ import type { RequestHandler } from "express";
 import type Redis from "ioredis";
 import { getEnv } from "../config/env";
 import { RateLimited } from "../error/errors";
-import { routeLabel } from "../http/route-pattern";
+import { captureRoute, routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
-import { isRedisReady, resolveRedis } from "../redis/redis";
+import { isRedisUsable, resolveRedis, withRedis } from "../redis/redis";
 import { MemoryLimiter } from "./memory-limiter";
 import { SLIDING_WINDOW_LUA } from "./sliding-window.lua";
 import type { LimitResult, RateLimitOptions, SlidingWindowRedis } from "./types";
@@ -49,11 +49,30 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
     const onRedisDown = options.onRedisDown ?? "fallback";
 
     return (req, res, next) => {
+        captureRoute(req, res);
         const subject = options.subject(req);
         if (subject === null) {
             next();
             return;
         }
+
+        // `next` runs at most once; an unexpected throw in the async path is forwarded exactly once, or logged when
+        // the request already moved on (fix #11).
+        let forwarded = false;
+        const forward = (error?: unknown): void => {
+            if (forwarded) {
+                return;
+            }
+            forwarded = true;
+            next(error);
+        };
+        const fail = (error: unknown): void => {
+            if (!forwarded && !res.headersSent) {
+                forward(error);
+                return;
+            }
+            logger.error("rate_limit_internal_error", { requestId: req.requestId, limiter: options.name, error });
+        };
 
         const now = options.now?.() ?? Date.now();
         const key = `rl:${options.name}:${subject}`;
@@ -65,13 +84,13 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
                 limiter: options.name,
                 route: routeLabel(req),
             });
-            next(RateLimited);
+            forward(RateLimited);
         };
 
         const degrade = (): void => {
             logDegraded(options.name, now);
             if (onRedisDown === "fail-open") {
-                next();
+                forward();
                 return;
             }
             const result = memory.hit(
@@ -81,35 +100,41 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
                 now,
             );
             if (result.allowed) {
-                next();
+                forward();
                 return;
             }
             deny(result);
         };
 
+        // A Redis that is down OR stalled behind an open breaker is not touched (fix #10).
         const client = resolveRedis(options.redis);
-        if (!isRedisReady(client)) {
+        if (!isRedisUsable(client)) {
             degrade();
             return;
         }
 
         void (async () => {
+            let reply: [number, number];
             try {
-                const [allowed, oldest] = await ensureScript(client).slidingWindowHit(
-                    key,
-                    String(now),
-                    String(options.windowMs),
-                    String(options.limit),
-                    `${now}-${req.requestId}`,
+                reply = await withRedis(client, () =>
+                    ensureScript(client).slidingWindowHit(
+                        key,
+                        String(now),
+                        String(options.windowMs),
+                        String(options.limit),
+                        `${now}-${req.requestId}`,
+                    ),
                 );
-                if (allowed === 1) {
-                    next();
-                    return;
-                }
-                deny({ allowed: false, oldestMs: oldest > 0 ? oldest : null });
             } catch {
                 degrade();
+                return;
             }
-        })();
+            const [allowed, oldest] = reply;
+            if (allowed === 1) {
+                forward();
+                return;
+            }
+            deny({ allowed: false, oldestMs: oldest > 0 ? oldest : null });
+        })().catch(fail);
     };
 }

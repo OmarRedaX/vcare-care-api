@@ -12,8 +12,14 @@ const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", 
 describe("package.json scripts", () => {
     const migrateScripts = Object.entries(manifest.scripts).filter(([name]) => name === "migrate" || name.startsWith("migrate:"));
 
-    it("should declare the four migrate scripts", () => {
-        expect(migrateScripts.map(([name]) => name).sort()).toEqual(["migrate", "migrate:make", "migrate:rollback", "migrate:status"]);
+    it("should declare the five migrate scripts", () => {
+        expect(migrateScripts.map(([name]) => name).sort()).toEqual([
+            "migrate",
+            "migrate:ensure-app-login",
+            "migrate:make",
+            "migrate:rollback",
+            "migrate:status",
+        ]);
     });
 
     it.each(migrateScripts)("should load .env when %s runs", (_name, command) => {

@@ -41,7 +41,7 @@ function service(db: ProbeBehaviour, redis: ProbeBehaviour | "not-ready", shutti
     if (shuttingDown) {
         state.markShuttingDown();
     }
-    return new HealthService(fakeDb(db), fakeRedis(redis), state);
+    return new HealthService(fakeDb(db), fakeRedis(redis), state, { status: () => "down" });
 }
 
 describe("app/health/HealthService", () => {
@@ -52,35 +52,35 @@ describe("app/health/HealthService", () => {
     it("should return ok and 200 when both probes are up (F10)", async () => {
         await expect(service("up", "up").ready()).resolves.toEqual({
             httpStatus: 200,
-            report: { status: "ok", checks: { database: "up", redis: "up" } },
+            report: { status: "ok", checks: { database: "up", redis: "up", identityJwks: "down" } },
         });
     });
 
     it.each(["down", "not-ready"] as const)("should return degraded and 200 when Redis is %s (F10)", async (redis) => {
         await expect(service("up", redis).ready()).resolves.toEqual({
             httpStatus: 200,
-            report: { status: "degraded", checks: { database: "up", redis: "down" } },
+            report: { status: "degraded", checks: { database: "up", redis: "down", identityJwks: "down" } },
         });
     });
 
     it("should return down and 503 when Postgres is down (F10)", async () => {
         await expect(service("down", "up").ready()).resolves.toEqual({
             httpStatus: 503,
-            report: { status: "down", checks: { database: "down", redis: "up" } },
+            report: { status: "down", checks: { database: "down", redis: "up", identityJwks: "down" } },
         });
     });
 
     it("should return down and 503 with both checks down when both dependencies are down", async () => {
         await expect(service("down", "down").ready()).resolves.toEqual({
             httpStatus: 503,
-            report: { status: "down", checks: { database: "down", redis: "down" } },
+            report: { status: "down", checks: { database: "down", redis: "down", identityJwks: "down" } },
         });
     });
 
     it("should return down and 503 when shutting down even if both are up (F10)", async () => {
         await expect(service("up", "up", true).ready()).resolves.toEqual({
             httpStatus: 503,
-            report: { status: "down", checks: { database: "up", redis: "up" } },
+            report: { status: "down", checks: { database: "up", redis: "up", identityJwks: "down" } },
         });
     });
 
@@ -99,7 +99,7 @@ describe("app/health/HealthService", () => {
         await jest.advanceTimersByTimeAsync(1);
         await expect(pending).resolves.toEqual({
             httpStatus: 503,
-            report: { status: "down", checks: { database: "down", redis: "down" } },
+            report: { status: "down", checks: { database: "down", redis: "down", identityJwks: "down" } },
         });
     });
 
@@ -119,11 +119,14 @@ describe("app/health DTOs and controller", () => {
     it("should copy only status and checks when building the ready DTO", () => {
         const report = {
             status: HealthStatus.Ok,
-            checks: { database: ProbeStatus.Up, redis: ProbeStatus.Up, extra: "leak" },
+            checks: { database: ProbeStatus.Up, redis: ProbeStatus.Up, identityJwks: ProbeStatus.Up, extra: "leak" },
             internal: "leak",
         };
         const dto = ReadyResponseDto.from(report);
-        expect(JSON.parse(JSON.stringify(dto))).toEqual({ status: "ok", checks: { database: "up", redis: "up" } });
+        expect(JSON.parse(JSON.stringify(dto))).toEqual({
+            status: "ok",
+            checks: { database: "up", redis: "up", identityJwks: "up" },
+        });
         expect(JSON.parse(JSON.stringify(LiveResponseDto.from({ status: HealthStatus.Ok })))).toEqual({ status: "ok" });
     });
 
@@ -138,7 +141,7 @@ describe("app/health DTOs and controller", () => {
         expect(res.status).toHaveBeenCalledWith(503);
         expect(JSON.parse(JSON.stringify(res.json.mock.calls[0]?.[0]))).toEqual({
             status: "down",
-            checks: { database: "down", redis: "up" },
+            checks: { database: "down", redis: "up", identityJwks: "down" },
         });
     });
 });

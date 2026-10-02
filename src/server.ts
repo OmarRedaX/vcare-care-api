@@ -2,6 +2,7 @@ import "reflect-metadata";
 import type http from "node:http";
 import { createPublicApp } from "./app";
 import { registerDependencies } from "./bootstrap";
+import type { JwksCache } from "./lib/auth/jwks-cache";
 import { getEnv } from "./lib/config/env";
 import { container } from "./lib/di/container";
 import { TOKENS } from "./lib/di/tokens";
@@ -33,6 +34,10 @@ function main(): void {
     const env = getEnv();
     registerDependencies(env);
 
+    // Identity's JWKS: one background fetch now (boot never waits on Identity) + the 5-minute refresh (access spec §3.9).
+    const jwks = container.resolve<JwksCache>(TOKENS.JwksCache);
+    jwks.start();
+
     // Redis is Tier 2: connect in the background, never block or fail boot on it.
     redis.connect().catch(() => {
         logger.warn("redis_unavailable");
@@ -50,6 +55,8 @@ function main(): void {
         inFlight: container.resolve<InFlightCounter>(TOKENS.InFlightCounter),
         timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
         closeResources: [
+            // eslint-disable-next-line @typescript-eslint/require-await
+            async () => jwks.stop(),
             () => db.destroy(),
             () => probeDb.destroy(),
             () => closeRedis(redis),

@@ -2,6 +2,8 @@ import type { Knex } from "knex";
 import request from "supertest";
 import { HealthController } from "../../src/app/health/controller/health.controller";
 import { HealthService } from "../../src/app/health/service/health.service";
+import type { JwksStatusSource } from "../../src/lib/auth/types";
+import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
 import { createKnex } from "../../src/lib/knex/knex";
 import { ShutdownState } from "../../src/lib/lifecycle/shutdown-state";
@@ -99,7 +101,12 @@ describe("knex pools after a connection is black-holed (integration: TCP proxy t
             applicationName: "care-api-probe",
         });
         pools.push(probePool);
-        const service = new HealthService(probePool, redis, new ShutdownState());
+        const service = new HealthService(
+            probePool,
+            redis,
+            new ShutdownState(),
+            container.resolve<JwksStatusSource>(TOKENS.JwksCache),
+        );
 
         await withContainerOverrides(
             [
@@ -109,7 +116,7 @@ describe("knex pools after a connection is black-holed (integration: TCP proxy t
             ],
             async () => {
                 const { publicApp, internalApp } = buildTestApps();
-                const up = { status: "ok", checks: { database: "up", redis: "up" } };
+                const up = { status: "ok", checks: { database: "up", redis: "up", identityJwks: "down" } };
 
                 expect((await request(publicApp).get("/api/health/ready")).body).toEqual(up);
                 expect(proxy.acceptedCount()).toBe(1);
@@ -118,7 +125,7 @@ describe("knex pools after a connection is black-holed (integration: TCP proxy t
                 const blackHoledAt = Date.now();
                 const down = await request(publicApp).get("/api/health/ready");
                 expect(down.status).toBe(503);
-                expect(down.body).toEqual({ status: "down", checks: { database: "down", redis: "up" } });
+                expect(down.body).toEqual({ status: "down", checks: { database: "down", redis: "up", identityJwks: "down" } });
 
                 // Let the probe query that is stuck on the dead socket reach its client-side query_timeout.
                 await sleep(Math.max(0, QUERY_TIMEOUT_MS + 200 - (Date.now() - blackHoledAt)));
