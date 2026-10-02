@@ -61,5 +61,7 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - 2026-10-02 Docker up. Test stack reset; integration: 11 suites, 85 pass, 2 skipped (POSIX-signal tests, win32 only), 0 fail — after fixing one fixture in tests/integration/process.test.ts (invalid DATABASE_URL used role `care`, same as the owner URL → role-collision check also fired; fixture now `care_app`).
 
+- 2026-10-02 COMMITTED+PUSHED care feature/access 6f77cb9 (develop + docs; AGENTS.md/.codex excluded). Identity feature/auth 27a1ea0: the 2 skills synced from care (only those files; CLAUDE.md, deployment.md, auth/spec.md edits still uncommitted there). Hub docs/care-access-deltas still UNCOMMITTED (deployment/landscape/data-ownership + IdentityJwksStale + synced card/contract).
+
 ## ▶ NEXT STEP
-/write-tests access → /manual-qa access (real Identity on 3020/3120) → /review-code access → /update-docs access → PR "Closes #19 #5 #6 #10 #11". No commits without asking. Pending: mirror 2 skills to identity?
+/write-tests access → /manual-qa access (real Identity on 3020/3120) → /review-code access → /update-docs access → PR "Closes #19 #5 #6 #10 #11". Ask before commits. Hub docs/care-access-deltas committed+pushed b8cf0f4 (own remote branch; open a hub PR when care PR opens).
