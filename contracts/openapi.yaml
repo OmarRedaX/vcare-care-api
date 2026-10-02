@@ -103,7 +103,7 @@ paths:
       operationId: getPublicReadiness
       tags: [health]
       summary: Public readiness probe
-      description: 'Readiness: Postgres `SELECT 1` (500 ms) is fatal; Redis `PING` (500 ms) is reported only; 503 when Postgres is down or shutdown is in progress. Identity is not a dependency. Not rate-limited; not enveloped.'
+      description: 'Readiness: Postgres `SELECT 1` (500 ms) is fatal; Redis `PING` (500 ms) is reported only; 503 when Postgres is down or shutdown is in progress. Identity is not a dependency; the Identity JWKS cache state is reported in checks.identityJwks (informational, no network call). Not rate-limited; not enveloped.'
       security: []
       x-roles: [public]
       x-ownership: none
@@ -138,7 +138,7 @@ paths:
       operationId: getInternalReadiness
       tags: [health, internal]
       summary: Internal readiness probe
-      description: 'Readiness: Postgres `SELECT 1` (500 ms) is fatal; Redis `PING` (500 ms) is reported only; 503 when Postgres is down or shutdown is in progress. Identity is not a dependency. Not rate-limited; not enveloped.'
+      description: 'Readiness: Postgres `SELECT 1` (500 ms) is fatal; Redis `PING` (500 ms) is reported only; 503 when Postgres is down or shutdown is in progress. Identity is not a dependency; the Identity JWKS cache state is reported in checks.identityJwks (informational, no network call). Not rate-limited; not enveloped.'
       servers:
         - url: http://localhost:3101
           description: Internal listener (INTERNAL_PORT=3101), network-isolated, never routed by the public ingress.
@@ -2598,7 +2598,9 @@ components:
       bearerFormat: JWT
       description: |
         User access token issued by identity-service (EdDSA, 15 min). Verified locally against
-        `IDENTITY_JWKS_URL` (cached; refreshed on unknown `kid` at most once per minute). Required claims:
+        `IDENTITY_JWKS_URL` (cached in memory; re-fetched once older than Identity's 5-minute `max-age` and on an unknown
+        `kid` at most once per minute; while refreshes fail, cached keys stay trusted for at most 1 hour after the last
+        successful fetch). Required claims:
         `iss=vcare-identity`, `aud` contains `vcare-care`, `typ=user`, `sub` (user id), `role`, `status`, `ev`.
         If no cached key matches and JWKS cannot be fetched → `401 Unauthorized` (verification is never skipped).
     serviceToken:
@@ -3596,7 +3598,13 @@ components:
               type: string
               enum: [up, down]
               description: Reported only; Redis is Tier 2 and never fails readiness.
-      example: { status: degraded, checks: { database: up, redis: down } }
+            identityJwks:
+              type: string
+              enum: [up, down]
+              description: >-
+                Reported only; never fails readiness. `up` when the in-memory JWKS cache holds a key set younger than
+                1 h and the latest refresh succeeded. The probe makes no network call.
+      example: { status: degraded, checks: { database: up, redis: down, identityJwks: up } }
     HydratedUserFields:
       type: object
       description: |

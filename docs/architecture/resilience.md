@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
 related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement]
 ---
@@ -17,7 +17,7 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | Call | Timeout | Notes |
 |---|---|---|
 | Identity internal calls (token, users, status) | 2 s per attempt, connect + response (`IDENTITY_TIMEOUT_MS=2000`) | `undici` keep-alive pool |
-| JWKS fetch | 2 s | cached keys keep verifying during an outage |
+| JWKS fetch (`lib/auth`, `undici`) | 2 s for connect + headers + body; body ≤ 64 KiB; no redirects | refresh every 5 min (Identity's `max-age`); a demand fetch (unknown `kid`, stale or no keys) at most once per 60 s across all triggers, single-flight; on failure the previous key set is kept and trusted for at most **1 h** after the last successful fetch, then no key is (every user token → 401, never a skipped verification). `identityJwks: down` in readiness; never 5xx |
 | Video provider (room, join token) | 2 s | join/start fail cleanly; lifecycle state unchanged on failure |
 | Object storage from `care-api` (`complete`: `HEAD`, 16-byte `GET`, `DELETE` 2 s; `COPY` 10 s) | per ADR 0015 | `complete` fails, no row inserted, intent stays open for a retry until it expires |
 | Email provider | outside the request | async |
@@ -27,7 +27,7 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | Postgres query (client side) | 3 s `query_timeout` (statement timeout + 1 s) | fires only when the server cannot answer (partition, failover without a TCP reset); the connection is then discarded (below) |
 | Postgres TCP keepalive | first probe after 10 s idle | detects a dead peer long before kernel retransmission gives up (~15 min) |
 | Readiness probes | 500 ms each (Postgres `SELECT 1` on the dedicated probe pool, Redis `PING`), run concurrently | a probe that rejects or times out reports `down` |
-| Redis connect / command | 2 s / **500 ms**; no offline queue; 1 retry per request; reconnect `min(n × 200, 2000)` ms forever | cache-miss / fallback path on timeout. A Redis that stalls while still connected costs the full 500 ms on every command; there is no breaker yet ([#10](https://github.com/OmarRedaX/vcare-care-api/issues/10)) |
+| Redis connect / command | 2 s / **500 ms**; no offline queue; 1 retry per request; reconnect `min(n × 200, 2000)` ms forever | cache-miss / fallback path on timeout. A Redis that stalls while still connected opens the per-client breaker after 3 consecutive failures for 5 s (one half-open probe then decides): at most 3 × 500 ms per 5 s per process on the idempotency and rate-limit paths (fixed [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10)) |
 | HTTP server | `requestTimeout` 30 s, `headersTimeout` 66 s, `keepAliveTimeout` 65 s | |
 | Graceful shutdown | `SHUTDOWN_TIMEOUT_MS` (10 s) for drain **and** resource close | [infrastructure.md](./infrastructure.md) → Boot and shutdown |
 
@@ -113,7 +113,7 @@ Actions for each: [runbook.md](../runbook.md).
 | HTTP | `Idempotency-Key` UUID **required** on book, reschedule, cancel (missing → `400 ValidationFailed`); optional on other writes |
 | Redis | key `idem:<METHOD path>:<principal>:<key>` → `{state, bodyHash, status, body}` for 24 h. Before the handler an "in progress" marker (with a per-attempt owner nonce) is set with `SET NX`, TTL 60 s; a concurrent duplicate with the same body gets an **immediate `409 Conflict` with `Retry-After: 1`** (no waiting) and its retry receives the replay. The result is stored as soon as the handler completes the response, even if the client already disconnected; a 5xx or 429 releases the marker so the client may retry. A marker is only ever released by compare-and-delete of its own owner nonce, including after a `SET NX` that timed out client-side but may still land |
 | Replay | same key + same body hash → original status and body (a stored error's `error.requestId` is replaced by the current request's id); different body → `422 IdempotencyConflict` |
-| Redis down | idempotency is skipped (`warn idempotency_skipped` + metric), never a 5xx; the database key below still protects booking. Not yet fixed (before the first route mounts it): a malformed stored record (e.g. a record-shape change during a rolling deploy) crashes the process through an unguarded async path ([#11](https://github.com/OmarRedaX/vcare-care-api/issues/11)); on a clinical route the stored body would keep clinical fields in Redis for 24 h and a replay would skip the audit ([#14](https://github.com/OmarRedaX/vcare-care-api/issues/14), needs a spec decision before `records`) |
+| Redis down or breaker open | idempotency is skipped (`warn idempotency_skipped` + metric, `reason: redis_not_ready \| redis_breaker_open \| redis_error`), never a 5xx; the database key below still protects booking. A malformed stored record (e.g. a record-shape change during a rolling deploy, or unparsable JSON) is shape-checked, removed by compare-and-delete, logged `warn idempotency_record_invalid`, and the handler runs (`reason: invalid_record`); every async path ends in a terminal catch, so nothing can crash the process (fixed [#11](https://github.com/OmarRedaX/vcare-care-api/issues/11)). Not yet fixed: on a clinical route the stored body would keep clinical fields in Redis for 24 h and a replay would skip the audit ([#14](https://github.com/OmarRedaX/vcare-care-api/issues/14), needs a spec decision before `records`) |
 | Database (booking) | `idempotency_key` and `request_hash` on the consultation row, `uq_consultations_idempotency (patient_user_id, idempotency_key)`. If Redis lost the record, the insert collides; the service loads the existing row and replays (same hash) or returns 422 (different hash). A Redis loss cannot double-book. |
 | Reschedule / cancel | Redis record; on Redis loss, a replay is still safe: reschedule to the same start is a no-op update, and a second cancel is rejected as `409 InvalidTransition` without side effects |
 
@@ -137,7 +137,7 @@ action. Reminders are produced by a 1-minute worker scan over `consultations`.
 | Dependency down | Effect |
 |---|---|
 | Identity (internal) | search/lists without names (Case 2); approvals 202 pending (Case 1); suspensions 503 with local effect applied (Case 3); bookings unaffected |
-| Identity JWKS only | cached keys keep working; a rotated unknown `kid` → 401 until reachable |
+| Identity JWKS only | cached keys keep working for up to 1 h after the last successful fetch (`identityJwks: down`, `jwks_refresh_failed`); a rotated unknown `kid` → one gated refetch per minute, else 401; after 1 h every user token → 401 (`jwks_keys_expired`, alert `IdentityJwksStale` pages at 30 min) |
 | Redis (Tier 2) | no caches (slower reads), per-instance fallback rate limits, idempotency falls back to the DB key for booking; readiness reports `degraded`, never 503 |
 | `care-worker` | sync retries, emails, reminders, and cache refreshes delayed; requests unaffected; `WorkerHeartbeatStale` pages |
 | Postgres | service unavailable; health 503 |

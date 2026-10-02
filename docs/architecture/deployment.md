@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
-related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, hub-deployment]
+related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
 ---
 
 # Runtime, Availability and Observability — care-service
@@ -19,11 +19,13 @@ Sizing: [capacity.md](./capacity.md). Env vars: [infrastructure.md](./infrastruc
 ## 1. Components
 | Component | Image / entrypoint | Count | Scaling | Health used | Egress |
 |---|---|---|---|---|---|
-| `care-api` | one image, `node dist/server.js` (both listeners) | min 2, max 6, across AZs | CPU 60 %; step on search p95 > 400 ms | LB: `/api/health/ready`, `/internal/health/ready`; orchestrator: `/api/health/live` | video provider, object storage |
-| `care-worker` | same image, `node dist/worker.js` | 1 (2 on repeated lag) | manual | orchestrator: process liveness | email provider, object storage (quarantine purge) |
-| `care-migrate` | same image, `node dist/migrate.js` | one-off per release | — | exit code | none |
+| `care-api` | one image, `node dist/server.js` (both listeners); DB login `care_app` | min 2, max 6, across AZs | CPU 60 %; step on search p95 > 400 ms | LB: `/api/health/ready`, `/internal/health/ready`; orchestrator: `/api/health/live` | Identity public JWKS, video provider, object storage |
+| `care-worker` | same image, `node dist/worker.js`; DB login `care_app` (own pool, 2 connections) | 1 (2 on repeated lag) | manual | orchestrator: process liveness | email provider, object storage (quarantine purge) |
+| `care-migrate` | same image, `node dist/migrate.js latest && node dist/migrate.js ensure-app-login`; DB **owner** (`MIGRATION_DATABASE_URL`) + the app secret it provisions | one-off per release | — | exit code | none |
 
-All reach own Postgres and Redis; `care-api` and `care-worker` reach Identity's internal LB and JWKS.
+All reach own Postgres and Redis; `care-api` and `care-worker` reach Identity's internal LB, and `care-api` its
+public JWKS. Only `care-migrate` holds the owner credential ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md);
+hub `deployment.md` → Release pipeline step 3).
 `care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)): identity-sync retrier + sweeper · notification
 outbox · reminder scan (1 min) · `next-available` refresh · `audit_logs` partition maintenance (daily) · outbox purge ·
 upload-intent purge (5 min; [file-handling.md](./file-handling.md), ADR 0013).
@@ -71,13 +73,19 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | `db_pool_wait_ms`, `db_replica_lag_s` | — | bottlenecks 4–5 |
 | `rate_limiter_degraded` | `limiter` | Redis fallback |
 | `worker_heartbeat` | `loop` | `WorkerHeartbeatStale` |
-| `audit_default_partition_rows` | — | `AuditPartitionMissing` |
+| `audit_default_partition_rows` (bounded at 1 001), `audit_partition_missing` (0/1) | — | `AuditPartitionMissing` |
+| `audit_write_failed` | `action` | `AuditWriteFailures` |
+| `jwks_refresh_failed` | `reason` | JWKS fetch health (`IdentityJwksStale` context) |
+| `jwks_cache_age_s` | — | `IdentityJwksStale` |
+| `redis_breaker_open` | — | Redis stall detection ([resilience.md](./resilience.md) → Timeouts) |
 | `upload_verification_failed`, `upload_intent_expired`, `download_url_issued` | `reason` / `kind` | `UploadVerificationFailureSpike` |
 
 **Alerts added by this design** (actions in [runbook.md](../runbook.md); existing ones in [resilience.md](./resilience.md)):
 `OutboxLagHigh` (oldest pending > 5 min for 5 min, ticket) · `OutboxDeadJobs` (> 0, ticket) · `DbReplicaLagHigh`
-(> 30 s for 5 min, page) · `WorkerHeartbeatStale` (> 2 min, page) · `AuditPartitionMissing` (next month missing or
-default partition non-empty, ticket) · `IdentityReinstatementSyncPending` (Case 4 job > 15 min, ticket) ·
+(> 30 s for 5 min, page) · `WorkerHeartbeatStale` (> 2 min, page) · `AuditPartitionMissing`
+(`audit_partition_missing = 1`, next month missing, or `audit_default_partition_rows > 0`, ticket) ·
+`IdentityJwksStale` (`jwks_cache_age_s` > 1 800, page — cached keys are distrusted at 3 600, after which every
+authenticated Care request is 401; the platform alert row lives in hub `architecture/deployment.md` → Observability) · `IdentityReinstatementSyncPending` (Case 4 job > 15 min, ticket) ·
 `RateLimiterDegraded` (any for 2 min, ticket) · `UploadVerificationFailureSpike` (> 20 in 10 min, ticket) · `AvailabilityBudgetBurn` (5xx + readiness failures burning 99.9 % at
 > 2× over 1 h, page). `HealthCheckFailing` now probes readiness.
 

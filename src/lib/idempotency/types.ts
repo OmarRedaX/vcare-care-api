@@ -25,3 +25,9 @@ export interface IdempotencyDoneRecord {
 }
 
 export type IdempotencyRecord = IdempotencyInProgressRecord | IdempotencyDoneRecord;
+
+/** What a stored idempotency value turned out to be (fix #11): never trusted without the shape guard. */
+export type IdempotencyReadResult =
+    | { kind: "absent" }
+    | { kind: "valid"; record: IdempotencyRecord }
+    | { kind: "invalid"; raw: string };

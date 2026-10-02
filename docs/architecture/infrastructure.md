@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
-related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
+related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
 
 # Infrastructure — care-service
@@ -17,7 +17,7 @@ Every variable is declared and validated in `lib/config/env.ts` (zod); only that
 `{"level":"error","message":"invalid_environment","keys":[…]}` on stderr naming the **keys only** (never values), then
 exit 1. Empty strings count as unset. **Secrets have no defaults.**
 
-### Implemented (foundation, 2026-09-28)
+### Implemented (foundation 2026-09-28; access 2026-10-02)
 | Variable | Default | Secret | Purpose / rule |
 |---|---|---|---|
 | `NODE_ENV` | `development` | | `development` \| `test` \| `production`; gates dev CORS and the `LOG_LEVEL=debug` ban |
@@ -25,9 +25,12 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `INTERNAL_PORT` | `3101` | | internal listener (`/internal/*`); must differ from `PORT` |
 | `INTERNAL_HOST` | `127.0.0.1` | | bind address of the internal listener. **Must be an IPv4 or IPv6 literal**: host names (`localhost`) and malformed addresses (`999.999.999.999`, `1.2.3`) are rejected at env validation. Deployments set the task's private interface; the compose `care-api` container uses `0.0.0.0`, published on host loopback only |
 | `TRUST_PROXY_HOPS` | `0` | | 0–5. Number of trusted proxies that append to `X-Forwarded-For`; `lib/http/client-ip.ts` takes the entry this many places from the right (the socket address when `0` or when the header is shorter). Feeds per-IP rate limits and anonymous idempotency principals; Express `trust proxy` stays off. **Must equal the number of trusted proxies in front of `care-api`**: `0` behind a proxy makes every caller look like the proxy (one shared per-IP limit), too high lets a caller spoof its IP. The production value follows the edge chain in the hub (`../vcare-hub/architecture/deployment.md`) and is not recorded there yet; there is no boot guard against `0` in production ([#16](https://github.com/OmarRedaX/vcare-care-api/issues/16)) |
-| `DATABASE_URL` | — | **yes, no default** | `postgres:`/`postgresql:` URL of the primary. Its query string **must not** carry `options`, `statement_timeout`, `query_timeout`, or `application_name`: pg would let them override Care's per-pool session settings (below), so boot fails with `invalid_environment` naming `DATABASE_URL`. Other parameters (`sslmode`, `sslrootcert`, …) are accepted. Local: `postgres://care:care@localhost:5433/care` (compose host port 5433) |
+| `DATABASE_URL` | — | **yes, no default** | `postgres:`/`postgresql:` URL of the primary **as the app login `care_app`** (member of `vcare_app`; [ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)), used by `care-api` and `care-worker`; `ensure-app-login` creates/updates that login from this URL. Its query string **must not** carry `options`, `statement_timeout`, `query_timeout`, or `application_name`: pg would let them override Care's per-pool session settings (below), so boot fails with `invalid_environment` naming `DATABASE_URL`. Other parameters (`sslmode`, `sslrootcert`, …) are accepted. Local: `postgres://care_app:care_app@localhost:5433/care` (compose host port 5433) |
+| `MIGRATION_DATABASE_URL` | — (optional in the shared schema) | **yes, no default** | the **owner** (`care`) URL, same rules as `DATABASE_URL`. Required only by `src/migrate.ts` (`getMigrationEnv()`: missing → `invalid_environment` naming it, exit 1) and the integration-test setup; `care-api` and `care-worker` never need it. Rejected when its user equals `DATABASE_URL`'s ("must use a different role than DATABASE_URL"). Local: `postgres://care:care@localhost:5433/care` |
 | `DATABASE_POOL_MAX` | `20` | | 1–100, request pool size per `care-api` task. The readiness probe has its own extra connection, so a task opens up to `DATABASE_POOL_MAX + 1` |
 | `REDIS_URL` | — | **yes, no default** | `redis:`/`rediss:` URL. Local: `redis://localhost:6380` (compose host port 6380) |
+| `IDENTITY_JWKS_URL` | — (**no default**: a wrong default would 401 every request silently) | | `http:`/`https:` URL of Identity's public `GET /.well-known/jwks.json`. Required by the shared schema, so `care-worker` and `care-migrate` set it too. Local: `http://localhost:3000/.well-known/jwks.json` (wherever the local identity public listener runs); compose: `${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}` |
+| `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | `CORS_ORIGINS` | `""` (none) | | comma-separated origins (`scheme://host[:port]`, no path), honoured only when `NODE_ENV=development`; production is single-origin with CORS disabled (hub ADR 0005). `.env.example` sets `http://localhost:5173` |
 | `LOG_LEVEL` | `info` | | `debug` \| `info` \| `warn` \| `error`; `debug` is rejected when `NODE_ENV=production` |
 | `RATE_LIMIT_FALLBACK_DIVISOR` | `2` | | per-instance fallback limit `max(1, floor(limit / divisor))` when Redis is down ([ADR 0006](../adr/0006-health-split-redis-tier-2.md)) |
@@ -38,13 +41,10 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | Variable | Default (local) | Secret | Purpose |
 |---|---|---|---|
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
-| `IDENTITY_JWKS_URL` | `http://localhost:3000/.well-known/jwks.json` | | user-token verification keys |
 | `IDENTITY_INTERNAL_URL` | `http://localhost:3100` | | Identity internal listener |
 | `IDENTITY_TIMEOUT_MS` | `2000` | | per-attempt timeout for Identity calls |
 | `SERVICE_CLIENT_ID` | `care-service` | | client-credentials id |
 | `SERVICE_CLIENT_SECRET` | — | **yes, no default** | client-credentials secret |
-| `JWT_AUDIENCE` | `vcare-care` | | expected `aud` on user and service tokens |
-| `JWT_ISSUER` | `vcare-identity` | | expected `iss` |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
 | `UPLOAD_INTENT_TTL_SECONDS` | `900` | | upload intent lifetime ([file-handling.md](./file-handling.md), ADR 0013) |
 | `UPLOAD_POLICY_TTL_SECONDS` | `300` | | presigned POST validity; must be ≤ `UPLOAD_INTENT_TTL_SECONDS` |
@@ -76,7 +76,12 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `OUTBOX_MAX_ATTEMPTS` | `8` | | notification attempts before `dead` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)) |
 | `OUTBOX_RETENTION_DAYS` | `30` | | purge of `sent` outbox rows |
 | `REMINDER_SCAN_INTERVAL_MS` | `60000` | | reminder scan cadence |
-| `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | partitions pre-created ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
+
+Token issuer, audience, algorithm, clock tolerance (30 s), and the JWKS cache policy are **constants** in
+`lib/auth/constants.ts`, not env (the contract fixes them; the planned `JWT_ISSUER`/`JWT_AUDIENCE` variables were
+dropped): `iss=vcare-identity`, `aud` ∋ `vcare-care`, `alg=EdDSA`; JWKS refresh every 5 min, demand fetch at most once
+per minute, keys trusted ≤ 1 h after the last success, fetch bounded by 2 s and 64 KiB, ≤ 16 keys; bearer tokens over
+4 096 characters are rejected unparsed.
 
 ## Database connection
 Built by `createKnex` (`lib/knex/knex.ts`); full rationale in the [foundation spec](../foundation/spec.md) §3.4.8.
@@ -85,9 +90,18 @@ Built by `createKnex` (`lib/knex/knex.ts`); full rationale in the [foundation sp
 |---|---|---|---|---|
 | request pool (`db`, `care-api`) | `care-api` | `DATABASE_POOL_MAX` (default 20) | 2 s server / 3 s client | 1 s |
 | readiness probe (`probeDb`, `care-api`) | `care-api-probe` | 1 | 2 s / 3 s | 1 s |
-| `care-migrate` | `care-migrate` | 1 | none | 60 s |
+| `care-worker` (`src/worker.ts`) | `care-worker` | 2 | 5 s / 6 s | 1 s |
+| `care-migrate` (owner, `MIGRATION_DATABASE_URL`) | `care-migrate` | 1 | none | 60 s |
 
-`care-worker` has no Postgres pool yet; the first module with a loop adds one (`application_name=care-worker`).
+**Database roles ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)).** `care` is the owner:
+it owns every table, sequence, and function and runs the migrations (`care-migrate` only). `vcare_app` is a `NOLOGIN`
+group role created by migration `create_app_role` with `CONNECT` and `USAGE ON SCHEMA public` (never `CREATE`);
+every table migration grants it exactly what the code needs, explicitly (no `ALTER DEFAULT PRIVILEGES`); append-only
+tables get `INSERT, SELECT` only. `care_app` is the login of `care-api` and `care-worker` (`DATABASE_URL`), member of
+`vcare_app`, `NOSUPERUSER NOCREATEDB NOCREATEROLE`; `node dist/migrate.js ensure-app-login` creates it or re-syncs its
+password and membership (never a migration, so no password is committed). `care-migrate` runs `latest` then
+`ensure-app-login`; the owner needs `CREATEROLE`. The worker creates `audit_logs` partitions only through the
+owner-defined `SECURITY DEFINER` function `audit_logs_ensure_partitions(int)`.
 
 - Pools are lazy (`min: 0`): importing a module opens no connection, and Postgres is **not** checked at boot
   (readiness reports it, so a blip cannot restart-loop tasks).
@@ -113,7 +127,8 @@ Built by `createKnex` (`lib/knex/knex.ts`); full rationale in the [foundation sp
 - Migrations are raw SQL (`knex.raw`), one change per file, real `down` ([ADR 0001](../adr/0001-no-orm-knex-raw-sql.md)).
   The first migration creates `btree_gist`. `knex_migrations.name` is recorded **without** the file extension, so
   `node dist/migrate.js` and `npm run migrate` (tsx over `src/`) agree on one database.
-- The application role (`vcare_app`) has `INSERT`/`SELECT` only on `audit_logs` and `medical_record_amendments`.
+- The application role (`vcare_app`) has `INSERT`/`SELECT` only on `audit_logs` (and every partition) and, when it
+  lands, `medical_record_amendments` — by explicit grant, so `UPDATE`/`DELETE`/`TRUNCATE` fail with `42501`.
 - **Read replica (when introduced):** discovery reads (search, doctor profile, slots) may use `DATABASE_READ_URL`.
   Writes, booking/reschedule re-validation, ownership checks for clinical data, and audit writes always use the
   primary. Replica lag is acceptable for discovery because booking re-proves availability on the primary.
@@ -124,8 +139,12 @@ Built by `createKnex` (`lib/knex/knex.ts`); full rationale in the [foundation sp
 `maxRetriesPerRequest: 1`; connect timeout 2 s; **command timeout 500 ms**; reconnect backoff `min(n × 200, 2000)` ms,
 forever; `autoResendUnfulfilledCommands: false` (a command on the wire when the connection dropped is never replayed
 later). Transitions log once each: `warn redis_unavailable`, `info redis_recovered` (the first `ready` at boot also
-logs `redis_recovered`). A Redis that stalls while still connected is not detected: every command waits the full
-500 ms ([#10](https://github.com/OmarRedaX/vcare-care-api/issues/10)).
+logs `redis_recovered`). **Breaker** (`lib/redis/breaker.ts`, fixes [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10)):
+every idempotency and rate-limit command goes through `withRedis`, which feeds a per-client breaker; after 3
+consecutive failures it opens for 5 s (`warn redis_breaker_open` + metric `redis_breaker_open`), during which those
+middlewares skip Redis (`idempotency_skipped{reason:"redis_breaker_open"}`, rate limiter on its memory fallback);
+then exactly one half-open probe decides (`info redis_breaker_closed`). Worst case for a Redis that stalls while
+`ready`: 3 × 500 ms per 5 s per process. The readiness `PING` does not feed the breaker.
 
 ## Logging
 Structured JSON, one line per event, on stdout. Field order (parity with identity-service):
@@ -134,16 +153,19 @@ code?, durationMs?`, then other context. `requestId` comes from an `AsyncLocalSt
 written by services, repositories, and async continuations carry it without passing a logger around.
 
 - `request_completed` per request: route **pattern** (`req.baseUrl + req.route.path`, else `unmatched`), method,
-  status, error `code`, `durationMs`. Level `error` for 5xx, `debug` for `/health/` routes below 500 (invisible at
-  `LOG_LEVEL=info`), else `info`; `warn request_aborted` when the client disconnects first. Never the URL, query
-  string, headers, or bodies. Not yet fixed: when a handler throws inside a nested router, the logged pattern loses the
-  mount prefix (`/boom/:id` instead of `/api/__test/boom/:id`) ([#6](https://github.com/OmarRedaX/vcare-care-api/issues/6)).
+  status, error `code`, `durationMs`, and `userId`/`role` once the user guard verified a token. Level `error` for 5xx,
+  `debug` for `/health/` routes below 500 (invisible at `LOG_LEVEL=info`), else `info`; `warn request_aborted` when
+  the client disconnects first. Never the URL, query string, headers, or bodies. The pattern is captured on
+  `res.locals` by the guard, `authorize`, the limiter, idempotency, and every sealed router's error layer, so it keeps
+  the full mount prefix when a nested router's handler throws (fixes [#6](https://github.com/OmarRedaX/vcare-care-api/issues/6)).
 - Metrics are log lines (`message: "metric"`, `metric`, `value`, `dims`; [ADR 0007](../adr/0007-log-derived-metrics.md)).
 - `console.*` is banned in `src/` (lint); Knex's messages are routed through the logger.
 
 **Never logged:** complaint text, examination notes, diagnosis text or code, treatment plans, allergies, chronic
 conditions, blood type, date of birth, document or attachment contents, object keys, presigned URLs and POST fields, names, emails,
-phones, `Authorization` headers, service or video tokens, request bodies of clinical or consultation routes.
+phones, `Authorization` headers, bearer tokens or any part of them (`kid`, `jti`, signature), the JWKS URL path or
+response body (only its host), database URLs and the app-login user/password, audit `metadata`, service or video
+tokens, request bodies of clinical or consultation routes.
 
 **Redaction mechanics** (defence in depth; callers must not pass these): keys are compared after
 `key.toLowerCase().replace(/[_-]/g, "")`, so `date_of_birth` and `date-of-birth` match `dateOfBirth`; a match is
@@ -152,7 +174,7 @@ replaced by `"[REDACTED]"`, recursively through objects and arrays; depth > 8 �
 `diagnosisCode`, `treatmentPlan`, `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `objectKey`,
 `downloadUrl`, `uploadUrl`, `joinToken`, `authorization`, `cookie`, `setCookie`, `fullName`, `displayName`,
 `firstName`, `lastName`, `email`, `phone`, `password`, `token`, `accessToken`, `refreshToken`, `serviceToken`,
-`clientSecret`, `body`, `requestBody`. Tests assert that captured logs contain no clinical fixture strings.
+`clientSecret`, `body`, `requestBody`, `connectionString`, `databaseUrl`, `migrationDatabaseUrl`. Tests assert that captured logs contain no clinical fixture strings.
 
 **Errors in logs:** an `Error` passed under the `error` field is serialized to `{ name, message, code?, stack? }`; a
 database error (SQLSTATE `code`) keeps only identifiers (`name, code, severity?, constraint?, table?, column?,
@@ -173,10 +195,13 @@ Produced only by `lib/error/errorHandler.ts`, identical in shape to identity-ser
 - An unmatched path, or an unmatched method on a known path (including `OPTIONS` outside an allowed dev CORS
   preflight), → `404 NotFound` on both listeners; there is no 405.
 - Unknown errors → `InternalError` (500) with no internals; the serialized error is logged server-side as
-  `unhandled_error`. Not yet fixed: a malformed percent-encoded path parameter (`URIError`, or any non-`AppError` with a
-  4xx `status`) is treated as unknown today, so it returns `500 InternalError` and logs `unhandled_error` instead of
-  `400 ValidationFailed` ([#5](https://github.com/OmarRedaX/vcare-care-api/issues/5)); no foundation route has a path
-  parameter yet.
+  `unhandled_error`. A malformed percent-encoded path parameter (Express's `URIError`) → `400 ValidationFailed`
+  (`field: "path"`), never logged (its message holds the raw value); any other non-`AppError` with a numeric 4xx
+  `status`/`statusCode` → `404 NotFound` for 404, else `400 ValidationFailed` (`field: "request"`), logged as
+  `warn client_error_mapped { name, status }` (fixes [#5](https://github.com/OmarRedaX/vcare-care-api/issues/5)).
+- Auth and authorization: `401 Unauthorized` (missing/invalid token, unknown `kid`, no usable JWKS key),
+  `401 TokenExpired` (valid signature, `exp` + 30 s passed), `403 Forbidden` (role, status incl. `suspended`, a policy
+  check, ownership `deny-forbidden`), `403 EmailNotVerified`, `404 NotFound` (ownership `deny-not-found`).
 - Codes are PascalCase and stable forever; the list is the `ErrorCode` enum in the contract.
 
 ## Request id
@@ -192,14 +217,16 @@ every Identity call, and store it on `identity_sync_jobs` so retries keep the tr
 | `GET /api/health/live`, `GET /internal/health/live` | each on its own listener | none; the process answered | 200 `{ "status": "ok" }`, also during shutdown |
 | `GET /api/health/ready`, `GET /internal/health/ready` | each on its own listener | Postgres `SELECT 1` on the dedicated 1-connection probe pool (fatal) and Redis `PING` (reported only), concurrently, each bounded by 500 ms | 200 `ok` · 200 `degraded` (Redis down) · 503 `down` (Postgres down or shutdown in progress) |
 
-Body: `{ "status": "ok|degraded|down", "checks": { "database": "up|down", "redis": "up|down" } }`, bare JSON (not
-enveloped), with `Cache-Control: no-store` and `X-Request-Id`. Probes run even while draining, so the body stays
+Body: `{ "status": "ok|degraded|down", "checks": { "database": "up|down", "redis": "up|down", "identityJwks": "up|down" } }`,
+bare JSON (not enveloped), with `Cache-Control: no-store` and `X-Request-Id`. Probes run even while draining, so the body stays
 truthful. Because the database probe has its own connection, a task whose request pool is saturated still reports
 `database: up`. After a Postgres failover without a TCP reset, readiness returns to `up` once the probe connection's
 stuck query reaches its 3 s `query_timeout` and the connection is discarded ([resilience.md](./resilience.md) →
 Postgres failure modes). Load balancers use readiness; the orchestrator restarts on liveness. Redis is Tier 2 and
 never fails readiness. Identity reachability is **not** a health dependency: Care must stay up (degraded) when
-Identity is down. `lib/auth` will add an informational `checks.identityJwks` (cache state, reported only). The old
+Identity is down. `checks.identityJwks` is informational (contract C1, 2026-10-02): `up` when the in-memory JWKS
+cache holds a key set younger than 1 h **and** its latest refresh succeeded; read from memory, no network call; it
+never changes `status` or the HTTP code (Identity has no equivalent field — a stated parity exception). The old
 `GET /api/health` and `GET /internal/health` were removed from the contract and now return 404.
 
 ## HTTP hardening
@@ -213,6 +240,11 @@ Identity is down. `lib/auth` will add an informational `checks.identityJwks` (ca
 - Node server timeouts: `keepAliveTimeout` 65 s, `headersTimeout` 66 s, `requestTimeout` 30 s.
 
 ## Boot and shutdown
+- **Boot route assertion:** `createPublicApp` / `createInternalApp` call `assertRoutesAuthorized(app.router)` after
+  mounting health and the module routers; `route_without_policy: <METHODS> <path>` or `route_without_guard: …` (and
+  `policy_invalid: …` / `route_without_policy` thrown by `authorize` at registration) become `boot_failed`, exit 1.
+- **JWKS cache:** `server.ts` starts it after DI registration (one background fetch, never awaited, + the 5-minute
+  interval, `unref`'d) and stops it first on shutdown (clears the interval, aborts an in-flight fetch).
 - **Boot:** each entrypoint (`server.ts`, `worker.ts`, `migrate.ts`) runs through `runMain`
   (`lib/lifecycle/run-main.ts`): a throw or rejection during boot writes **one** JSON line `error boot_failed`
   (serialized error) and exits 1, never Node's multi-line stack. Invalid env exits earlier with
@@ -223,7 +255,7 @@ Identity is down. `lib/auth` will add an informational `checks.identityJwks` (ca
   2. both listeners stop accepting and close idle keep-alive sockets;
   3. in-flight requests drain; once the count reaches zero, the sockets that carried them are closed too. On the
      deadline: `shutdown_timeout` (`unfinishedRequests`), all connections force-closed, exit code 1;
-  4. resources close in order (request pool, probe pool, Redis `QUIT` with a `disconnect` fallback), each bounded by
+  4. resources close in order (JWKS cache stop, request pool, probe pool, Redis `QUIT` with a `disconnect` fallback), each bounded by
      what remains of the deadline, with at least 250 ms each. A failure logs `shutdown_resource_failed`; an overrun
      logs `shutdown_resource_timeout` (`budgetMs`) and sets exit code 1; the next resource is closed either way;
   5. `shutdown_complete`, then exit 0 (1 after any timeout or an `uncaught_error`).
@@ -232,15 +264,19 @@ Identity is down. `lib/auth` will add an informational `checks.identityJwks` (ca
   `uncaught_error` and runs the same sequence with exit 1. Not yet fixed: a request aborted by its client leaves the
   in-flight count at its `close` event while its handler may still be running, so shutdown can close the pools under
   it ([#12](https://github.com/OmarRedaX/vcare-care-api/issues/12)).
-- **`care-worker`:** `worker_stopping`, then every loop finishes its current tick, bounded by `SHUTDOWN_TIMEOUT_MS`
-  (`worker_stop_timeout` and exit 1 on overrun).
+- **`care-worker`:** `worker_stopping`, then every loop finishes its current tick and the worker pool is destroyed,
+  both bounded by `SHUTDOWN_TIMEOUT_MS` (`worker_stop_timeout` and exit 1 on overrun). `node dist/worker.js --once
+  <loop>` runs exactly one tick of that loop, closes the pool, and exits 0 (`worker_loop_unknown` / `worker_tick_failed`
+  → exit 1).
 
 ## Local stack (compose)
 `docker-compose.yml` (`name: vcare-care`): Postgres 17 on `127.0.0.1:5433` and Redis 7 on `127.0.0.1:6380`, both on
-**host loopback only** (known credentials, no Redis auth); a one-off `migrate`; `care-api` with the public listener
+**host loopback only** (known credentials, no Redis auth); a one-off `migrate` (`latest` then `ensure-app-login`, as
+the owner); `care-api` with the public listener
 on `3001` (all host interfaces) and the internal listener on `127.0.0.1:3101`; and `care-worker`. The test stack
-(`docker-compose.test.yml`, `vcare-care-test`) uses `127.0.0.1:5434` (tmpfs) and `127.0.0.1:6381`. Identity's stack
-keeps 5432/6379 and 3000/3100.
+(`docker-compose.test.yml`, `vcare-care-test`) uses `127.0.0.1:5434` (tmpfs) and `127.0.0.1:6381`; the integration
+global setup migrates as the owner and provisions `care_app`. Identity's stack keeps 5432/6379 and 3000/3100;
+`care-api`, `care-worker`, and `migrate` reach its JWKS through `host.docker.internal` (`extra_hosts: host-gateway`).
 
 ## Runtime notes
 The platform deployment topology — edge routing, private network, every service's components, the availability
@@ -251,9 +287,11 @@ roll-up, and the release pipeline — is platform-scope and authored in the hub
   `INTERNAL_PORT` admits only registered service clients and admin tooling.
 - Background loops (Identity-sync retrier, notification outbox, reminders, `next-available` refresh, audit
   partitions) run in the separate `care-worker` component ([ADR 0008](../adr/0008-care-worker-component.md));
-  graceful shutdown stops each loop after its current batch. The foundation worker runs an empty loop list and only
-  emits `worker_heartbeat`.
-- Outbound: `care-api` → Identity internal LB and JWKS, video room provider, object storage; `care-worker` →
+  graceful shutdown stops each loop after its current batch. As built (access): one loop, `audit-partitions` (daily;
+  transaction-scoped advisory lock; `audit_partitions_ensured`, metrics `audit_partition_missing`,
+  `audit_default_partition_rows`).
+- Outbound: `care-api` → Identity public JWKS (`undici`, every 5 min + gated demand fetches) and internal LB, video
+  room provider, object storage; `care-worker` →
   Identity internal LB, email provider.
 
 Components, sizing, availability, metrics, and alerts: [deployment.md](./deployment.md) and [capacity.md](./capacity.md).

@@ -3,7 +3,7 @@ title: Care Service — Docs Index
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -59,6 +59,7 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0015-aws-sdk-storage-adapter.md](./adr/0015-aws-sdk-storage-adapter.md) | AWS SDK v3 modular packages, only inside `lib/storage` | explanation |
 | [adr/0016-foundation-runtime-dependencies.md](./adr/0016-foundation-runtime-dependencies.md) | the foundation's runtime and dev dependencies: `reflect-metadata`, in-house dev CORS, no `uuid`/`dotenv`, deferred `jose`/`luxon`/`undici` | explanation |
 | [adr/0017-generic-helpers-and-transaction-scoping.md](./adr/0017-generic-helpers-and-transaction-scoping.md) | where a domain-free helper goes; how a service opens a transaction | explanation |
+| [adr/0018-db-role-split-explicit-grants-partition-function.md](./adr/0018-db-role-split-explicit-grants-partition-function.md) | owner `care` runs migrations, `care-api`/`care-worker` log in as `care_app` (in `NOLOGIN` `vcare_app`); explicit per-table grants; `audit_logs` partitions via one `SECURITY DEFINER` function; transaction-scoped advisory lock | explanation |
 
 ## Module docs
 Created by the workflow, not ahead of time: `/brainstorm <feature>` creates `docs/<module>/` (brainstorm,
@@ -70,6 +71,9 @@ spec, tasks, manual-qa, reviews/). Each module gets rows here when it starts.
 | [foundation/spec.md](./foundation/spec.md) | build or change the skeleton: entrypoints, `lib/` APIs (errors, logger, idempotency, rate limit, health, shutdown, worker runner), env, tooling, Docker, CI, test plan; its As-built notes list the known latent gaps (#5–#17) | reference |
 | [foundation/tasks.md](./foundation/tasks.md) | see what the foundation build did, its fix-review rounds, and what is still open | — |
 | [foundation/manual-qa.md](./foundation/manual-qa.md) | see the CURL QA runs of the foundation (health, request id, envelope, listener isolation, outages) and re-run them with `scripts/curl-test-foundation.sh` | how-to |
+| [access/brainstorm.md](./access/brainstorm.md) | see the agreed scope of the shared access base (user guard + JWKS, deny-by-default `authorize`, append-only `audit_logs` + app DB role, worker partition loop, foundation fixes #5 #6 #10 #11) before `specialties` | explanation |
+| [access/tasks.md](./access/tasks.md) | see what the access build did (task by task, build-order tags), what was not run (Docker was down), and what is left for `/write-tests` and `/manual-qa` | — |
+| [access/spec.md](./access/spec.md) | build or use the access base: JWKS cache and `userGuard()`, the `Policy` shape and `authorize` step order, the boot route assertion, `AuditRecorder.record(trx, entry)`, the `audit_logs` migrations, DB roles (`care` / `vcare_app` / `care_app`, `ensure-app-login`), the worker `audit-partitions` loop, `checks.identityJwks`, env additions, the fixes for #5 #6 #10 #11, the test plan, the decided contract edits C1/C2, and the `audit` module hand-off (read indexes deferred) | reference |
 
 ## Contract (source of truth — prose above derives from it)
 | Contract | Defines |

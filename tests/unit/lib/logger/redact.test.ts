@@ -32,6 +32,10 @@ const EXPECTED_KEYS = [
     "clientSecret",
     "body",
     "requestBody",
+    // access spec §7: database URLs carry credentials
+    "connectionString",
+    "databaseUrl",
+    "migrationDatabaseUrl",
 ];
 
 describe("lib/logger/redact", () => {

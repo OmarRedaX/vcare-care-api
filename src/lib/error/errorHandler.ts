@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { logger } from "../logger/logger";
 import { AppError } from "./AppError";
-import { InternalError, ValidationFailed } from "./errors";
+import { InternalError, NotFound, ValidationFailed } from "./errors";
 import type { ErrorDetail } from "./types";
 
 /** body-parser failure types mapped to a readable `ValidationFailed` detail — never the raw parser message. */
@@ -23,6 +23,35 @@ function bodyParserDetail(error: unknown): ErrorDetail | undefined {
     return typeof type === "string" ? BODY_PARSER_DETAILS[type] : undefined;
 }
 
+const PATH_DETAIL: ErrorDetail = { field: "path", issue: "must be valid percent-encoding" };
+const REQUEST_DETAIL: ErrorDetail = { field: "request", issue: "could not be processed" };
+
+/** A numeric 4xx `status`/`statusCode` set by Express, the router, or a library on a non-`AppError` error. */
+function clientErrorStatus(error: unknown): number | undefined {
+    if (typeof error !== "object" || error === null) {
+        return undefined;
+    }
+    const candidate = error as { status?: unknown; statusCode?: unknown };
+    const status = typeof candidate.status === "number" ? candidate.status : candidate.statusCode;
+    return typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 499 ? status : undefined;
+}
+
+/**
+ * Non-`AppError` client errors (fix #5). A `URIError` is Express 5's router failing to decode a percent-encoded path
+ * parameter: its message carries the raw value, so it is never logged. Other 4xx errors log only `name` and `status`.
+ */
+function mapClientError(error: unknown): AppError | undefined {
+    if (error instanceof URIError) {
+        return ValidationFailed.withDetails([PATH_DETAIL]);
+    }
+    const status = clientErrorStatus(error);
+    if (status === undefined) {
+        return undefined;
+    }
+    logger.warn("client_error_mapped", { name: error instanceof Error ? error.name : "NonError", status });
+    return status === 404 ? NotFound : ValidationFailed.withDetails([REQUEST_DETAIL]);
+}
+
 /**
  * The ONLY producer of error bodies. Never leaks stacks, SQL, request data, or the message of a
  * non-`AppError` error.
@@ -42,8 +71,11 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
         }
     } else {
         const detail = bodyParserDetail(err);
+        const clientError = detail === undefined ? mapClientError(err) : undefined;
         if (detail !== undefined) {
             appError = ValidationFailed.withDetails([detail]);
+        } else if (clientError !== undefined) {
+            appError = clientError;
         } else {
             appError = InternalError;
             logger.error("unhandled_error", { requestId: req.requestId, error: err });

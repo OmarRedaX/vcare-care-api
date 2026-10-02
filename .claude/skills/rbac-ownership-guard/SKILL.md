@@ -17,51 +17,70 @@ Both must pass. The default is **deny**. A route without a declared policy fails
 
 ## The policy contract
 
+Care's as-built shape (`src/lib/rbac/types.ts`, care `docs/access/spec.md` §3.4). Identity's `authorize` has no
+ownership resolver or checks; its policy shape differs where its rules differ.
+
 ```ts
-// lib/rbac/types.ts
-export type Role = "patient" | "doctor" | "admin";
+// lib/rbac/types.ts (care)
+export type OwnershipDecision = "allow" | "deny-not-found" | "deny-forbidden";
+
+/** Resolvers and checks see ONLY the verified principal and the path params — never the body. */
+export interface AccessContext { auth: AuthContext; params: Readonly<Record<string, string>> }
+export type OwnershipResolver = (ctx: AccessContext) => Promise<OwnershipDecision>;
 
 export type OwnershipRule =
-    | { kind: "none" }                                   // role check is sufficient (e.g. admin-only)
-    | { kind: "self" }                                   // resource id is the caller's own user id / "me"
-    | { kind: "resolver"; resolve: OwnershipResolver };  // DB-backed predicate
+    | { kind: "none" }                                                  // role check is sufficient (x-ownership: none)
+    | { kind: "self" }                                                  // /me routes: the service acts only on auth.userId
+    | { kind: "resolver"; name: string; resolve: OwnershipResolver };   // DB-backed predicate (x-ownership: <name>)
 
-export type OwnershipResolver = (ctx: {auth: AuthContext; params: Record<string, string>}) => Promise<OwnershipResult>;
-export type OwnershipResult = "allow" | "deny-forbidden" | "deny-not-found";
-
-export interface Policy {
-    roles: Role[] | "service";          // "service" = service token only
-    scope?: string;                      // required service scope when roles === "service"
-    owner: OwnershipRule;
-    accountState?: {                     // from token claims + local state checks in the service
-        status?: Array<"active" | "pending">;
-        emailVerified?: boolean;
-    };
-    audit?: "clinical-read" | "clinical-write" | "admin-action"; // forces an audit row
+export interface AccessCheck {                                          // extra DB-backed condition
+    name: string;                                                       // snake_case; logged as reason check:<name>
+    appliesTo: readonly Role[];                                         // non-empty subset of roles
+    run: (ctx: AccessContext) => Promise<"allow" | "deny-forbidden">;
 }
+
+export interface UserPolicy {
+    kind: "user";
+    roles: readonly Role[];                                             // explicit; no wildcard
+    owner: OwnershipRule;                                               // mandatory, even { kind: "none" }
+    accountState?: {
+        statuses?: Partial<Record<Role, readonly AccountStatus[]>>;    // default ["active"] per role; never "suspended"
+        emailVerified?: boolean;                                        // true → ev=false gets 403 EmailNotVerified
+    };
+    checks?: readonly AccessCheck[];                                    // e.g. doctors' doctor_not_suspended
+    audit?: "clinical-read" | "clinical-write" | "admin-action";        // declarative; the service writes the rows
+}
+export type Policy = UserPolicy;   // the doctors module adds { kind: "service"; scope } with serviceGuard
 ```
 
+**`authorize(policy)` step order** (each denial logs `access_denied { reason, route }`, never ids):
+
+| # | Step | Denial |
+|---|---|---|
+| 1 | `req.auth` present (a guard ran) | `401 Unauthorized` |
+| 2 | `auth.role ∈ policy.roles` | `403 Forbidden` |
+| 3 | `auth.status ∈ statuses[auth.role] ?? ["active"]` — a `suspended` token always lands here | `403 Forbidden` |
+| 4 | `accountState.emailVerified` → `auth.emailVerified` | `403 EmailNotVerified` |
+| 5 | each check whose `appliesTo` contains the role, in order | `403 Forbidden` |
+| 6 | ownership: `none`/`self` allow; the resolver decides | `deny-not-found` → `404 NotFound`; `deny-forbidden` (or anything unexpected) → `403 Forbidden` |
+
+Status, email, and checks run **before** ownership, so a caller who may not act at all cannot probe whether a private
+id exists. A resolver or check that throws → `500` through the error handler. At construction (boot) `authorize`
+throws `route_without_policy` for `undefined` and `policy_invalid: …` for an invalid shape (empty, duplicate, or
+unknown roles; a `statuses` key not in `roles`; an empty list; **any list containing `suspended`**; a check whose
+`appliesTo` is empty or not ⊆ `roles`; duplicate or non-snake_case names). The app calls
+`assertRoutesAuthorized(app.router)` at boot: every route needs `authorize`, preceded by a guard
+(`route_without_policy` / `route_without_guard`); health is exempt by `markProbeExempt`.
+
+**Route composition** (every module `routes.ts` returns `sealRouter(router)`):
 ```ts
-// lib/rbac/authorize.ts — sketch of the required semantics
-export function authorize(policy: Policy | undefined): RequestHandler {
-    if (!policy) throw new Error("Route registered without an authorization policy"); // fail closed at boot
-    return async (req, _res, next) => {
-        const auth = req.auth;                                          // set only by a guard
-        if (!auth) return next(Unauthorized);
-        if (policy.roles === "service") {
-            if (auth.typ !== "service") return next(ServiceTokenRequired);
-            if (policy.scope && !auth.scopes.includes(policy.scope)) return next(InsufficientScope);
-            return next();
-        }
-        if (auth.typ !== "user" || !policy.roles.includes(auth.role)) return next(Forbidden);
-        if (policy.accountState?.status && !policy.accountState.status.includes(auth.status)) return next(accountStateError(auth.status));
-        if (policy.accountState?.emailVerified && !auth.emailVerified) return next(EmailNotVerified);
-        const result = await evaluateOwnership(policy.owner, auth, req.params);
-        if (result === "deny-not-found") return next(NotFound);         // hide existence of private resources
-        if (result === "deny-forbidden") return next(Forbidden);
-        next();
-    };
-}
+router.<verb>(path,
+    rateLimit({ …, subject: byIp })?,   // optional: sheds floods before signature verification
+    userGuard(),                        // authentication only: sets req.auth
+    authorize(policy),                  // roles → account state → email → checks → ownership
+    rateLimit({ …, subject: byUser })?,
+    idempotency({ required })?,
+    controller.method);
 ```
 
 **Rules**
@@ -151,7 +170,7 @@ Self routes (`/auth/me`, `/auth/change-password`) accept `rejected` accounts.
 - [ ] each role NOT in policy.roles → 403 Forbidden
 - [ ] allowed role, non-owner → 404 NotFound (private resources) or 403 Forbidden
 - [ ] allowed role, owner → success
-- [ ] account-state requirement violated → the specific error (AccountSuspended, EmailNotVerified, DoctorNotBookable…)
+- [ ] account-state requirement violated → the specific error (Care: `Forbidden` for a disallowed status incl. `suspended`, `EmailNotVerified`; Identity: `AccountSuspended`; booking: `DoctorNotBookable`…)
 - [ ] /internal route with a user token (incl. admin) → 401 ServiceTokenRequired; missing scope → 403 InsufficientScope
 - [ ] clinical routes: admin → denied; admin DTOs contain no clinical fields
 - [ ] audited routes: exactly one audit row with the right action and no clinical text

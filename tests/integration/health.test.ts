@@ -5,6 +5,7 @@ import { HealthController } from "../../src/app/health/controller/health.control
 import { HealthService } from "../../src/app/health/service/health.service";
 import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
+import type { JwksStatusSource } from "../../src/lib/auth/types";
 import { getEnv } from "../../src/lib/config/env";
 import { createKnex, db, probeDb } from "../../src/lib/knex/knex";
 import { ShutdownState } from "../../src/lib/lifecycle/shutdown-state";
@@ -28,7 +29,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
  * its controller when the app is built, so the apps must be built INSIDE `withContainerOverrides`.
  */
 function healthWiring(deps: { db?: Knex; redis?: Redis; state?: ShutdownState }): ContainerOverride[] {
-    const service = new HealthService(deps.db ?? probeDb, deps.redis ?? redis, deps.state ?? new ShutdownState());
+    // The container's JWKS cache is never started in these suites (no Identity): identityJwks reads "down".
+    const service = new HealthService(
+        deps.db ?? probeDb,
+        deps.redis ?? redis,
+        deps.state ?? new ShutdownState(),
+        container.resolve<JwksStatusSource>(TOKENS.JwksCache),
+    );
     return [
         ...(deps.db !== undefined ? [{ token: TOKENS.ProbeDb, value: deps.db }] : []),
         ...(deps.redis !== undefined ? [{ token: TOKENS.Redis, value: deps.redis }] : []),
@@ -73,7 +80,7 @@ describe("health (integration: real Postgres + Redis)", () => {
         ] as const) {
             const res = await request(app).get(path);
             expect(res.status).toBe(200);
-            expect(res.body).toEqual({ status: "ok", checks: { database: "up", redis: "up" } });
+            expect(res.body).toEqual({ status: "ok", checks: { database: "up", redis: "up", identityJwks: "down" } });
             expectHealthStatusBody(res.body, res.status);
         }
     });
@@ -91,7 +98,7 @@ describe("health (integration: real Postgres + Redis)", () => {
                 ] as const) {
                     const res = await request(app).get(path);
                     expect(res.status).toBe(200);
-                    expect(res.body).toEqual({ status: "degraded", checks: { database: "up", redis: "down" } });
+                    expect(res.body).toEqual({ status: "degraded", checks: { database: "up", redis: "down", identityJwks: "down" } });
                     expectHealthStatusBody(res.body, res.status);
                 }
             });
@@ -118,7 +125,7 @@ describe("health (integration: real Postgres + Redis)", () => {
                     const res = await request(app).get(path);
                     expect(Date.now() - startedAt).toBeLessThan(1_500);
                     expect(res.status).toBe(503);
-                    expect(res.body).toEqual({ status: "down", checks: { database: "down", redis: "up" } });
+                    expect(res.body).toEqual({ status: "down", checks: { database: "down", redis: "up", identityJwks: "down" } });
                     expectHealthStatusBody(res.body, res.status);
                 }
 
@@ -167,7 +174,7 @@ describe("health (integration: real Postgres + Redis)", () => {
             const { publicApp } = buildTestApps();
             const res = await request(publicApp).get("/api/health/ready");
             expect(res.status).toBe(200);
-            expect(res.body).toEqual({ status: "ok", checks: { database: "up", redis: "up" } });
+            expect(res.body).toEqual({ status: "ok", checks: { database: "up", redis: "up", identityJwks: "down" } });
         } finally {
             await Promise.all(busy);
         }
@@ -180,7 +187,7 @@ describe("health (integration: real Postgres + Redis)", () => {
             const { publicApp, internalApp } = buildTestApps();
             const ready = await request(publicApp).get("/api/health/ready");
             expect(ready.status).toBe(503);
-            expect(ready.body).toEqual({ status: "down", checks: { database: "up", redis: "up" } });
+            expect(ready.body).toEqual({ status: "down", checks: { database: "up", redis: "up", identityJwks: "down" } });
             expectHealthStatusBody(ready.body, ready.status);
 
             expect((await request(internalApp).get("/internal/health/ready")).status).toBe(503);

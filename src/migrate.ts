@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getEnv } from "./lib/config/env";
+import { getMigrationEnv } from "./lib/config/env";
+import { ensureAppLogin } from "./lib/knex/app-login";
 import { createKnex } from "./lib/knex/knex";
 import { migrationConfig } from "./lib/knex/knexfile";
 import { runMain } from "./lib/lifecycle/run-main";
@@ -13,6 +14,8 @@ const TEMPLATE = `import type { Knex } from "knex";
 export async function up(knex: Knex): Promise<void> {
     await knex.raw(\`
         -- raw SQL only; name every constraint; comment every index with the query it serves
+        -- grant vcare_app explicitly (no ALTER DEFAULT PRIVILEGES); append-only tables get INSERT, SELECT only
+        -- (plus USAGE on their own sequence) — ADR 0018
     \`);
 }
 
@@ -47,10 +50,14 @@ function makeMigration(name: string | undefined): number {
     return 0;
 }
 
+/**
+ * Every command connects as the OWNER (`MIGRATION_DATABASE_URL`); `care-api` and `care-worker` never hold that secret
+ * (ADR 0018). `ensure-app-login` creates or updates the app login named by `DATABASE_URL`.
+ */
 async function run(command: string): Promise<number> {
-    const env = getEnv();
+    const env = getMigrationEnv();
     const knex = createKnex({
-        url: env.DATABASE_URL,
+        url: env.MIGRATION_DATABASE_URL,
         poolMax: 1,
         statementTimeoutMs: null,
         applicationName: "care-migrate",
@@ -71,6 +78,10 @@ async function run(command: string): Promise<number> {
             case "status": {
                 const [completed, pending] = (await knex.migrate.list(migrationConfig)) as [string[], unknown[]];
                 logger.info("migrations_status", { completed: completed.length, pending: pending.length });
+                return 0;
+            }
+            case "ensure-app-login": {
+                await ensureAppLogin(knex, env.DATABASE_URL);
                 return 0;
             }
             default:

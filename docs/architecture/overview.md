@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -30,6 +30,7 @@ flowchart LR
         PUB["Public listener :3001<br/>/api/*"]
         INT["Internal listener :3101<br/>/internal/*"]
         CORE["Modules<br/>(specialties … audit)"]
+        AUTH["lib/auth<br/>(JWKS cache)"]
         IC["lib/identity-client"]
         VID["lib/video port"]
         MAIL["lib/email port (async)"]
@@ -50,10 +51,12 @@ flowchart LR
     CORE --> PG
     CORE --> R
     CORE --> IC
+    PUB --> AUTH
+    AUTH -->|JWKS fetch every 5 min,<br/>public listener| IDP
     CORE --> VID
     CORE --> MAIL
     CORE --> STO
-    IC -->|JWKS fetch, token exchange,<br/>Cases 1-3| IDP
+    IC -->|token exchange,<br/>Cases 1-4| IDP
     VID --> VP
     MAIL --> EP
     STO --> OBJ
@@ -67,7 +70,8 @@ flowchart LR
 | PostgreSQL | System of record for everything Care owns. `btree_gist` for the non-overlap exclusion constraint. `TIMESTAMPTZ`, UTC sessions. |
 | Redis | Derived caches (`slots:*`, `next-available:*`, `identity:user:*`), idempotency records (24 h), rate-limit windows. Never a source of truth. |
 | Object storage | Verification documents and record attachments under random keys; uploaded directly by browsers with presigned POSTs and turned into rows only after `complete` verifies the bytes; opened through on-demand, audited 60 s presigned GETs ([file-handling.md](./file-handling.md)). |
-| identity-client (`lib/identity-client`) | The only code that talks to identity-service: JWKS cache for user-token verification, service-token cache, batch hydration (Case 2), status changes (Cases 1 and 3). |
+| auth (`lib/auth`) | User-token verification: Identity's JWKS cached in memory (`JwksCache`: 5-minute refresh, demand fetch on an unknown `kid` at most once per minute, keys trusted ≤ 1 h after the last success), `UserTokenVerifier` (jose `jwtVerify`), `userGuard()`. The JWKS fetch is a public-key read on Identity's public listener, not an integration case, so it does not go through identity-client. |
+| identity-client (`lib/identity-client`, planned) | The only code that calls identity-service's internal API: service-token cache, batch hydration (Case 2), status changes (Cases 1, 3, 4). |
 | Video port (`lib/video`) | Creates rooms and issues short-lived per-participant join tokens from a third-party provider. |
 | Email port (`lib/email`) | Sends notifications asynchronously; failure never affects the triggering write. |
 
@@ -97,9 +101,12 @@ src/app/<module>/   controller → service → repository     may import lib/, p
 src/lib/            built (foundation): config, di, error, logger, request-id, http (response, no-store,
                       pagination, cors, client-ip, route-pattern), validation, knex, redis, idempotency,
                       rate-limit, lifecycle, worker, async, types
-                    planned: auth, rbac, audit, identity-client, storage (S3 presign/verify), video, email
+                    built (access, 2026-10-02): auth (JWKS cache, verifier, userGuard), rbac (authorize,
+                      boot route assertion, markers), audit (AuditRecorder, audit-partitions loop),
+                      knex/app-login, redis/breaker
+                    planned: identity-client, storage (S3 presign/verify), video, email
                     may import pkg/; never app/<module>
-src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, utils/uuid.ts (built);
+src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, utils/uuid.ts, utils/id.ts (built);
                       slots/, utils/interval.ts (planned) — no env, no I/O, no clock (now is passed in)
 ```
 
@@ -127,7 +134,7 @@ sequenceDiagram
     H->>RL: security headers
     RL->>UG: Redis sliding window
     UG->>AZ: verify JWT via cached JWKS, req.auth
-    AZ->>IDEM: role + ownership (DB) + account state
+    AZ->>IDEM: role, account state, email, checks, ownership (DB)
     IDEM->>CT: required on booking writes; replay or continue
     CT->>SV: validated DTO
     SV-->>CT: result (transaction + audit committed)
@@ -141,7 +148,7 @@ sequenceDiagram
 2. **helmet** (+ CORS allowlist in local development only — production is a single origin, hub ADR 0005); `Cache-Control: no-store` on clinical and consultation routes.
 3. **rate-limit** — search/slots 60/min per IP and 120/min per user; booking writes 10/min per user; uploads 20/h per user.
 4. **user-guard** — verifies the EdDSA token locally against Identity's JWKS; no network call per request.
-5. **authorize(policy)** — deny by default; roles, ownership resolved from the database, account state (onboarding: `pending|active|rejected`; practising doctor actions: `active` and not locally suspended; booking: `emailVerified`).
+5. **authorize(policy)** — deny by default, in this order: role → token status (onboarding: `pending|active|rejected`; everything else: `active`; `suspended` never) → `emailVerified` (booking) → policy checks (practising doctors: not locally suspended) → ownership resolved from the database ([rbac.md](./rbac.md) → Principles).
 6. **idempotency** — required on book, reschedule, cancel.
 7. **controller → service** — the service re-checks invariants inside its transaction and writes audit rows.
 8. **errorHandler** — the single producer of the error envelope.
@@ -155,3 +162,11 @@ answered as an allowed preflight → `404 NotFound`; `express.json` (100 kB); th
 `notFound`; `errorHandler`. Rate-limit, guard, `authorize`, and idempotency are mounted **per router** by each module
 (step order above), not globally. Only the health routes exist today
 ([infrastructure.md](./infrastructure.md) → HTTP hardening, Health).
+
+**As built by `access` (2026-10-02).** After mounting health and the module routers, both apps call
+`assertRoutesAuthorized(app.router)`: a route without `authorize`, or without a guard before it, stops the process at
+boot (health is exempt by marker; test-only routers are mounted after the check). `server.ts` starts the JWKS cache
+(one background fetch + the 5-minute interval) and stops it first on shutdown. `care-worker` has its own Postgres pool
+(`care-worker`, 2 connections, as `care_app`) and runs the `audit-partitions` loop. `care-api` and `care-worker` log in
+as `care_app` (member of `vcare_app`); only `care-migrate` holds the owner credential
+([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)).

@@ -15,14 +15,15 @@
     "start:worker": "node dist/worker.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "jest -c jest.config.js",
-    "test:integration": "jest -c jest.integration.config.js --runInBand",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js -c jest.config.js",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js -c jest.integration.config.js --runInBand",
     "test:infra:up": "docker compose -f docker-compose.test.yml up -d --wait",
     "test:infra:down": "docker compose -f docker-compose.test.yml down -v",
     "migrate": "tsx --env-file-if-exists=.env src/migrate.ts latest",
     "migrate:rollback": "tsx --env-file-if-exists=.env src/migrate.ts rollback",
     "migrate:status": "tsx --env-file-if-exists=.env src/migrate.ts status",
-    "migrate:make": "tsx --env-file-if-exists=.env src/migrate.ts make"
+    "migrate:make": "tsx --env-file-if-exists=.env src/migrate.ts make",
+    "migrate:ensure-app-login": "tsx --env-file-if-exists=.env src/migrate.ts ensure-app-login"
   },
   "dependencies": {
     "class-transformer": "0.5.1",
@@ -30,10 +31,12 @@
     "express": "5.2.1",
     "helmet": "8.3.0",
     "ioredis": "5.11.1",
+    "jose": "6.2.12",
     "knex": "3.3.0",
     "pg": "8.23.0",
     "reflect-metadata": "0.2.2",
     "tsyringe": "4.10.0",
+    "undici": "7.30.0",
     "zod": "4.6.5"
   },
   "devDependencies": {

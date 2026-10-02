@@ -25,7 +25,7 @@ Migrations are **raw SQL** inside Knex `up`/`down`, one change per file, named `
 ```
 - [ ] 1. Contract/spec first: the table serves operations already in contracts/openapi.yaml + docs/<module>/spec.md
 - [ ] 2. Generate: npm run migrate:make <description>
-- [ ] 3. up(): extensions → table → constraints → indexes (each index commented with its query) → triggers/grants
+- [ ] 3. up(): extensions → table → constraints → indexes (each index commented with its query) → triggers → explicit grants to the app group role
 - [ ] 4. down(): reverse every step in reverse order (IF EXISTS everywhere)
 - [ ] 5. Apply: npm run migrate   → verify: npm run migrate:status
 - [ ] 6. Prove down(): npm run migrate:rollback && npm run migrate
@@ -155,10 +155,31 @@ export async function down(knex: Knex): Promise<void> {
 - The GiST index created by the constraint also serves "consultations of doctor X overlapping window W" queries (`doctor_user_id = $1 AND tstzrange(starts_at, ends_at, '[)') && tstzrange($2, $3, '[)')`) — don't add a duplicate btree for that query.
 - Existing data must already satisfy the constraint, or the `ALTER` fails — check with the overlap query first.
 
-## Append-only tables (audit logs, record amendments)
+## Grants — the app role (Care ADR 0018)
+Migrations run as the **owner** (`MIGRATION_DATABASE_URL`); the API and worker log in as an app login that is a member
+of the `NOLOGIN` group role **`vcare_app`** (`DATABASE_URL`). The app role owns nothing and holds only what each
+migration grants it:
+- **Every table migration grants `vcare_app` explicitly**, in the migration that creates the table. Never
+  `ALTER DEFAULT PRIVILEGES` — a forgotten grant must fail loudly (`42501`), never silently over-grant.
+- Grant exactly what the code needs: `SELECT, INSERT, UPDATE` for a normal soft-delete table (no `DELETE` — hard
+  delete is never exposed), plus `USAGE` on the table's own `BIGSERIAL` sequence (`<table>_id_seq`; it belongs to the
+  `INSERT` grant, not a table privilege). Never `TRUNCATE`, never `CREATE` on `public`.
+- **Partitioned tables** grant the parent **and** the `DEFAULT` partition; monthly partitions are granted when they are
+  created (Care: inside `audit_logs_ensure_partitions`).
+- `down()` needs no `REVOKE`: dropping the table drops its grants.
+
 ```sql
--- revoke mutation from the application role; history must be tamper-evident
-REVOKE UPDATE, DELETE ON audit_logs FROM vcare_app;
+GRANT SELECT, INSERT, UPDATE ON specialties TO vcare_app;
+GRANT USAGE ON SEQUENCE specialties_id_seq TO vcare_app;
+```
+
+## Append-only tables (audit logs, record amendments)
+Append-only is a **grant**, not a habit: the app role gets `INSERT, SELECT` only (plus `USAGE` on the sequence) —
+no `UPDATE`, `DELETE`, or `TRUNCATE`, so history is tamper-evident even against an API bug.
+```sql
+GRANT INSERT, SELECT ON audit_logs TO vcare_app;
+GRANT INSERT, SELECT ON audit_logs_default TO vcare_app;   -- partitioned: the DEFAULT partition too
+GRANT USAGE ON SEQUENCE audit_logs_id_seq TO vcare_app;
 ```
 For "editable for 24 h, then locked" rows (medical records), add `locked_at TIMESTAMPTZ NOT NULL` and a trigger that raises when `NEW` differs from `OLD` after `locked_at`:
 ```sql
@@ -221,4 +242,7 @@ CREATE TRIGGER trg_medical_records_forbid_update_after_lock
 | FK column without a leading index | Add `idx_<table>_<col>` |
 | Unnamed constraint | Name it |
 | Editing a migration that ran | New migration |
+| Table without a grant, or `ALTER DEFAULT PRIVILEGES` | Explicit `GRANT … TO vcare_app` in the creating migration |
+| `UPDATE`/`DELETE` granted on an append-only table | `INSERT, SELECT` only (+ sequence `USAGE`) |
+| Partition created by the app or worker as owner | Owner-defined, bounded `SECURITY DEFINER` function; the worker never holds the owner secret |
 | Empty or throwing `down()` | Real reversal |

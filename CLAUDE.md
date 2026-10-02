@@ -172,6 +172,7 @@ Every module under `src/app/<module>/` has the same skeleton.
 ## Database rules
 
 - **Migrations are raw SQL** (`knex.raw`), one change per file, real `down`, never edited after running. Use the `write-migration` skill.
+- **Two database roles.** Migrations run as the **owner** (`MIGRATION_DATABASE_URL`); `care-api` and `care-worker` log in as **`care_app`**, a member of the `NOLOGIN` group role **`vcare_app`** (`DATABASE_URL`) and never hold the owner secret. Every table migration grants to `vcare_app` **explicitly** (no `ALTER DEFAULT PRIVILEGES`); append-only tables get `INSERT, SELECT` only. `care-migrate` creates or updates the `care_app` login (`ensure-app-login`) after `latest`.
 - **`TIMESTAMPTZ` everywhere**, UTC on every pool connection. `TIMESTAMP` without time zone is forbidden.
 - **Soft delete only** (`deleted_at`) for profiles, records, attachments, help articles, consultation types, exceptions. Hard delete is never exposed; `DELETE` HTTP verbs set `deleted_at`. Clinical tables have **no `ON DELETE CASCADE`**.
 - **Overlapping consultations are impossible at the DB level:**
@@ -250,7 +251,7 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 
 ## Authentication and service-to-service auth
 
-**User tokens (verified locally, no call per request).** `lib/auth/user-guard` reads `Authorization: Bearer`, verifies the EdDSA signature against Identity's JWKS (`IDENTITY_JWKS_URL`, cached in memory, refreshed on unknown `kid` at most once per minute), and requires `iss=vcare-identity`, `aud` ∋ `vcare-care`, `typ=user`, unexpired. It sets `req.auth = { userId: Number(sub), role, status, emailVerified: ev }`. If the JWKS cannot be fetched and no cached key matches, respond `401 Unauthorized` — never skip verification.
+**User tokens (verified locally, no call per request).** `lib/auth/user-guard` reads `Authorization: Bearer`, verifies the EdDSA signature against Identity's JWKS (`IDENTITY_JWKS_URL`, cached in memory, re-fetched once older than Identity's 5-minute `max-age` and on an unknown `kid` at most once per minute; while refreshes fail the cached keys stay trusted for at most **1 hour** after the last successful fetch, then none are), and requires `iss=vcare-identity`, `aud` ∋ `vcare-care`, `typ=user`, unexpired. It sets `req.auth = { userId: Number(sub), role, status, emailVerified: ev }`. If the JWKS cannot be fetched and no cached key matches, respond `401 Unauthorized` — never skip verification.
 
 **Account state from the token:** doctor **onboarding** routes (`POST /doctors/apply`, `GET/PATCH /doctors/me`, `POST /doctors/me/documents`, `GET /doctors/me/application`) accept `status ∈ {pending, active, rejected}` — a doctor must be able to apply before approval, and a rejected doctor must be able to read the decision, fix the profile/documents, and resubmit; every **practising** doctor action (schedule, pricing, consultation types, sessions, records) requires `status=active`; patients must have `status=active`; booking requires `emailVerified=true`. Because tokens live up to 15 minutes, Care **also** checks its own `doctor_profiles.suspended_at` on every doctor action and every booking — a suspended doctor is blocked immediately, not at token expiry.
 

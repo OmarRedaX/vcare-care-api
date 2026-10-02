@@ -4,16 +4,18 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-09-28
+last_verified: 2026-10-02
 tags: [runbook, operations, on-call, care]
-related: [resilience, integration, infrastructure, deployment, quickstart, service-card]
+related: [resilience, integration, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # Runbook — care-service
 
 Task-oriented doc for on-call. The foundation is built (2026-09-28): health probes, boot/shutdown, and the log lines
-under "Boot and shutdown log lines" are live. Business alerts and the SQL below are the intended shape once the
-modules and their tables exist.
+under "Boot and shutdown log lines" are live. The access base is built (2026-10-02): user-token verification against
+Identity's JWKS, `authorize`, the boot route assertion, `audit_logs` with the `audit-partitions` worker loop, and the
+owner/app database roles — their alerts (`IdentityJwksStale`, `AuditPartitionMissing`, `AuditWriteFailures`) and
+tasks below are live. Business alerts and the SQL for module tables are the intended shape once those modules exist.
 
 > **Clinical data never leaves the system.** Tickets, chat, and incident notes carry **ids, statuses, and
 > request ids only** — never complaint text, record contents, names, object keys, presigned URLs, or tokens. Admin DB access
@@ -22,7 +24,7 @@ modules and their tables exist.
 ## At a glance
 | | |
 |---|---|
-| Health (public) | `GET http://<host>:3001/api/health/ready` — Postgres (fatal) + Redis (reported; JWKS cache state is added by `lib/auth`); `/api/health/live` — process only (ADR 0006). `GET /api/health` no longer exists (404) |
+| Health (public) | `GET http://<host>:3001/api/health/ready` — Postgres (fatal) + Redis (reported) + `identityJwks` (JWKS cache state, reported only — `down` never fails readiness); `/api/health/live` — process only (ADR 0006). `GET /api/health` no longer exists (404) |
 | Health (internal) | `GET http://<host>:3101/internal/health/ready`, `/internal/health/live` |
 | SLOs (p95) | doctor search < **400 ms** · 14-day slot computation < **300 ms** · booking write < **200 ms** · calendar/day view < 200 ms |
 | Integrity | zero double-bookings (exclusion constraint) · zero unaudited clinical reads |
@@ -39,13 +41,14 @@ modules and their tables exist.
 | `SlotComputationLatencyHigh` | ticket | slots endpoint p95 > 300 ms for 10 min | missing index use, cache stampede, a doctor with a huge busy set, DB saturation | `EXPLAIN` the busy-consultations overlap query (must use the GiST index of `excl_consultations_doctor_no_overlap`); check Redis hit rate for `slots:*`; check DB CPU/locks. |
 | `SearchLatencyHigh` | ticket | `GET /api/doctors` p95 > 400 ms for 10 min | `next-available:*` cache misses computed inline, a filter without index, hydration latency | Check `next-available` hit rate; `EXPLAIN` the search query; check Identity batch latency (hydration has a 2 s timeout and 1 retry). |
 | `ExclusionViolationSpike` | ticket | SQLSTATE `23P01` > 20/min | many patients racing for the same slots (expected at peaks), a stale slot cache, or a client retry loop without `Idempotency-Key` reuse | Each violation is a correct `409 SlotUnavailable`. Check slot-cache invalidation after booking commits and per-user rate-limit hits. Not a data-integrity incident. |
-| `AuditWriteFailures` | **page** | any `audit_logs` insert failure | DB permission regression, disk, constraint | Clinical reads fail closed (500) — patient and doctor record access is down. Check DB grants for the app role (`INSERT`, `SELECT` on `audit_logs`), disk, recent migrations. |
+| `AuditWriteFailures` | **page** | any `audit_write_failed` metric (`action` dim) | DB permission regression, a missing partition grant, disk, a `chk_audit_logs_*` violation (a code bug) | Clinical reads and audited writes fail closed (500) — patient and doctor record access is down. Check grants for `vcare_app` (below: `INSERT`, `SELECT` on `audit_logs`, `audit_logs_default`, and every `audit_logs_y*` partition; `USAGE` on `audit_logs_id_seq`), that `care_app` is still a member of `vcare_app`, disk, recent migrations. The log line `audit_write_failed` carries `action`, `entityType`, and the serialized error (SQLSTATE; never metadata). |
 | `HealthCheckFailing` | **page** | `/api/health/ready` returns 503 for 2 min | Postgres unreachable or tasks stuck draining | Read the body: `checks.database: "down"` → check Postgres connectivity, credentials, and failover state (after a failover without a TCP reset, readiness recovers by itself within one ≤ 3 s timed-out probe query once the new primary accepts connections — no restart needed); `database: "up"` with 503 → the task is draining (`shutdown_started` in its logs). Redis loss never fails readiness (it shows `degraded`; see `RateLimiterDegraded`). |
 | `DbReplicaLagHigh` | **page** | replica lag > 30 s for 5 min | write burst, replica undersized, network | A failover now would lose up to the lag. Check replica CPU/IO; avoid planned failovers until lag recovers. If the primary AZ fails: promote the replica (RTO ≤ 30 min, ADR 0005) and reconcile bookings created in the lag window from request logs and `notification_outbox`. |
 | `WorkerHeartbeatStale` | **page** | `care-worker` heartbeat > 2 min old | worker crashed, stuck loop, deploy failed | Restart/redeploy `care-worker`. Requests are unaffected, but Case 3 retries, emails, and reminders are paused. |
 | `OutboxLagHigh` | ticket | oldest pending outbox row > 5 min for 5 min | email provider slow, Identity contacts lookup failing, worker saturated | Check provider status and `identity_call_failed{case=contacts}`; scale `care-worker` to 2. Never send emails by hand from the database. |
 | `OutboxDeadJobs` | ticket | any `notification_outbox.status='dead'` | persistent provider rejection | Inspect `last_error_code`; fix config; requeue with `status='pending', attempts=0, next_attempt_at=now()`. |
-| `AuditPartitionMissing` | ticket | next month's `audit_logs` partition missing, or default partition has rows | worker partition loop failing | Run the worker's partition job manually (`node dist/worker.js --once audit-partitions`); move default-partition rows after creating the partition. |
+| `AuditPartitionMissing` | ticket | `audit_partition_missing = 1` (`error audit_partition_missing`), next month's partition missing, or `audit_default_partition_rows > 0` (`warn audit_default_partition_nonempty`) | worker loop failing (lock timeout, permissions, worker down), or rows landed in `audit_logs_default` — which then blocks creating their month | Run one tick: `node dist/worker.js --once audit-partitions` (exit 0 = ensured). If it fails because the default partition holds rows of the new month, move them (task below). |
+| `IdentityJwksStale` | **page** | `jwks_cache_age_s` > 1 800 (no successful JWKS refresh for 30 min; platform alert in hub `architecture/deployment.md` → Observability) | Identity public listener down, `IDENTITY_JWKS_URL` wrong, egress/network policy, a malformed JWKS response | At 3 600 s the cached keys are distrusted and **every authenticated Care request is 401** (health stays 200, `identityJwks: down`). Read `warn jwks_refresh_failed` (`host`, `reason`: `timeout`, `network`, `http_status` + `status`, `content_type`, `too_large`, `invalid_json`, `invalid_document`). `curl -s <IDENTITY_JWKS_URL>` from a Care task; check Identity's `/api/health/ready` and on-call. `error jwks_keys_expired` marks the 1 h crossing. Never "fix" by skipping verification. |
 | `IdentityReinstatementSyncPending` | ticket | a Case 4 job unsynced > 15 min | Identity degraded | Doctor stays unbookable (correct). Check Identity health; the retrier continues. |
 | `RateLimiterDegraded` | ticket | fallback limiter active for 2 min | Redis down or failing over | Check Redis; limits are per instance until it recovers. |
 | `UploadVerificationFailureSpike` | ticket | > 20 `upload_verification_failed` in 10 min | a client build sending wrong files, a client not waiting for the S3 POST before `complete`, or probing | Group by `reason` (`missing`/`size`/`type`) and route; `missing` spikes point at clients, `type` spikes from few users at probing (rate limits apply). No rows were created — nothing to clean beyond quarantine, which the worker purges. |
@@ -71,8 +74,56 @@ environment or a request.
 | `shutdown_forced` (warn) | a second signal arrived while draining; exit 1 immediately | Check the orchestrator's stop timeout is longer than `SHUTDOWN_TIMEOUT_MS`. |
 | `uncaught_error` (error) | an uncaught exception or unhandled rejection; the task shuts down with exit 1 | A bug: open an issue with the request id and `error.name`/`code`. |
 | `worker_started` / `worker_stopping` (info), `worker_stop_timeout` (error) | `care-worker` lifecycle; the timeout means a loop tick outlived `SHUTDOWN_TIMEOUT_MS` | See `WorkerHeartbeatStale`. |
+| `worker_loop_unknown` / `worker_tick_failed` (error) | `--once <loop>` named no loop, or its single tick threw; exit 1 | Check the loop name (`audit-partitions`); read `error` for the SQLSTATE. |
+| `route_without_policy: <METHODS> <path>` / `route_without_guard: …` / `policy_invalid: …` (inside `boot_failed`) | a route is mounted without `authorize`, without a guard before it, or with an invalid policy (e.g. a status list containing `suspended`); the process refuses to start | A code defect in the release: roll back. Never work around it by removing the check. |
+| `jwks_refreshed` (info) / `jwks_refresh_failed` (warn) / `jwks_keys_expired` (error) | the JWKS cache loaded `keys` keys (`trigger`: `boot`, `interval`, `stale`, `unknown_kid`, `no_keys`) / a refresh failed (`host`, `reason`, `status?`; previous keys kept) / no successful refresh for 1 h — no key is trusted now | See `IdentityJwksStale`. One `jwks_refresh_failed` at boot while Identity starts is harmless. |
+| `access_denied` (info) | `authorize` denied a request; `reason` (`unauthenticated`, `role`, `status`, `email_unverified`, `check:<name>`, `ownership_not_found`, `ownership_forbidden`) and the route pattern — never ids | Expected traffic; a spike of one reason on one route after a deploy may be a policy regression. |
+| `token_verification_error` (error) | an unexpected error while verifying a token (a bug or the key source failing); the request got 401 (fail closed) | Open an issue with the request id; the token is never logged. |
+| `app_login_ensured` (info) | `ensure-app-login` created (`created: true`) or re-synced (`false`) the app login | — |
+| `redis_breaker_open` (warn) / `redis_breaker_closed` (info) | Redis commands failed 3 times in a row (stall while connected): idempotency and rate limits stop using Redis for 5 s, then one probe decides | Check Redis latency/CPU; see `RateLimiterDegraded`. |
+| `idempotency_record_invalid` (warn) | a stored idempotency value failed the shape check and was removed; the request ran without replay | A spike right after a deploy means a record-format change; otherwise investigate who writes `idem:*` keys. |
+| `client_error_mapped` (warn) | a non-`AppError` 4xx (`name`, `status`) was mapped to `400`/`404` | Usually a malformed client request; never contains the value. |
 
 ## Common tasks
+
+### Provision or rotate the app login (`ensure-app-login`)
+`care-migrate` runs `node dist/migrate.js latest && node dist/migrate.js ensure-app-login` with both secrets:
+`MIGRATION_DATABASE_URL` (owner, needs `CREATEROLE`) and `DATABASE_URL` (the app login `care_app`). The command
+creates `care_app` as a member of `vcare_app`, or — when it exists — re-sets its password from `DATABASE_URL` and
+re-grants the membership; it logs only `app_login_ensured { created }`. To rotate the app password: update the
+`DATABASE_URL` secret for `care-migrate`, `care-api`, and `care-worker`, run the migrate task, then roll the API and
+worker tasks. **Keep server-side `log_statement = 'none'` while it runs** — the password travels inside a
+`CREATE/ALTER ROLE` statement, which `log_statement = 'ddl'`, `'mod'`, or `'all'` would log. Locally:
+`npm run migrate:ensure-app-login`.
+
+### Check the app role's grants
+```sql
+-- as the owner: table privileges of vcare_app (append-only tables must show INSERT and SELECT only)
+SELECT table_name, string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+FROM information_schema.role_table_grants
+WHERE grantee = 'vcare_app'
+GROUP BY table_name
+ORDER BY table_name;
+-- care_app is a member of vcare_app
+SELECT pg_has_role('care_app', 'vcare_app', 'MEMBER') AS is_member;
+```
+A missing partition grant is fixed by re-running the worker tick (it grants partitions it creates) or, for an
+existing partition, as the owner: `GRANT INSERT, SELECT ON audit_logs_yYYYYmMM TO vcare_app;`.
+
+### Move rows out of the default audit partition
+Rows land in `audit_logs_default` only when their month's partition is missing; they block creating that month.
+As the owner, in one transaction (never `DELETE` audit history elsewhere — this moves rows, it does not drop them):
+```sql
+BEGIN;
+CREATE TEMP TABLE audit_move ON COMMIT DROP AS
+    SELECT * FROM audit_logs_default WHERE created_at >= $1 AND created_at < $2;   -- the month's UTC bounds
+DELETE FROM audit_logs_default WHERE created_at >= $1 AND created_at < $2;
+SELECT partition_name, created FROM audit_logs_ensure_partitions(2);              -- now creates the month
+INSERT INTO audit_logs SELECT * FROM audit_move;                                  -- routed to the new partition
+COMMIT;
+```
+Then run `node dist/worker.js --once audit-partitions` and confirm `audit_default_partition_rows` is 0. Record only the
+row count and the month in the incident.
 
 ### Inspect an identity sync job
 ```sql

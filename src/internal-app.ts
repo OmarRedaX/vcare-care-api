@@ -6,6 +6,7 @@ import { notFound, optionsNotFound } from "./lib/error/not-found";
 import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
 import { requestLogger } from "./lib/logger/request-logger";
+import { assertRoutesAuthorized } from "./lib/rbac/assert-routes-authorized";
 import { requestId } from "./lib/request-id/request-id";
 import { buildInternalRoutes } from "./internal-routes";
 
@@ -25,6 +26,8 @@ export function createInternalApp(options?: AppOptions): express.Express {
 
     app.use("/internal/health", buildHealthRouter());
     app.use("/internal", buildInternalRoutes());
+    // Fail closed at boot (access spec §3.2): see createPublicApp.
+    assertRoutesAuthorized(app.router);
     for (const mounted of options?.extraRouters ?? []) {
         app.use(mounted.path, mounted.router);
     }

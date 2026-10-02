@@ -7,7 +7,9 @@ describe("lib/error/errors", () => {
     const expected: Record<string, [number, string]> = {
         ValidationFailed: [400, "Request validation failed"],
         Unauthorized: [401, "Authentication required"],
+        TokenExpired: [401, "Access token expired"],
         Forbidden: [403, "You are not allowed to perform this action"],
+        EmailNotVerified: [403, "Verify your email before booking"],
         NotFound: [404, "Resource not found"],
         Conflict: [409, "The resource already exists"],
         IdempotencyConflict: [422, "The idempotency key was already used with a different request"],

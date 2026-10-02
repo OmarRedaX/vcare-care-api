@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-09-15
+last_verified: 2026-10-02
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, clinical-records, integration, infrastructure, file-handling]
+related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # RBAC and Ownership
@@ -15,13 +15,36 @@ Implementation guidance: the **`rbac-ownership-guard`** skill. Every route here 
 `x-ownership` in [`contracts/openapi.yaml`](../../contracts/openapi.yaml); on disagreement the contract wins.
 
 ## Principles
-1. **Deny by default.** Every route has `authorize(policy)`; a route without a policy fails closed at boot.
+1. **Deny by default.** Every route has `authorize(policy)`; `authorize(undefined)` or an invalid policy throws at
+   route registration, and `assertRoutesAuthorized(app.router)` stops the process at boot when a route lacks
+   `authorize` or a guard before it (`route_without_policy` / `route_without_guard`). Health is the only exemption, by
+   explicit marker (`markProbeExempt`).
 2. **The principal is the verified token only** — `req.auth` from the user-guard (user JWT, verified locally via
-   Identity's JWKS) or service-guard (service JWT). `X-User-Id`, `X-Role`, `X-Forwarded-User`, body ids, and path
-   params never grant access.
-3. **Role, then ownership, then account state.** Ownership resolvers query the database with `auth.userId`.
+   Identity's JWKS cached in memory, `lib/auth`) or the service-guard (service JWT, lands with the doctors module).
+   `X-User-Id`, `X-Role`, `X-Forwarded-User`, body ids, and path params never grant access; ownership resolvers and
+   checks receive only `auth` and the path params, never the body.
+3. **Role, then account state, then checks, then ownership** (as built, `lib/rbac/authorize.ts`): no principal 401 →
+   role 403 → token status 403 (default `active`; `suspended` is never admissible and lands here as `403 Forbidden`)
+   → email 403 `EmailNotVerified` → policy checks 403 (e.g. the doctors module's `doctor_not_suspended`) → ownership
+   404/403. Status, email, and checks run before ownership, so a caller who may not act at all cannot probe whether a
+   private id exists. Ownership resolvers query the database with `auth.userId`.
 4. **Services re-check** invariants inside the transaction (assigned doctor, status, local suspension).
 5. **Admins never see clinical notes.**
+
+## Policy shape (as built — `src/lib/rbac/types.ts`)
+| Member | Meaning |
+|---|---|
+| `kind: "user"` | user-token policy (`ServicePolicy` with `scope` arrives with `serviceGuard`) |
+| `roles` | explicit list, no wildcard — a new role gets nothing until a policy names it |
+| `owner` | mandatory: `{ kind: "none" }`, `{ kind: "self" }` (`/me`), or `{ kind: "resolver", name, resolve }` returning `allow` / `deny-not-found` / `deny-forbidden` |
+| `accountState.statuses` | allowed token statuses per role, default `["active"]`; never `suspended` (boot error) |
+| `accountState.emailVerified` | `true` → `ev=false` gets `403 EmailNotVerified` |
+| `checks` | DB-backed conditions per role (`{ name, appliesTo, run }`), denial `403 Forbidden`, logged as `check:<name>` |
+| `audit` | declarative class (`clinical-read`, `clinical-write`, `admin-action`) mirroring `x-audit`; the service writes the rows with `AuditRecorder.record(trx, …)` |
+
+Every denial logs `info access_denied { reason, route }` — a reason and the route pattern, never ids. A resolver or
+check that throws → `500 InternalError`. Route composition: `rateLimit(byIp)? → userGuard() → authorize(policy) →
+rateLimit(byUser)? → idempotency()? → handler`; every module `routes.ts` returns `sealRouter(router)`.
 
 ## Permissions matrix (PRD §9 as refined by CLAUDE.md)
 | Capability | Patient | Doctor | Admin |
@@ -49,11 +72,14 @@ Implementation guidance: the **`rbac-ownership-guard`** skill. Every route here 
 | Doctor **onboarding**: `POST /doctors/apply`, `GET/PATCH /doctors/me`, `POST /doctors/me/documents`, `GET /doctors/me/application` | token `status ∈ {pending, active, rejected}`; `PATCH /doctors/me` also not locally suspended | 403 `Forbidden` |
 | Doctor **practising**: working hours, exceptions, consultation types, waiting room, calendar, join/start/complete/cancel/no-show, records | token `status=active` **and** `doctor_profiles.suspended_at IS NULL` (checked every request) | 403 `Forbidden` |
 | Patients (all routes) | token `status=active` | 403 `Forbidden` |
+| Any token with `status=suspended` | never admissible (no Care policy may list it) | 403 `Forbidden` (Care has no `AccountSuspended` code) |
 | Booking | `emailVerified=true` (`ev` claim) | 403 `EmailNotVerified` |
 | Booking target doctor | bookable (Domain rule 6) | 409 `DoctorNotBookable` |
 
 The local `suspended_at` check closes the up-to-15-minute window in which a suspended doctor's access token is
-still valid.
+still valid. It is a policy `AccessCheck` named `doctor_not_suspended` (`appliesTo: ["doctor"]`) supplied by the
+doctors module; `access` ships only the hook. Booking's check of the **target** doctor is a consultations service rule,
+not a policy check.
 
 ## Per-route policy table
 | Route | Roles | Ownership (`x-ownership`) | Audit |
