@@ -12,16 +12,28 @@ const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
 
 /**
  * An existing role is taken over only when it holds nothing beyond what `CREATE ROLE` below would give it. Owned
- * objects are recorded in `pg_shdepend` (deptype `o`) for every database of the cluster.
+ * objects are recorded in `pg_shdepend` (deptype `o`) for every database of the cluster. A direct membership in any
+ * role other than `vcare_app` (the owner role, `pg_write_all_data`, `pg_read_all_data`, `pg_monitor`, …) is inherited
+ * privilege (`INHERIT`), so it refuses too (review 2026-10-03). Bindings: the group role, then the login name.
  */
 const EXISTING_ROLE_SQL = `
     SELECT (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls) AS privileged,
         EXISTS (
             SELECT 1 FROM pg_shdepend d
             WHERE d.refclassid = 'pg_authid'::regclass AND d.refobjid = r.oid AND d.deptype = 'o'
-            ) AS owns_objects
+            ) AS owns_objects,
+        EXISTS (
+            SELECT 1 FROM pg_auth_members m
+            JOIN pg_roles g ON g.oid = m.roleid
+            WHERE m.member = r.oid AND g.rolname <> ?
+            ) AS has_other_memberships
     FROM pg_roles r
     WHERE r.rolname = ?`;
+
+/** Refused, never taken over or demoted (see `ensureAppLogin`). Carries no value. */
+function roleRefused(): Error {
+    return new Error("app_login_role_privileged");
+}
 
 /** Thrown when DATABASE_URL cannot name the app login. Carries no value (CLAUDE.md → Security rules). */
 function invalidUrl(): Error {
@@ -40,6 +52,31 @@ function ddlFailed(error: unknown): Error {
         Object.assign(failure, { code });
     }
     return failure;
+}
+
+/**
+ * Runs one step of `ensureAppLogin` and rethrows ANY failure as the fixed `app_login_ddl_failed`. The role check runs
+ * through this too (review 2026-10-03 M1 note): its message carries the login name only as `$1` while the pool has
+ * `compileSqlOnError: false`, but `ensureAppLogin` accepts any owner `Knex`, so the guarantee must not depend on how
+ * the caller built it.
+ */
+async function withFixedFailure<T>(step: () => Promise<T>): Promise<T> {
+    try {
+        return await step();
+    } catch (error) {
+        throw ddlFailed(error);
+    }
+}
+
+/** `pg_roles` + membership + ownership facts for the login, or `undefined` when it does not exist. */
+async function existingRole(conn: Knex.Transaction, user: string): Promise<ExistingAppRoleRow | undefined> {
+    const result = await conn.raw<{ rows: ExistingAppRoleRow[] }>(EXISTING_ROLE_SQL, [APP_GROUP_ROLE, user]);
+    return result.rows[0];
+}
+
+/** Anything a fresh `CREATE ROLE … IN ROLE vcare_app` would not give the login makes the take-over unsafe. */
+function refusesTakeover(role: ExistingAppRoleRow): boolean {
+    return role.privileged || role.owns_objects || role.has_other_memberships;
 }
 
 /** `format(<template>, ...args)` evaluated by PostgreSQL, so `%I`/`%L` quoting is the server's, never ours. */
@@ -79,23 +116,23 @@ export function parseAppLoginUrl(appDatabaseUrl: string): AppLoginCredentials {
  * PostgreSQL does the quoting, nothing is concatenated here. Logs `app_login_ensured { created }` only: never the user
  * name, the password, or a URL. Keep server-side `log_statement` off while it runs (runbook).
  *
- * An existing role that is privileged (`SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION`, `BYPASSRLS`) or owns
- * objects is REFUSED with `app_login_role_privileged` instead of being taken over or demoted: resetting it could
- * silently strip a real operator role that `DATABASE_URL` names by mistake, and a `CREATEROLE`-only owner cannot
- * change those attributes anyway. Every DDL failure is rethrown as `app_login_ddl_failed` (SQLSTATE only).
+ * An existing role that is privileged (`SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION`, `BYPASSRLS`), owns
+ * objects, or is a direct member of any role other than `vcare_app` is REFUSED with `app_login_role_privileged`
+ * (before any DDL; the transaction rolls back) instead of being taken over or demoted: resetting it could silently
+ * strip a real operator role that `DATABASE_URL` names by mistake, and a `CREATEROLE`-only owner cannot change those
+ * attributes anyway. Every failure of the role check or the DDL is rethrown as `app_login_ddl_failed` (SQLSTATE only).
  */
 export async function ensureAppLogin(owner: Knex, appDatabaseUrl: string): Promise<AppLoginResult> {
     const { user, password } = parseAppLoginUrl(appDatabaseUrl);
 
     const created = await owner.transaction(async (trx) => {
-        const existing = await trx.raw<{ rows: ExistingAppRoleRow[] }>(EXISTING_ROLE_SQL, [user]);
-        const role = existing.rows[0];
-        if (role !== undefined && (role.privileged || role.owns_objects)) {
-            throw new Error("app_login_role_privileged");
+        const role = await withFixedFailure(() => existingRole(trx, user));
+        if (role !== undefined && refusesTakeover(role)) {
+            throw roleRefused();
         }
         const absent = role === undefined;
 
-        try {
+        await withFixedFailure(async () => {
             const statements = absent
                 ? [
                       await buildDdl(
@@ -113,9 +150,7 @@ export async function ensureAppLogin(owner: Knex, appDatabaseUrl: string): Promi
                 // No bindings: Knex sends the server-built statement verbatim.
                 await trx.raw(ddl);
             }
-        } catch (error) {
-            throw ddlFailed(error);
-        }
+        });
         return absent;
     });
 

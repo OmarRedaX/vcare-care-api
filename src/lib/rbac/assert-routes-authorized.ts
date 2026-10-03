@@ -12,13 +12,38 @@ function stackOf(value: unknown): readonly RouteLayer[] | undefined {
     return Array.isArray(stack) ? (stack as readonly RouteLayer[]) : undefined;
 }
 
-/** A router's own stack, or — for an Express 5 sub-app mounted with `router.use(path, app)` — its `app.router` stack. */
-function childStackOf(value: unknown): readonly RouteLayer[] | undefined {
-    const own = stackOf(value);
-    if (own !== undefined || typeof value !== "function") {
-        return own;
+/**
+ * The router that owns a walkable stack: the router itself, or — for an Express 5 sub-app mounted with
+ * `router.use(path, app)` — its `app.router` (where `app.param(...)` lands too).
+ */
+function routerOf(value: unknown): unknown {
+    if (stackOf(value) !== undefined) {
+        return value;
     }
-    return stackOf((value as { router?: unknown }).router);
+    return typeof value === "function" ? (value as { router?: unknown }).router : undefined;
+}
+
+/** A router's own stack, or a mounted sub-app's `app.router` stack. */
+function childStackOf(value: unknown): readonly RouteLayer[] | undefined {
+    return stackOf(routerOf(value));
+}
+
+/**
+ * `router.param(name, fn)` / `app.param(name, fn)` callbacks live in `router.params[name]` and run for every matched
+ * layer whose path has that param — BEFORE the route's guard and `authorize` (Express 5 `processParams`). They would
+ * load a resource for an anonymous caller and answer before the 401, leaking existence and skipping the ownership 404.
+ * Care never uses them (ids are parsed and loaded inside the service, after `authorize`), so any registration throws.
+ */
+function assertNoParamCallbacks(value: unknown, basePath: string): void {
+    const params = (routerOf(value) as { params?: unknown } | undefined)?.params;
+    if (typeof params !== "object" || params === null) {
+        return;
+    }
+    for (const [name, callbacks] of Object.entries(params)) {
+        if (Array.isArray(callbacks) && callbacks.length > 0) {
+            throw new Error(`param_callback_without_policy: ${name} under ${basePath === "" ? "/" : basePath}`);
+        }
+    }
 }
 
 /** An error handler (`(err, req, res, next)`) only runs after something failed; it can never serve a request first. */
@@ -69,6 +94,7 @@ function walk(value: unknown, basePath: string): void {
     if (stack === undefined) {
         return;
     }
+    assertNoParamCallbacks(value, basePath);
 
     for (const layer of stack) {
         if (layer.route !== undefined) {
@@ -80,6 +106,8 @@ function walk(value: unknown, basePath: string): void {
 
         const handle = layer.handle;
         if (isProbeExempt(handle)) {
+            // Exempt from guard + policy, not from this: a param callback would run on the probe path too.
+            assertNoParamCallbacks(handle, basePath);
             continue;
         }
         if (childStackOf(handle) !== undefined) {
@@ -103,6 +131,8 @@ function walk(value: unknown, basePath: string): void {
  *  - Every non-route layer is a router (walked), a mounted Express sub-app (its `app.router` is walked), a probe-exempt
  *    router (health, skipped), an error handler, or middleware marked `markPreAuth` — anything else throws
  *    `middleware_without_policy`, so `router.use(path, handler)` cannot serve a request unpoliced.
+ *  - No walked router (root `app.router`, nested routers, sub-app routers, probe-exempt routers) has a
+ *    `router.param` / `app.param` callback → `param_callback_without_policy` (they run before the guard).
  * `createPublicApp` / `createInternalApp` call it on `app.router` before mounting test-only `extraRouters`; a violation
  * throws in EVERY environment, so the process cannot start with an unguarded route. Mount prefixes are not recoverable
  * from Express 5 layers, so the reported path is the route's own path (prefixed by `basePath`).

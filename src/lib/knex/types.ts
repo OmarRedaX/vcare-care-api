@@ -42,6 +42,8 @@ export interface AppLoginCredentials {
 export interface ExistingAppRoleRow {
     privileged: boolean;
     owns_objects: boolean;
+    /** A direct `pg_auth_members` membership in any role other than `vcare_app` (owner, `pg_write_all_data`, …). */
+    has_other_memberships: boolean;
 }
 
 export interface AppLoginResult {

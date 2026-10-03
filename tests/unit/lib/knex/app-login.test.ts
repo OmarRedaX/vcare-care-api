@@ -1,5 +1,6 @@
 import type { Knex } from "knex";
 import { ensureAppLogin, parseAppLoginUrl } from "../../../../src/lib/knex/app-login";
+import type { ExistingAppRoleRow } from "../../../../src/lib/knex/types";
 import { Logger, logger } from "../../../../src/lib/logger/logger";
 
 const APP_URL = "postgres://care_app:synthetic-pw-8823@localhost:5434/care_test";
@@ -11,14 +12,15 @@ const APP_URL = "postgres://care_app:synthetic-pw-8823@localhost:5434/care_test"
  */
 function fakeOwner(
     roleExists: boolean,
-    existing: { privileged: boolean; owns_objects: boolean } = { privileged: false, owns_objects: false },
+    existing: ExistingAppRoleRow = { privileged: false, owns_objects: false, has_other_memberships: false },
     executeDdl: (sql: string) => Promise<unknown> = () => Promise.resolve({ rows: [] }),
+    roleCheck: () => Promise<unknown> = () => Promise.resolve({ rows: roleExists ? [existing] : [] }),
 ) {
     const formats: unknown[][] = [];
     const executed: Array<{ sql: string; bindings: unknown }> = [];
     const raw = jest.fn((sql: string, bindings?: unknown[]) => {
         if (sql.includes("FROM pg_roles")) {
-            return Promise.resolve({ rows: roleExists ? [existing] : [] });
+            return roleCheck();
         }
         if (sql.startsWith("SELECT format(")) {
             formats.push(bindings ?? []);
@@ -48,7 +50,10 @@ describe("lib/knex/ensureAppLogin", () => {
         await expect(ensureAppLogin(owner, APP_URL)).resolves.toEqual({ created: true });
 
         expect(String(raw.mock.calls[0]?.[0])).toContain("FROM pg_roles r");
-        expect(raw.mock.calls[0]?.[1]).toEqual(["care_app"]);
+        // Parameterised: the group role and the login name are bindings, never concatenated.
+        expect(raw.mock.calls[0]?.[1]).toEqual(["vcare_app", "care_app"]);
+        expect(String(raw.mock.calls[0]?.[0])).toContain("FROM pg_auth_members m");
+        expect(String(raw.mock.calls[0]?.[0])).not.toContain("care_app");
         expect(formats).toEqual([
             [
                 "CREATE ROLE %I WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L IN ROLE vcare_app",
@@ -108,9 +113,10 @@ describe("lib/knex/ensureAppLogin", () => {
         expect(JSON.stringify(info.mock.calls)).not.toMatch(/care_app|synthetic-pw-8823|localhost/);
     });
 
-    it.each([
-        ["privileged", { privileged: true, owns_objects: false }],
-        ["an object owner", { privileged: false, owns_objects: true }],
+    it.each<[string, ExistingAppRoleRow]>([
+        ["privileged", { privileged: true, owns_objects: false, has_other_memberships: false }],
+        ["an object owner", { privileged: false, owns_objects: true, has_other_memberships: false }],
+        ["a member of another role (owner, pg_write_all_data, …)", { privileged: false, owns_objects: false, has_other_memberships: true }],
     ])("should refuse an existing role that is %s with app_login_role_privileged and run no DDL (L1)", async (_label, existing) => {
         const { owner, formats, executed } = fakeOwner(true, existing);
         await expect(ensureAppLogin(owner, APP_URL)).rejects.toThrow(/^app_login_role_privileged$/);
@@ -148,5 +154,18 @@ describe("lib/knex/ensureAppLogin", () => {
         expect(rejection.message).toBe("app_login_ddl_failed");
         expect(rejection.code).toBe("42501");
         expect(JSON.stringify({ ...rejection, message: rejection.message })).not.toContain("synthetic-pw-8823");
+    });
+
+    it("should rethrow a code-less role-check failure as app_login_ddl_failed, carrying neither the login name nor the message (M1 note)", async () => {
+        // A pool built WITH compileSqlOnError would interpolate the login name into the knex message.
+        const { owner, formats, executed } = fakeOwner(true, undefined, undefined, () =>
+            Promise.reject(new Error("SELECT ... WHERE r.rolname = 'care_app' - Connection terminated unexpectedly")),
+        );
+        const rejection = await ensureAppLogin(owner, APP_URL).catch((error: unknown) => error);
+        expect((rejection as Error).message).toBe("app_login_ddl_failed");
+        expect((rejection as { code?: unknown }).code).toBeUndefined();
+        expect((rejection as Error).stack ?? "").not.toContain("care_app");
+        expect(formats).toEqual([]);
+        expect(executed).toEqual([]);
     });
 });

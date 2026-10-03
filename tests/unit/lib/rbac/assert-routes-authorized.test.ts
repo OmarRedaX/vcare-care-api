@@ -180,6 +180,57 @@ describe("lib/rbac/assertRoutesAuthorized (A8)", () => {
         expect(() => assertRoutesAuthorized(trailingAll)).toThrow("route_without_policy: ALL /s");
     });
 
+    describe("param callbacks (review 2026-10-03, router.param bypass)", () => {
+        const loadById = (_req: unknown, _res: unknown, next: () => void): void => next();
+
+        it("should throw param_callback_without_policy when a module router registers router.param", () => {
+            const moduleRouter = Router();
+            moduleRouter.param("id", loadById);
+            moduleRouter.get("/records/:id", userGuard(), authorize(POLICY), handler);
+            const app = Router();
+            app.use("/api", sealRouter(moduleRouter));
+            expect(() => assertRoutesAuthorized(app, "/api")).toThrow("param_callback_without_policy: id under /api");
+        });
+
+        it("should throw param_callback_without_policy when app.param is registered on the root app", () => {
+            const app = express();
+            app.param("consultationId", loadById);
+            app.get("/consultations/:consultationId", userGuard(), authorize(POLICY), handler);
+            expect(() => assertRoutesAuthorized(app.router)).toThrow(
+                "param_callback_without_policy: consultationId under /",
+            );
+        });
+
+        it("should throw param_callback_without_policy when a mounted sub-app registers app.param", () => {
+            const subApp = express();
+            subApp.param("id", loadById);
+            subApp.get("/inside/:id", userGuard(), authorize(POLICY), handler);
+            const router = Router();
+            router.use("/x", subApp);
+            expect(() => assertRoutesAuthorized(router)).toThrow("param_callback_without_policy: id under /");
+        });
+
+        it("should throw param_callback_without_policy for a probe-exempt router with a param callback", () => {
+            const health = Router();
+            health.param("probe", loadById);
+            health.get("/live/:probe", handler);
+            const app = Router();
+            app.use("/health", markProbeExempt(sealRouter(health)));
+            expect(() => assertRoutesAuthorized(app)).toThrow("param_callback_without_policy: probe under /");
+        });
+
+        it("should pass guarded :param routes on routers, sub-apps, and the root when no param callback is registered", () => {
+            const moduleRouter = Router();
+            moduleRouter.get("/records/:id", userGuard(), authorize(POLICY), handler);
+            const subApp = express();
+            subApp.get("/inside/:id", userGuard(), authorize(POLICY), handler);
+            const app = express();
+            app.use("/api", sealRouter(moduleRouter));
+            app.router.use("/sub", subApp);
+            expect(() => assertRoutesAuthorized(app.router)).not.toThrow();
+        });
+    });
+
     it("should pass a router.route() chain whose every method is guarded and authorized", () => {
         const router = Router();
         router

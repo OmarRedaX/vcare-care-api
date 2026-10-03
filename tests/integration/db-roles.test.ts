@@ -279,6 +279,44 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
         await expect(withPool(urlFor(role, password), (conn) => conn.raw("SELECT 1"))).rejects.toMatchObject({ code: "28P01" });
     });
 
+    it.each([
+        ["the owner role (current_user)", "owner"],
+        ["pg_write_all_data", "pg_write_all_data"],
+    ])(
+        "should refuse to take over an existing login that is a member of %s and leave its membership untouched (review 2026-10-03)",
+        async (_label, granted) => {
+            const role = `care_app_member_${randomBytes(3).toString("hex")}`;
+            const password = `synthetic-${randomBytes(6).toString("hex")}`;
+            throwaway.push(role);
+            await ownerDb.raw(`CREATE ROLE ${role} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD 'synthetic-original-pw-7730'`);
+            const ownerRole = (await ownerDb.raw<{ rows: Array<{ current_user: string }> }>("SELECT current_user")).rows[0]
+                ?.current_user;
+            const parent = granted === "owner" ? ownerRole : granted;
+            expect(parent).toBeDefined();
+            await ownerDb.raw("GRANT ?? TO ??", [parent ?? "", role]);
+
+            const before = await ownerDb.raw<{ rows: Array<{ parents: string[] }> }>(
+                `SELECT array_agg(g.rolname::text ORDER BY g.rolname) AS parents
+                 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
+                 WHERE r.rolname = ?`,
+                [role],
+            );
+            expect(before.rows[0]?.parents).toEqual([parent]);
+
+            await expect(ensureAppLogin(ownerDb, urlFor(role, password))).rejects.toThrow(/^app_login_role_privileged$/);
+
+            const after = await ownerDb.raw<{ rows: Array<{ parents: string[] }> }>(
+                `SELECT array_agg(g.rolname::text ORDER BY g.rolname) AS parents
+                 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
+                 WHERE r.rolname = ?`,
+                [role],
+            );
+            // Refused before any DDL: not added to vcare_app, the other membership kept, the password unchanged.
+            expect(after.rows[0]?.parents).toEqual([parent]);
+            await expect(withPool(urlFor(role, password), (conn) => conn.raw("SELECT 1"))).rejects.toMatchObject({ code: "28P01" });
+        },
+    );
+
     it("should provision the app login through `migrate ensure-app-login` and log only created (CLI)", async () => {
         const result = await runMigrate("ensure-app-login", { DATABASE_URL: APP_URL, MIGRATION_DATABASE_URL: OWNER_URL });
         expect(result.code).toBe(0);
