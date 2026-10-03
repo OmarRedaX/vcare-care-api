@@ -144,6 +144,27 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             expect(appCount.rows[0]?.count).toBe(0);
         });
 
+        it("should step the L2/L3 migrations down to table-level INSERT + PARTITION OF and back up (review 2026-10-03)", async () => {
+            const state = async () => {
+                const result = await migrator.raw<{ rows: Array<{ tbl_ins: boolean; at_ins: boolean; config: string[] }> }>(
+                    `SELECT has_table_privilege('vcare_app', 'audit_logs', 'INSERT') AS tbl_ins,
+                            has_column_privilege('vcare_app', 'audit_logs', 'created_at', 'INSERT') AS at_ins,
+                            (SELECT proconfig FROM pg_proc WHERE proname = 'audit_logs_ensure_partitions') AS config`,
+                );
+                return result.rows[0];
+            };
+            try {
+                await migrator.migrate.down(migrationConfig); // 20261003120100: ATTACH → PARTITION OF, 2 s
+                expect((await state())?.config).toContain("lock_timeout=2s");
+                expect((await state())?.tbl_ins).toBe(false);
+                await migrator.migrate.down(migrationConfig); // 20261003120000: column-level → table-level INSERT
+                expect(await state()).toMatchObject({ tbl_ins: true, at_ins: true });
+            } finally {
+                await restore();
+            }
+            expect(await state()).toMatchObject({ tbl_ins: false, at_ins: false, config: expect.arrayContaining(["lock_timeout=200ms"]) });
+        });
+
         it("should keep vcare_app when another database of the cluster still references it (guarded DROP ROLE)", async () => {
             const other = `care_test_rolecheck_${Date.now()}`;
             await migrator.raw(`CREATE DATABASE ${other}`);

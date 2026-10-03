@@ -2,12 +2,14 @@ import type { RequestHandler } from "express";
 import type Redis from "ioredis";
 import { getEnv } from "../config/env";
 import { RateLimited } from "../error/errors";
+import { onceNext } from "../http/once-next";
 import { captureRoute, routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
 import { isRedisUsable, resolveRedis, withRedis } from "../redis/redis";
 import { MemoryLimiter } from "./memory-limiter";
 import { SLIDING_WINDOW_LUA } from "./sliding-window.lua";
 import type { LimitResult, RateLimitOptions, SlidingWindowRedis } from "./types";
+import { markPreAuth } from "../rbac/markers";
 
 const DEGRADED_LOG_INTERVAL_MS = 60_000;
 const scriptedClients = new WeakSet<Redis>();
@@ -48,7 +50,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
     const memory = new MemoryLimiter();
     const onRedisDown = options.onRedisDown ?? "fallback";
 
-    return (req, res, next) => {
+    return markPreAuth((req, res, next) => {
         captureRoute(req, res);
         const subject = options.subject(req);
         if (subject === null) {
@@ -56,23 +58,9 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
             return;
         }
 
-        // `next` runs at most once; an unexpected throw in the async path is forwarded exactly once, or logged when
-        // the request already moved on (fix #11).
-        let forwarded = false;
-        const forward = (error?: unknown): void => {
-            if (forwarded) {
-                return;
-            }
-            forwarded = true;
-            next(error);
-        };
-        const fail = (error: unknown): void => {
-            if (!forwarded && !res.headersSent) {
-                forward(error);
-                return;
-            }
-            logger.error("rate_limit_internal_error", { requestId: req.requestId, limiter: options.name, error });
-        };
+        // `next` runs at most once; an unexpected throw in the async path is forwarded exactly once, or logged with
+        // the route when the request already moved on (fix #11).
+        const { forward, fail } = onceNext(req, res, next, "rate_limit_internal_error", { limiter: options.name });
 
         const now = options.now?.() ?? Date.now();
         const key = `rl:${options.name}:${subject}`;
@@ -136,5 +124,5 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
             }
             deny({ allowed: false, oldestMs: oldest > 0 ? oldest : null });
         })().catch(fail);
-    };
+    });
 }

@@ -4,7 +4,7 @@ import request from "supertest";
 import { TOKENS } from "../../src/lib/di/tokens";
 import { logger } from "../../src/lib/logger/logger";
 import { REDIS_BREAKER_FAILURE_THRESHOLD, REDIS_BREAKER_OPEN_MS } from "../../src/lib/redis/breaker";
-import { createRedis } from "../../src/lib/redis/redis";
+import { createRedis, REDIS_SOCKET_TIMEOUT_MS } from "../../src/lib/redis/redis";
 import { buildTestApps, withContainerOverrides } from "../helpers/app";
 import { startBlackHoleProxy } from "../helpers/black-hole-proxy";
 import { closeDb, truncateAll } from "../helpers/db";
@@ -66,7 +66,9 @@ describe("regression #10: stalled-but-ready Redis (integration: real Redis behin
                 // Healthy through the proxy.
                 expect((await idem()).status).toBe(201);
 
+                const acceptedBefore = proxy.acceptedCount();
                 proxy.blackHoleEstablished();
+                const stalledAt = Date.now();
                 expect(stalled.status).toBe("ready");
 
                 // Until the breaker opens, each request waits for a command timeout (~500 ms) — at most `threshold` of them.
@@ -84,7 +86,10 @@ describe("regression #10: stalled-but-ready Redis (integration: real Redis behin
                 expect(slow.length).toBeGreaterThanOrEqual(1);
                 expect(slow.length).toBeLessThanOrEqual(REDIS_BREAKER_FAILURE_THRESHOLD);
                 expect(fast?.ms).toBeLessThan(100);
-                expect(stalled.status).toBe("ready"); // still "ready": only the breaker keeps it out of the path
+                if (Date.now() - stalledAt < REDIS_SOCKET_TIMEOUT_MS) {
+                    // Still "ready" before the socket timeout: only the breaker keeps it out of the path.
+                    expect(stalled.status).toBe("ready");
+                }
 
                 // Open breaker: neither middleware touches Redis.
                 const idemOpen = await timed(() => idem());
@@ -101,10 +106,20 @@ describe("regression #10: stalled-but-ready Redis (integration: real Redis behin
                 ).toBe(true);
                 expect(lines.some((line) => line.message === "rate_limiter_degraded")).toBe(true);
 
-                // Recovery: a fresh connection forwards again and, after the open window, one probe is admitted.
-                stalled.disconnect(true);
-                await ensureRedisReady(stalled);
-                await delay(REDIS_BREAKER_OPEN_MS + 200);
+                // Recovery WITHOUT any help from the test (M2): the socket timeout destroys the silent connection,
+                // retryStrategy dials a fresh one through the proxy (which forwards new connections), and after the
+                // open window the breaker admits one probe that closes it.
+                const deadline = stalledAt + REDIS_SOCKET_TIMEOUT_MS + REDIS_BREAKER_OPEN_MS + 3_000;
+                const closed = (): boolean => capture.lines().some((line) => line.message === "redis_breaker_closed");
+                while (!closed() && Date.now() < deadline) {
+                    expect((await idem()).status).toBe(201);
+                    await delay(250);
+                }
+                expect(closed()).toBe(true);
+                expect(Date.now()).toBeLessThanOrEqual(deadline);
+                expect(proxy.acceptedCount()).toBeGreaterThan(acceptedBefore); // it reconnected on its own
+                expect(stalled.status).toBe("ready");
+                expect(capture.lines().some((line) => line.message === "redis_recovered")).toBe(true);
 
                 const key = randomUUID();
                 const before = counters.idem;
@@ -115,7 +130,6 @@ describe("regression #10: stalled-but-ready Redis (integration: real Redis behin
                 expect(replay.status).toBe(201);
                 expect(replay.body).toEqual(stored.body); // replayed from Redis: Redis is used again
                 expect(counters.idem).toBe(before + 1);
-                expect(capture.lines().some((line) => line.message === "redis_breaker_closed")).toBe(true);
             });
         } finally {
             capture.restore();

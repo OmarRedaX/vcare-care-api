@@ -48,6 +48,9 @@ export interface AuditPartitionLoopDeps {
 }
 
 /** A row of `audit_logs_ensure_partitions(int)`. */
+/** One `ensure()` attempt: created/verified, skipped because another worker holds the lock, or failed (logged). */
+export type PartitionEnsureResult = "ensured" | "locked" | "failed";
+
 export interface EnsuredPartitionRow {
     partition_name: string;
     created: boolean;

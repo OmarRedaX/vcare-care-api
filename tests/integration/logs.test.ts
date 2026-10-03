@@ -252,6 +252,12 @@ describe("privacy of captured logs (integration)", () => {
                 .filter((line) => line.message === "request_completed")
                 .map((line) => line.route);
             expect(routes).toEqual(["/api/__test/nested/inner/boom/:id", "/api/__test/nested/guarded/boom/:id"]);
+            // L7: the unhandled_error line itself names the route (on-call needs no join on requestId).
+            const unhandled = capture.lines().filter((line) => line.message === "unhandled_error");
+            expect(unhandled.map((line) => [line.route, line.status])).toEqual([
+                ["GET /api/__test/nested/inner/boom/:id", 500],
+                ["GET /api/__test/nested/guarded/boom/:id", 500],
+            ]);
             expectNoSensitiveStrings(capture, ["/boom/42"]);
         });
 

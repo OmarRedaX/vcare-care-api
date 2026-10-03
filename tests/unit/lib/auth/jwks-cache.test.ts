@@ -3,7 +3,7 @@ import { JwksCache } from "../../../../src/lib/auth/jwks-cache";
 import { JwksFetchError } from "../../../../src/lib/auth/jwks-fetcher";
 import type { JwksFetcher, JwksTimers } from "../../../../src/lib/auth/types";
 import { fakeLogger } from "../../../helpers/fake-logger";
-import { generateSigningKey } from "../../../helpers/tokens";
+import { generateSigningKey, signUserToken } from "../../../helpers/tokens";
 import type { FakeLogger, SigningKey } from "../../../helpers/types";
 
 const URL_WITH_PATH = "http://identity.example.test:3000/.well-known/jwks.json?probe=synthetic-query-4410";
@@ -72,22 +72,25 @@ describe("lib/auth/JwksCache", () => {
     it("should fetch once at start and every 5 min when started (A4)", async () => {
         const { cache, fetcher, timers, log } = harness([doc(k1)]);
         cache.start();
-        await cache.refresh("interval"); // joins the in-flight boot fetch (single-flight)
+        await flush(); // the boot fetch alone — no manual refresh
         expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(log.info).toHaveBeenCalledWith("jwks_refreshed", { trigger: "boot", keys: 1 });
         expect(timers.ms).toBe(JWKS_REFRESH_INTERVAL_MS);
         expect(JWKS_REFRESH_INTERVAL_MS).toBe(5 * MINUTE);
 
-        // Each tick starts its refresh synchronously; `refresh()` joins that in-flight fetch.
+        // The interval tick ALONE fetches and logs trigger "interval" (L8): no manual refresh() before these asserts.
+        expect(log.info).not.toHaveBeenCalledWith("jwks_refreshed", { trigger: "interval", keys: 1 });
         timers.fire();
-        await cache.refresh("interval");
+        await flush();
         await flush();
         expect(fetcher).toHaveBeenCalledTimes(2);
+        expect(log.info).toHaveBeenCalledWith("jwks_refreshed", { trigger: "interval", keys: 1 });
+        expect(log.info).toHaveBeenCalledTimes(2);
         timers.fire();
-        await cache.refresh("interval");
+        await flush();
         await flush();
         expect(fetcher).toHaveBeenCalledTimes(3);
-        expect(log.info).toHaveBeenCalledWith("jwks_refreshed", { trigger: "boot", keys: 1 });
-        expect(log.info).toHaveBeenCalledWith("jwks_refreshed", { trigger: "interval", keys: 1 });
+        expect(log.info).toHaveBeenCalledTimes(3);
         expect(log.metric).toHaveBeenCalledWith("jwks_cache_age_s", 0);
 
         cache.start(); // already started: no second boot fetch, no second interval
@@ -169,8 +172,9 @@ describe("lib/auth/JwksCache", () => {
         ["more than 16 keys", () => ({ keys: Array.from({ length: 17 }, (_, i) => ({ ...k2.publicJwk, kid: `k${i}` })) })],
         ["a non-Ed25519 key", () => ({ keys: [{ ...k2.publicJwk, crv: "X25519" }] })],
         ["an RSA key", () => ({ keys: [{ kty: "RSA", n: "AQAB", e: "AQAB", kid: "rsa", alg: "RS256", use: "sig" }] })],
-        ["an unknown member", () => ({ keys: [{ ...k2.publicJwk }], extra: true })],
         ["a key with a private member", () => ({ keys: [{ ...k2.publicJwk, d: "A".repeat(43) }] })],
+        ["a key with an empty private member", () => ({ keys: [{ ...k2.publicJwk, d: "" }] })],
+        ["a key with a wrong use next to extra members", () => ({ keys: [{ ...k2.publicJwk, use: "enc", key_ops: ["verify"] }] })],
         ["a non-object body", () => "not-a-jwks"],
     ];
 
@@ -185,6 +189,22 @@ describe("lib/auth/JwksCache", () => {
             expect.objectContaining({ trigger: "interval", reason: "invalid_document" }),
         );
         expect(log.metric).toHaveBeenCalledWith("jwks_refresh_failed", 1, { reason: "invalid_document" });
+    });
+
+    it("should strip unknown public members and still verify with the key (contract Jwk allows extras, L5)", async () => {
+        const extended = {
+            keys: [{ ...k2.publicJwk, key_ops: ["verify"], x5t: "synthetic-thumbprint" }],
+            extra: true,
+        };
+        const { cache, log } = harness([extended]);
+        expect(await cache.refresh("boot")).toBe(true);
+        expect(log.warn).not.toHaveBeenCalled();
+
+        const key = await cache.getKey("k2");
+        expect(key).toBeDefined();
+        const token = await signUserToken(k2);
+        const { jwtVerify } = await import("jose");
+        await expect(jwtVerify(token, key as NonNullable<typeof key>)).resolves.toMatchObject({ protectedHeader: { kid: "k2" } });
     });
 
     it("should drop a removed kid when a refresh succeeds (A6)", async () => {

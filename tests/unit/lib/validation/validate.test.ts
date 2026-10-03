@@ -69,6 +69,22 @@ describe("lib/validation/validate", () => {
         expect(error.details).toEqual([{ field: "isAdmin", issue: "is not allowed" }]);
     });
 
+    it('should strip unknown members (top-level and nested) instead of rejecting them when unknownMembers is "strip"', async () => {
+        const dto = await validateBody(
+            PersonDto,
+            { ...valid, isAdmin: true, address: { ...valid.address, extra: 1 } },
+            { unknownMembers: "strip" },
+        );
+        expect(dto).toEqual(valid);
+        expect(dto).not.toHaveProperty("isAdmin");
+        expect(dto.address).not.toHaveProperty("extra");
+    });
+
+    it('should still reject invalid declared members when unknownMembers is "strip"', async () => {
+        const error = await failure(validateBody(PersonDto, { ...valid, count: 99, isAdmin: true }, { unknownMembers: "strip" }));
+        expect(error.details.map((detail) => detail.field)).toEqual(["count"]);
+    });
+
     it("should report dotted paths when a nested property fails", async () => {
         const error = await failure(validateBody(PersonDto, { ...valid, address: { city: "Very long city" } }));
         expect(error.details).toEqual([{ field: "address.city", issue: expect.any(String) as string }]);

@@ -72,7 +72,7 @@ describe("lib/audit/buildAuditPartitionLoop", () => {
 
     it("should skip and log audit_partitions_locked_elsewhere when the advisory lock is not acquired (A15)", async () => {
         const { loop: built, statements, log } = loop({ locked: false });
-        await built.tick(live());
+        await expect(built.tick(live())).resolves.toBe("incomplete"); // `--once` exits 1 (L4)
         expect(log.debug).toHaveBeenCalledWith("audit_partitions_locked_elsewhere");
         expect(statements.some((statement) => statement.sql.includes("audit_logs_ensure_partitions"))).toBe(false);
         expect(log.metric).not.toHaveBeenCalledWith("audit_partition_missing", expect.anything());
@@ -88,7 +88,7 @@ describe("lib/audit/buildAuditPartitionLoop", () => {
                 { partition_name: "audit_logs_y2026m12", created: true },
             ],
         });
-        await built.tick(live());
+        await expect(built.tick(live())).resolves.toBe("done");
         expect(log.info).toHaveBeenCalledWith("audit_partitions_ensured", {
             created: ["audit_logs_y2026m11", "audit_logs_y2026m12"],
             checked: 3,
@@ -101,7 +101,7 @@ describe("lib/audit/buildAuditPartitionLoop", () => {
             code: "23514",
         });
         const { loop: built, log } = loop({ ensure: failure });
-        await expect(built.tick(live())).resolves.toBeUndefined();
+        await expect(built.tick(live())).resolves.toBe("incomplete"); // not thrown; `--once` exits 1 (L4)
         expect(log.error).toHaveBeenCalledWith("audit_partition_missing", { error: failure });
         expect(log.metric).toHaveBeenCalledWith("audit_partition_missing", 1);
         expect(log.metric).not.toHaveBeenCalledWith("audit_partition_missing", 0);
@@ -135,7 +135,7 @@ describe("lib/audit/buildAuditPartitionLoop", () => {
         const { loop: built, statements, transaction } = loop({ ensure: [] });
         const controller = new AbortController();
         controller.abort();
-        await built.tick(controller.signal);
+        await expect(built.tick(controller.signal)).resolves.toBeUndefined();
         expect(transaction).not.toHaveBeenCalled();
         expect(statements).toHaveLength(0);
     });

@@ -38,6 +38,12 @@ export interface AppLoginCredentials {
     password: string;
 }
 
+/** `ensureAppLogin`'s check of an existing app role (snake_case: the raw `pg_roles` row). */
+export interface ExistingAppRoleRow {
+    privileged: boolean;
+    owns_objects: boolean;
+}
+
 export interface AppLoginResult {
     /** `true` when the login was created; `false` when it existed and its password and membership were re-synced. */
     created: boolean;

@@ -2,7 +2,17 @@ import type Redis from "ioredis";
 import { logger } from "../../../../src/lib/logger/logger";
 import { container } from "../../../../src/lib/di/container";
 import { TOKENS } from "../../../../src/lib/di/tokens";
-import { closeRedis, createRedis, isRedisReady, probeRedis, redis, resolveRedis } from "../../../../src/lib/redis/redis";
+import { REDIS_BREAKER_OPEN_MS } from "../../../../src/lib/redis/breaker";
+import {
+    closeRedis,
+    createRedis,
+    isRedisReady,
+    probeRedis,
+    redis,
+    REDIS_COMMAND_TIMEOUT_MS,
+    REDIS_SOCKET_TIMEOUT_MS,
+    resolveRedis,
+} from "../../../../src/lib/redis/redis";
 
 function fakeRedis(status: string, ping: () => Promise<string>): Redis & { pingMock: jest.Mock } {
     const pingMock = jest.fn(ping);
@@ -57,6 +67,8 @@ describe("lib/redis", () => {
                 maxRetriesPerRequest: 1,
                 connectTimeout: 2_000,
                 commandTimeout: 500,
+                // M2: a stalled/half-open socket with commands outstanding is destroyed and redialled
+                socketTimeout: REDIS_SOCKET_TIMEOUT_MS,
                 // parity e: a command on the wire at disconnect is never replayed after the reconnect
                 autoResendUnfulfilledCommands: false,
                 connectionName: "care-unit",
@@ -68,6 +80,11 @@ describe("lib/redis", () => {
         } finally {
             client.disconnect();
         }
+    });
+
+    it("should order the timeouts command < socket < breaker open window (M2)", () => {
+        expect(REDIS_COMMAND_TIMEOUT_MS).toBeLessThan(REDIS_SOCKET_TIMEOUT_MS);
+        expect(REDIS_SOCKET_TIMEOUT_MS).toBeLessThan(REDIS_BREAKER_OPEN_MS);
     });
 
     it("should log one line per transition when the client goes down and recovers", () => {

@@ -7,6 +7,21 @@ import { logger } from "../logger/logger";
 import { breakerFor } from "./breaker";
 import type { CreateRedisOptions } from "./types";
 
+/** A command that has no reply after this rejects (the connection is kept). */
+export const REDIS_COMMAND_TIMEOUT_MS = 500;
+
+/**
+ * A connection that has commands outstanding and receives NO byte for this long is destroyed, so `retryStrategy` dials
+ * a fresh one (review 2026-10-03, M2). Without it a half-open socket (an un-RST failover) stays `ready` until the
+ * kernel gives up (~15 min). Above `REDIS_COMMAND_TIMEOUT_MS`, so one slow reply never kills a healthy connection;
+ * below `REDIS_BREAKER_OPEN_MS` (5 s), so the breaker's half-open probe already lands on the new connection.
+ *
+ * The breaker deliberately does NOT disconnect when it opens: it also opens on slow-but-alive replies (a loaded
+ * server), where dropping the connection would add reconnect storms without fixing anything; a dead or stalled socket
+ * is exactly what this timeout detects.
+ */
+export const REDIS_SOCKET_TIMEOUT_MS = 2_000;
+
 /**
  * Redis is Tier 2 (ADR 0006): its loss degrades idempotency and rate limiting but never fails a request
  * or readiness. `enableOfflineQueue: false` makes commands fail fast while down so the fallback paths
@@ -18,7 +33,8 @@ export function createRedis(url: string, options?: CreateRedisOptions): Redis {
         enableOfflineQueue: false,
         maxRetriesPerRequest: 1,
         connectTimeout: 2_000,
-        commandTimeout: 500,
+        commandTimeout: REDIS_COMMAND_TIMEOUT_MS,
+        socketTimeout: REDIS_SOCKET_TIMEOUT_MS,
         retryStrategy: (attempt: number) => Math.min(attempt * 200, 2_000),
         // Never replay a command that was on the wire when the connection dropped: its request has long given up
         // (an idempotency SET NX would strand a lock; a rate-limit hit would be counted twice).

@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import type { Knex } from "knex";
+import { AuditRecorder } from "../../src/lib/audit/audit";
 import { ensureAppLogin } from "../../src/lib/knex/app-login";
 import { createKnex, db } from "../../src/lib/knex/knex";
+import { logger } from "../../src/lib/logger/logger";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 jest.setTimeout(60_000);
@@ -129,21 +131,61 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
         });
     });
 
-    it("should grant INSERT and SELECT but nothing else on every partition the function creates", async () => {
-        const result = await ownerDb.raw<{ rows: Array<{ relname: string; ins: boolean; sel: boolean; upd: boolean; del: boolean; trunc: boolean }> }>(
+    it("should grant column-level INSERT and SELECT but nothing else on the parent and every partition (L2)", async () => {
+        const result = await ownerDb.raw<{
+            rows: Array<{ relname: string; tbl_ins: boolean; col_ins: boolean; id_ins: boolean; at_ins: boolean; sel: boolean; upd: boolean; del: boolean; trunc: boolean }>;
+        }>(
             `SELECT c.relname,
-                    has_table_privilege('vcare_app', c.oid, 'INSERT') AS ins,
+                    has_table_privilege('vcare_app', c.oid, 'INSERT') AS tbl_ins,
+                    has_column_privilege('vcare_app', c.oid, 'metadata', 'INSERT') AS col_ins,
+                    has_column_privilege('vcare_app', c.oid, 'id', 'INSERT') AS id_ins,
+                    has_column_privilege('vcare_app', c.oid, 'created_at', 'INSERT') AS at_ins,
                     has_table_privilege('vcare_app', c.oid, 'SELECT') AS sel,
                     has_table_privilege('vcare_app', c.oid, 'UPDATE') AS upd,
                     has_table_privilege('vcare_app', c.oid, 'DELETE') AS del,
                     has_table_privilege('vcare_app', c.oid, 'TRUNCATE') AS trunc
-             FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
-             WHERE i.inhparent = 'audit_logs'::regclass`,
+             FROM pg_class c
+             WHERE c.oid = 'audit_logs'::regclass
+                OR c.oid IN (SELECT inhrelid FROM pg_inherits WHERE inhparent = 'audit_logs'::regclass)`,
         );
-        expect(result.rows.length).toBeGreaterThanOrEqual(4); // default + current + 2 ahead
+        expect(result.rows.length).toBeGreaterThanOrEqual(5); // parent + default + current + 2 ahead
         for (const row of result.rows) {
-            expect(row).toEqual({ relname: row.relname, ins: true, sel: true, upd: false, del: false, trunc: false });
+            expect(row).toEqual({
+                relname: row.relname,
+                tbl_ins: false,
+                col_ins: true,
+                id_ins: false,
+                at_ins: false,
+                sel: true,
+                upd: false,
+                del: false,
+                trunc: false,
+            });
         }
+    });
+
+    it("should reject care_app inserts that set created_at or id while AuditRecorder.record still inserts (L2)", async () => {
+        const columns = "actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata";
+        await expect(
+            db.raw(`INSERT INTO audit_logs (${columns}, created_at) VALUES (NULL, 'system', 'test.backdated', 'test_entity', 1, NULL, '{}', '2020-01-01T00:00:00Z')`),
+        ).rejects.toMatchObject({ code: "42501" });
+        await expect(
+            db.raw(`INSERT INTO audit_logs (id, ${columns}) VALUES (1, NULL, 'system', 'test.duplicate', 'test_entity', 1, NULL, '{}')`),
+        ).rejects.toMatchObject({ code: "42501" });
+        // Directly into a partition too (the per-partition grant is column-level as well).
+        await expect(
+            db.raw(`INSERT INTO audit_logs_default (${columns}, created_at) VALUES (NULL, 'system', 'test.parked', 'test_entity', 1, NULL, '{}', '2099-01-01T00:00:00Z')`),
+        ).rejects.toMatchObject({ code: "42501" });
+
+        const recorder = new AuditRecorder({ logger });
+        await db.transaction((trx) =>
+            recorder.record(trx, { actor: { kind: "system" }, action: "test.performed", entityType: "test_entity", entityId: 7, metadata: {} }),
+        );
+        const rows = await ownerDb.raw<{ rows: Array<{ count: number }> }>(
+            "SELECT count(*)::int AS count FROM audit_logs WHERE action = 'test.performed' AND entity_id = 7",
+        );
+        expect(rows.rows[0]?.count).toBe(1);
+        await truncateAll(); // later cases count audit rows from zero
     });
 
     it("should pin the function's search_path, lock_timeout, SECURITY DEFINER, and owner", async () => {
@@ -155,7 +197,7 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
         expect(result.rows).toHaveLength(1);
         const fn = result.rows[0];
         expect(fn?.prosecdef).toBe(true);
-        expect(fn?.proconfig).toEqual(expect.arrayContaining(["search_path=pg_catalog, pg_temp", "lock_timeout=2s"]));
+        expect(fn?.proconfig).toEqual(expect.arrayContaining(["search_path=pg_catalog, pg_temp", "lock_timeout=200ms"]));
         expect(fn?.owner).toBe(new URL(OWNER_URL).username);
         expect(fn?.public_exec).toBe(false);
     });
@@ -218,6 +260,23 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
             await expect(conn.raw("SELECT count(*) FROM audit_logs")).resolves.toBeDefined();
             await expect(conn.raw("DELETE FROM audit_logs")).rejects.toMatchObject({ code: "42501" });
         });
+    });
+
+    it("should refuse to take over an existing login that holds CREATEDB and leave it untouched (L1)", async () => {
+        const role = `care_app_priv_${randomBytes(3).toString("hex")}`;
+        const password = `synthetic-${randomBytes(6).toString("hex")}`;
+        throwaway.push(role);
+        await ownerDb.raw(`CREATE ROLE ${role} WITH LOGIN CREATEDB PASSWORD 'synthetic-original-pw-5521'`);
+
+        await expect(ensureAppLogin(ownerDb, urlFor(role, password))).rejects.toThrow(/^app_login_role_privileged$/);
+
+        const attrs = await ownerDb.raw<{ rows: Array<Record<string, boolean>> }>(
+            `SELECT rolcreatedb, pg_has_role(rolname, 'vcare_app', 'MEMBER') AS member FROM pg_roles WHERE rolname = ?`,
+            [role],
+        );
+        // Refused, not demoted: no attribute, membership, or password change happened (the transaction rolled back).
+        expect(attrs.rows[0]).toEqual({ rolcreatedb: true, member: false });
+        await expect(withPool(urlFor(role, password), (conn) => conn.raw("SELECT 1"))).rejects.toMatchObject({ code: "28P01" });
     });
 
     it("should provision the app login through `migrate ensure-app-login` and log only created (CLI)", async () => {

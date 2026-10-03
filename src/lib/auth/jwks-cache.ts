@@ -188,7 +188,8 @@ export class JwksCache implements JwksStatusSource, KeySource {
     private async importKeys(document: unknown): Promise<Map<string, CryptoKey> | null> {
         let parsed: JwksDocumentDto;
         try {
-            parsed = await validateBody(JwksDocumentDto, document);
+            // Extra public members are allowed by the contract and stripped; `d` and the six members stay strict.
+            parsed = await validateBody(JwksDocumentDto, document, { unknownMembers: "strip" });
         } catch {
             return null;
         }

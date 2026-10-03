@@ -1,11 +1,11 @@
-import type { WorkerLoop } from "../worker/types";
+import type { TickOutcome, WorkerLoop } from "../worker/types";
 import {
     AUDIT_DEFAULT_SAMPLE_LIMIT,
     AUDIT_PARTITION_INTERVAL_MS,
     AUDIT_PARTITION_LOCK_KEY,
     AUDIT_PARTITION_LOOP_NAME,
 } from "./constants";
-import type { AuditPartitionLoopDeps, EnsuredPartitionRow } from "./types";
+import type { AuditPartitionLoopDeps, EnsuredPartitionRow, PartitionEnsureResult } from "./types";
 
 /**
  * care-worker loop `audit-partitions` (access spec §3.6, ADR 0009): daily, ensure the monthly `audit_logs` partitions
@@ -15,20 +15,24 @@ import type { AuditPartitionLoopDeps, EnsuredPartitionRow } from "./types";
  * The worker connects as `care_app`, so creation goes through the owner-defined SECURITY DEFINER function
  * `audit_logs_ensure_partitions(int)` (ADR 0018). Concurrent workers serialize on a TRANSACTION-scoped advisory lock
  * (`pg_try_advisory_xact_lock`): it releases on commit or rollback, so a pooled connection never leaks a held lock.
+ *
+ * The tick never throws for an ensure failure (the default-partition check must still run); it returns
+ * `"incomplete"` unless the partitions were ensured by THIS tick, so `worker --once audit-partitions` exits 1 when the
+ * lock was held elsewhere or the function failed (runbook → AuditPartitionMissing). The loop runner ignores it.
  */
 export function buildAuditPartitionLoop(deps: AuditPartitionLoopDeps): WorkerLoop {
     const { db, logger, monthsAhead } = deps;
 
-    const ensure = async (): Promise<void> => {
+    const ensure = async (): Promise<PartitionEnsureResult> => {
         try {
-            await db.transaction(async (trx) => {
+            return await db.transaction(async (trx): Promise<PartitionEnsureResult> => {
                 const lock = await trx.raw<{ rows: Array<{ locked: boolean }> }>(
                     "SELECT pg_try_advisory_xact_lock(?) AS locked",
                     [AUDIT_PARTITION_LOCK_KEY],
                 );
                 if (lock.rows[0]?.locked !== true) {
                     logger.debug("audit_partitions_locked_elsewhere");
-                    return;
+                    return "locked";
                 }
                 const result = await trx.raw<{ rows: EnsuredPartitionRow[] }>(
                     "SELECT partition_name, created FROM audit_logs_ensure_partitions(?)",
@@ -39,12 +43,14 @@ export function buildAuditPartitionLoop(deps: AuditPartitionLoopDeps): WorkerLoo
                     checked: result.rows.length,
                 });
                 logger.metric("audit_partition_missing", 0);
+                return "ensured";
             });
         } catch (error) {
             // Lock timeout, a DEFAULT row inside the new month's range, permissions. Not rethrown: the default-partition
             // check below must still run. The error is serialized without its message for database errors.
             logger.error("audit_partition_missing", { error });
             logger.metric("audit_partition_missing", 1);
+            return "failed";
         }
     };
 
@@ -63,12 +69,13 @@ export function buildAuditPartitionLoop(deps: AuditPartitionLoopDeps): WorkerLoo
     return {
         name: AUDIT_PARTITION_LOOP_NAME,
         intervalMs: AUDIT_PARTITION_INTERVAL_MS,
-        tick: async (signal: AbortSignal): Promise<void> => {
+        tick: async (signal: AbortSignal): Promise<TickOutcome | void> => {
             if (signal.aborted) {
                 return;
             }
-            await ensure();
+            const ensured = await ensure();
             await checkDefaultPartition();
+            return ensured === "ensured" ? "done" : "incomplete";
         },
     };
 }

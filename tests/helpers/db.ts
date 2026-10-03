@@ -1,6 +1,10 @@
 import type { Knex } from "knex";
 import { getEnv } from "../../src/lib/config/env";
 import { createKnex, db, probeDb } from "../../src/lib/knex/knex";
+import { assertTestDatabase, assertTestDatabaseUrl } from "./test-database";
+
+// L9: refuse at import when the owner URL does not name a *_test database (or NODE_ENV is not test) …
+assertTestDatabaseUrl(getEnv().MIGRATION_DATABASE_URL);
 
 /**
  * The OWNER pool (`MIGRATION_DATABASE_URL`, user `care`) — setup, teardown, and grant assertions only (ADR 0018). The
@@ -14,11 +18,19 @@ export const ownerDb: Knex = createKnex({
     applicationName: "care-test",
 });
 
+/** … and before the first destructive statement, ask the server itself (`current_database()`). */
+const verified = new WeakSet<Knex>();
+
 /**
  * Truncates every parent table in `public` (plain or partitioned; partitions go with their parent) except Knex's own
- * bookkeeping, restarting identities. Runs as the owner by default. No-op while no tables exist.
+ * bookkeeping, restarting identities. Runs as the owner by default. No-op while no tables exist. Refuses (once per
+ * pool) unless the server reports a *_test database (L9).
  */
 export async function truncateAll(conn: Knex = ownerDb): Promise<void> {
+    if (!verified.has(conn)) {
+        await assertTestDatabase(conn);
+        verified.add(conn);
+    }
     const result = await conn.raw<{ rows: Array<{ relname: string }> }>(
         `SELECT c.relname
          FROM pg_class c

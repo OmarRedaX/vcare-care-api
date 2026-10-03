@@ -143,6 +143,28 @@ describe("lib/auth/fetchJwksDocument", () => {
         expect(Date.now() - startedAt).toBeLessThan(1_500);
     });
 
+    it("should time out within ~1.5x the budget when the body trickles one byte per 150 ms (body phase, L8)", async () => {
+        // Each chunk arrives well inside undici's per-chunk bodyTimeout, so only the ONE combined budget (connect +
+        // headers + body, AbortSignal.timeout) can stop it; without it the single-flight fetch would hang.
+        const BUDGET_MS = 400; // the isolated-registry budget above
+        let trickle: NodeJS.Timeout | undefined;
+        handler = (_req, res) => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.write('{"keys":[');
+            trickle = setInterval(() => res.write(" "), 150);
+            res.on("close", () => clearInterval(trickle));
+        };
+        const startedAt = Date.now();
+        try {
+            await expect(reasonOf(fetchJwksDocument(`${base}/jwks`, signal()))).resolves.toEqual({ reason: "timeout" });
+        } finally {
+            clearInterval(trickle);
+        }
+        const elapsed = Date.now() - startedAt;
+        expect(elapsed).toBeGreaterThanOrEqual(BUDGET_MS - 50);
+        expect(elapsed).toBeLessThan(BUDGET_MS * 1.5 + 150); // + one trickle interval of scheduling slack
+    });
+
     it("should reject with network when nothing listens on the port", async () => {
         await expect(reasonOf(fetchJwksDocument("http://127.0.0.1:1/jwks", signal()))).resolves.toEqual({
             reason: "network",
@@ -158,14 +180,19 @@ describe("lib/auth/fetchJwksDocument", () => {
     });
 
     it("should send X-Request-Id from the request context when one is open, else a generated UUID", async () => {
-        handler = json('{"keys":[]}');
+        // Own capture keyed by path: an aborted request of an earlier case may still reach the server late.
+        const seen = new Map<string, unknown>();
+        handler = (req, res) => {
+            seen.set(req.url ?? "", req.headers["x-request-id"]);
+            json('{"keys":[]}')(req, res);
+        };
         const requestId = "6fa459ea-ee8a-4ca4-894e-db77e160355e";
-        await requestContext.run({ requestId }, () => fetchJwksDocument(`${base}/jwks`, signal()));
-        await fetchJwksDocument(`${base}/jwks`, signal());
+        await requestContext.run({ requestId }, () => fetchJwksDocument(`${base}/jwks-in-context`, signal()));
+        await fetchJwksDocument(`${base}/jwks-no-context`, signal());
 
-        expect(seenHeaders[0]?.["x-request-id"]).toBe(requestId);
-        expect(seenHeaders[1]?.["x-request-id"]).toMatch(UUID);
-        expect(seenHeaders[1]?.["x-request-id"]).not.toBe(requestId);
+        expect(seen.get("/jwks-in-context")).toBe(requestId);
+        expect(seen.get("/jwks-no-context")).toMatch(UUID);
+        expect(seen.get("/jwks-no-context")).not.toBe(requestId);
     });
 
     it("should never put the URL path or the body into the error message", async () => {

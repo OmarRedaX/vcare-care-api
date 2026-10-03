@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { markPreAuth } from "../rbac/markers";
 import { NotFound } from "./errors";
 
 /**
@@ -14,6 +15,6 @@ export const notFound: RequestHandler = (_req, _res, next) => {
  * Express 5's router answers `OPTIONS` on a known path itself (`200 text/plain`, `Allow: GET, HEAD`), bypassing the one
  * error envelope and revealing route shapes to anonymous callers.
  */
-export const optionsNotFound: RequestHandler = (req, _res, next) => {
+export const optionsNotFound: RequestHandler = markPreAuth((req, _res, next) => {
     next(req.method === "OPTIONS" ? NotFound : undefined);
-};
+});

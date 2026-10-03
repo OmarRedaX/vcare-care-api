@@ -1,7 +1,7 @@
 import type { Knex } from "knex";
 import { isUuid } from "../../pkg/utils/uuid";
 import type { Logger } from "../logger/logger";
-import { normalizeKey, REDACTED_KEYS } from "../logger/redact";
+import { isRedactedKey } from "../logger/redact";
 import { currentRequestId } from "../logger/request-context";
 import { isRole } from "../rbac/roles";
 import type { AuthContext } from "../types/types";
@@ -16,7 +16,6 @@ import type { AuditActor, AuditEntry, AuditMetadataValue, AuditRecorderOptions, 
 const ACTION_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 const ENTITY_TYPE_PATTERN = /^[a-z][a-z0-9_]*$/;
 const METADATA_KEY_PATTERN = /^[a-zA-Z][a-zA-Z0-9]*$/;
-const REDACTED_SET = new Set(REDACTED_KEYS.map(normalizeKey));
 
 /** One statement, explicit columns, no RETURNING (the app role holds INSERT/SELECT only). */
 const INSERT_AUDIT_LOG = `INSERT INTO audit_logs (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata)
@@ -90,7 +89,7 @@ function metadataJson(entry: AuditEntry): string {
     }
     for (const key of keys) {
         // The key is a code identifier (never data), so naming it in the error is safe.
-        if (!METADATA_KEY_PATTERN.test(key) || REDACTED_SET.has(normalizeKey(key))) {
+        if (!METADATA_KEY_PATTERN.test(key) || isRedactedKey(key)) {
             throw invalid(`metadata.${key}`);
         }
         if (!isMetadataValue(metadata[key])) {

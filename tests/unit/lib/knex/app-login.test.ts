@@ -1,27 +1,31 @@
 import type { Knex } from "knex";
 import { ensureAppLogin, parseAppLoginUrl } from "../../../../src/lib/knex/app-login";
-import { logger } from "../../../../src/lib/logger/logger";
+import { Logger, logger } from "../../../../src/lib/logger/logger";
 
 const APP_URL = "postgres://care_app:synthetic-pw-8823@localhost:5434/care_test";
 
 /**
- * An owner-connection stand-in: `SELECT 1 FROM pg_roles` answers per scenario, `SELECT format(...)` returns a marker
+ * An owner-connection stand-in: the `pg_roles` check answers per scenario, `SELECT format(...)` returns a marker
  * built from its bindings (PostgreSQL does the real quoting — proven by the db-roles integration suite), and every
  * other statement is recorded as executed DDL.
  */
-function fakeOwner(roleExists: boolean) {
+function fakeOwner(
+    roleExists: boolean,
+    existing: { privileged: boolean; owns_objects: boolean } = { privileged: false, owns_objects: false },
+    executeDdl: (sql: string) => Promise<unknown> = () => Promise.resolve({ rows: [] }),
+) {
     const formats: unknown[][] = [];
     const executed: Array<{ sql: string; bindings: unknown }> = [];
     const raw = jest.fn((sql: string, bindings?: unknown[]) => {
-        if (sql.startsWith("SELECT 1 FROM pg_roles")) {
-            return Promise.resolve({ rows: roleExists ? [{ present: 1 }] : [] });
+        if (sql.includes("FROM pg_roles")) {
+            return Promise.resolve({ rows: roleExists ? [existing] : [] });
         }
         if (sql.startsWith("SELECT format(")) {
             formats.push(bindings ?? []);
             return Promise.resolve({ rows: [{ ddl: `DDL#${formats.length}` }] });
         }
         executed.push({ sql, bindings });
-        return Promise.resolve({ rows: [] });
+        return executeDdl(sql);
     });
     const trx = { raw };
     const transaction = jest.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(trx));
@@ -43,7 +47,8 @@ describe("lib/knex/ensureAppLogin", () => {
         const { owner, raw, formats, executed } = fakeOwner(false);
         await expect(ensureAppLogin(owner, APP_URL)).resolves.toEqual({ created: true });
 
-        expect(raw.mock.calls[0]).toEqual(["SELECT 1 FROM pg_roles WHERE rolname = ?", ["care_app"]]);
+        expect(String(raw.mock.calls[0]?.[0])).toContain("FROM pg_roles r");
+        expect(raw.mock.calls[0]?.[1]).toEqual(["care_app"]);
         expect(formats).toEqual([
             [
                 "CREATE ROLE %I WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L IN ROLE vcare_app",
@@ -101,5 +106,47 @@ describe("lib/knex/ensureAppLogin", () => {
         expect(info).toHaveBeenCalledTimes(1);
         expect(info).toHaveBeenCalledWith("app_login_ensured", { created: true });
         expect(JSON.stringify(info.mock.calls)).not.toMatch(/care_app|synthetic-pw-8823|localhost/);
+    });
+
+    it.each([
+        ["privileged", { privileged: true, owns_objects: false }],
+        ["an object owner", { privileged: false, owns_objects: true }],
+    ])("should refuse an existing role that is %s with app_login_role_privileged and run no DDL (L1)", async (_label, existing) => {
+        const { owner, formats, executed } = fakeOwner(true, existing);
+        await expect(ensureAppLogin(owner, APP_URL)).rejects.toThrow(/^app_login_role_privileged$/);
+        expect(formats).toEqual([]);
+        expect(executed).toEqual([]);
+        expect(info).not.toHaveBeenCalled();
+    });
+
+    it("should rethrow a code-less DDL failure as app_login_ddl_failed and never log the password (M1)", async () => {
+        // What knex does on a dropped connection: the statement (with the literal password) prefixed to the message.
+        const { owner } = fakeOwner(false, undefined, (sql) =>
+            Promise.reject(new Error(`${sql} PASSWORD 'synthetic-pw-8823' - Connection terminated unexpectedly`)),
+        );
+        const rejection = await ensureAppLogin(owner, APP_URL).catch((error: unknown) => error);
+        expect(rejection).toBeInstanceOf(Error);
+        expect((rejection as Error).message).toBe("app_login_ddl_failed");
+        expect((rejection as { code?: unknown }).code).toBeUndefined();
+        expect((rejection as Error).stack ?? "").not.toContain("synthetic-pw-8823");
+        expect((rejection as { cause?: unknown }).cause).toBeUndefined();
+
+        // src/migrate.ts logs exactly this line on failure, through the real Logger serializer.
+        const lines: string[] = [];
+        const real = new Logger({ level: "debug", service: "care-service", write: (line) => lines.push(line) });
+        real.error("migration_failed", { command: "ensure-app-login", error: rejection });
+        expect(lines).toHaveLength(1);
+        expect(lines.join("")).toContain("app_login_ddl_failed");
+        expect(lines.join("")).not.toContain("synthetic-pw-8823");
+    });
+
+    it("should keep only the SQLSTATE code when the server rejects the DDL (M1)", async () => {
+        const { owner } = fakeOwner(true, undefined, () =>
+            Promise.reject(Object.assign(new Error("ALTER ROLE ... PASSWORD 'synthetic-pw-8823' - permission denied"), { code: "42501" })),
+        );
+        const rejection = (await ensureAppLogin(owner, APP_URL).catch((error: unknown) => error)) as Error & { code?: string };
+        expect(rejection.message).toBe("app_login_ddl_failed");
+        expect(rejection.code).toBe("42501");
+        expect(JSON.stringify({ ...rejection, message: rejection.message })).not.toContain("synthetic-pw-8823");
     });
 });

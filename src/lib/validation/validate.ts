@@ -4,7 +4,7 @@ import type { ValidationError } from "class-validator";
 import { validate } from "class-validator";
 import { ValidationFailed } from "../error/errors";
 import type { ErrorDetail } from "../error/types";
-import type { ValidationSource } from "./types";
+import type { ValidateOptions, ValidationSource } from "./types";
 
 /** Rejected VALUES are never echoed — only the field path and the failed constraint. */
 export function toErrorDetails(errors: ValidationError[]): ErrorDetail[] {
@@ -34,6 +34,7 @@ async function validateInput<T extends object>(
     dto: ClassConstructor<T>,
     input: unknown,
     source: ValidationSource,
+    options?: ValidateOptions,
 ): Promise<T> {
     if (source === "body" && (typeof input !== "object" || input === null || Array.isArray(input))) {
         throw ValidationFailed.withDetails([{ field: "body", issue: "must be a JSON object" }]);
@@ -46,7 +47,7 @@ async function validateInput<T extends object>(
 
     const errors = await validate(instance as object, {
         whitelist: true,
-        forbidNonWhitelisted: true,
+        forbidNonWhitelisted: (options?.unknownMembers ?? "reject") === "reject",
         forbidUnknownValues: true,
         validationError: { target: false, value: false },
     });
@@ -58,8 +59,8 @@ async function validateInput<T extends object>(
     return instance;
 }
 
-export function validateBody<T extends object>(dto: ClassConstructor<T>, input: unknown): Promise<T> {
-    return validateInput(dto, input, "body");
+export function validateBody<T extends object>(dto: ClassConstructor<T>, input: unknown, options?: ValidateOptions): Promise<T> {
+    return validateInput(dto, input, "body", options);
 }
 
 export function validateQuery<T extends object>(dto: ClassConstructor<T>, input: unknown): Promise<T> {

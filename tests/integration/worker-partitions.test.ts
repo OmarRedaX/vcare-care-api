@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { Knex } from "knex";
+import { AuditRecorder } from "../../src/lib/audit/audit";
 import { AUDIT_PARTITION_LOCK_KEY } from "../../src/lib/audit/constants";
 import { buildAuditPartitionLoop } from "../../src/lib/audit/partition-loop";
-import { createKnex } from "../../src/lib/knex/knex";
+import { createKnex, db } from "../../src/lib/knex/knex";
 import { logger } from "../../src/lib/logger/logger";
-import type { WorkerLoop } from "../../src/lib/worker/types";
+import type { TickOutcome, WorkerLoop } from "../../src/lib/worker/types";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 import { captureLogs } from "../helpers/log-capture";
 import type { LogCapture } from "../helpers/types";
@@ -13,6 +14,8 @@ import type { LogCapture } from "../helpers/types";
 jest.setTimeout(60_000);
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** `audit_logs_yYYYYmMM` for the UTC month `offset` months from now. */
 function partition(offset: number): string {
@@ -76,7 +79,7 @@ describe("care-worker audit-partitions loop (integration: real Postgres as care_
     let capture: LogCapture | undefined;
 
     const loopOn = (pool: Knex, monthsAhead = 2): WorkerLoop => buildAuditPartitionLoop({ db: pool, logger, monthsAhead });
-    const tick = (loop: WorkerLoop): Promise<void> => loop.tick(new AbortController().signal);
+    const tick = (loop: WorkerLoop): Promise<TickOutcome | void> => loop.tick(new AbortController().signal);
     const lines = (message: string): Array<Record<string, unknown>> =>
         (capture?.lines() ?? []).filter((line) => line.message === message);
     const metric = (name: string): unknown[] =>
@@ -127,12 +130,14 @@ describe("care-worker audit-partitions loop (integration: real Postgres as care_
             expect.objectContaining({ level: "info", created: [partition(1)], checked: 3 }),
         ]);
         expect(metric("audit_partition_missing")).toEqual([0]);
-        const grants = await ownerDb.raw<{ rows: Array<{ ins: boolean; sel: boolean; upd: boolean; del: boolean }> }>(
-            `SELECT has_table_privilege('vcare_app', ?, 'INSERT') AS ins, has_table_privilege('vcare_app', ?, 'SELECT') AS sel,
+        const grants = await ownerDb.raw<{ rows: Array<{ ins: boolean; col_ins: boolean; at_ins: boolean; sel: boolean; upd: boolean; del: boolean }> }>(
+            `SELECT has_table_privilege('vcare_app', ?, 'INSERT') AS ins, has_column_privilege('vcare_app', ?, 'metadata', 'INSERT') AS col_ins,
+                    has_column_privilege('vcare_app', ?, 'created_at', 'INSERT') AS at_ins, has_table_privilege('vcare_app', ?, 'SELECT') AS sel,
                     has_table_privilege('vcare_app', ?, 'UPDATE') AS upd, has_table_privilege('vcare_app', ?, 'DELETE') AS del`,
-            Array(4).fill(partition(1)),
+            Array(6).fill(partition(1)),
         );
-        expect(grants.rows[0]).toEqual({ ins: true, sel: true, upd: false, del: false });
+        // Column-level INSERT only (L2): the app role can never set id or created_at.
+        expect(grants.rows[0]).toEqual({ ins: false, col_ins: true, at_ins: false, sel: true, upd: false, del: false });
     });
 
     it("should create the configured horizon (AUDIT_PARTITION_MONTHS_AHEAD=4) and nothing on a second tick (A15)", async () => {
@@ -199,8 +204,61 @@ describe("care-worker audit-partitions loop (integration: real Postgres as care_
         expect(await exists(partition(1))).toBe(true);
     });
 
+    it("should not stall a concurrent audit insert while a tick attaches a new month under an open audit transaction (L3)", async () => {
+        await dropPartition(partition(2));
+        const recorder = new AuditRecorder({ logger });
+        const entry = (entityId: number) => ({
+            actor: { kind: "system" as const },
+            action: "test.performed",
+            entityType: "test_entity",
+            entityId,
+            metadata: {},
+        });
+
+        // An in-flight request transaction that has already written its audit row (ROW EXCLUSIVE on audit_logs).
+        let release: () => void = () => undefined;
+        const released = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let inserted: () => void = () => undefined;
+        const holding = new Promise<void>((resolve) => {
+            inserted = resolve;
+        });
+        const holder = db.transaction(async (trx) => {
+            await recorder.record(trx, entry(1));
+            inserted();
+            await released;
+        });
+        await holding;
+
+        let concurrentMs = Number.POSITIVE_INFINITY;
+        try {
+            const ticking = tick(loopOn(poolA)); // creates partition(2) while the holder is open
+            await delay(50); // the tick is attaching (or already done) when the next request audits
+            const startedAt = Date.now();
+            await db.transaction((trx) => recorder.record(trx, entry(2)));
+            concurrentMs = Date.now() - startedAt;
+            await ticking;
+        } finally {
+            release();
+            await holder;
+        }
+
+        // CREATE … PARTITION OF queued every insert behind its ACCESS EXCLUSIVE request (up to lock_timeout 2 s);
+        // ATTACH takes SHARE UPDATE EXCLUSIVE on the parent, which never conflicts with an INSERT.
+        expect(concurrentMs).toBeLessThan(200);
+        expect(lines("audit_partitions_ensured")).toEqual([expect.objectContaining({ created: [partition(2)] })]);
+        expect(lines("audit_partition_missing")).toEqual([]);
+        expect(await exists(partition(2))).toBe(true);
+        const routed = await ownerDb.raw<{ rows: Array<{ partition: string }> }>(
+            "SELECT DISTINCT tableoid::regclass::text AS partition FROM audit_logs",
+        );
+        expect(routed.rows).toEqual([{ partition: partition(0) }]);
+    });
+
     it("should report audit_default_partition_nonempty with the row gauge when a far-future row lands in the default partition (A16)", async () => {
-        await poolA.raw(
+        // As the owner: care_app cannot set created_at (column-level INSERT, L2).
+        await ownerDb.raw(
             `INSERT INTO audit_logs (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata, created_at)
              VALUES (NULL, 'system', 'test.performed', 'test_entity', 1, NULL, '{}', '2099-06-01T00:00:00Z')`,
         );
@@ -212,13 +270,14 @@ describe("care-worker audit-partitions loop (integration: real Postgres as care_
 
     it("should report audit_partition_missing when a default-partition row blocks a new month, without failing the tick (A16)", async () => {
         await dropPartition(partition(2));
-        await poolA.raw(
+        // As the owner: care_app cannot set created_at (column-level INSERT, L2).
+        await ownerDb.raw(
             `INSERT INTO audit_logs (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata, created_at)
              VALUES (NULL, 'system', 'test.performed', 'test_entity', 1, NULL, '{}', ?)`,
             [midMonth(2)],
         );
 
-        await expect(tick(loopOn(poolA))).resolves.toBeUndefined();
+        await expect(tick(loopOn(poolA))).resolves.toBe("incomplete");
 
         const missing = lines("audit_partition_missing");
         expect(missing).toHaveLength(1);
@@ -245,5 +304,47 @@ describe("care-worker audit-partitions loop (integration: real Postgres as care_
             loop: "no-such-loop",
             loops: ["audit-partitions"],
         });
+    });
+
+    it("should exit 1 for `worker --once audit-partitions` when a default-partition row blocks a new month (L4)", async () => {
+        await dropPartition(partition(2));
+        await ownerDb.raw(
+            `INSERT INTO audit_logs (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata, created_at)
+             VALUES (NULL, 'system', 'test.performed', 'test_entity', 1, NULL, '{}', ?)`,
+            [midMonth(2)],
+        );
+
+        const once = await runWorker(["--once", "audit-partitions"]);
+        expect(once.code).toBe(1);
+        const messages = jsonLines(once.output).map((line) => line.message);
+        expect(messages).toEqual(expect.arrayContaining(["audit_partition_missing", "worker_once_incomplete"]));
+        expect(messages).not.toContain("worker_once_completed");
+        expect(await exists(partition(2))).toBe(false);
+        // afterEach truncates the default row and re-runs a tick, which recreates the month.
+    });
+
+    it("should exit 1 for `worker --once audit-partitions` while another session holds the advisory lock (L4)", async () => {
+        let release: () => void = () => undefined;
+        const released = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let locked: () => void = () => undefined;
+        const holding = new Promise<void>((resolve) => {
+            locked = resolve;
+        });
+        const holder = ownerDb.transaction(async (trx) => {
+            await trx.raw("SELECT pg_advisory_xact_lock(?)", [AUDIT_PARTITION_LOCK_KEY]);
+            locked();
+            await released;
+        });
+        await holding;
+        try {
+            const once = await runWorker(["--once", "audit-partitions"]);
+            expect(once.code).toBe(1);
+            expect(jsonLines(once.output).map((line) => line.message)).toContain("worker_once_incomplete");
+        } finally {
+            release();
+            await holder;
+        }
     });
 });
