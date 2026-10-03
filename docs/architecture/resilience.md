@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
 related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement]
 ---
@@ -27,7 +27,7 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | Postgres query (client side) | 3 s `query_timeout` (statement timeout + 1 s) | fires only when the server cannot answer (partition, failover without a TCP reset); the connection is then discarded (below) |
 | Postgres TCP keepalive | first probe after 10 s idle | detects a dead peer long before kernel retransmission gives up (~15 min) |
 | Readiness probes | 500 ms each (Postgres `SELECT 1` on the dedicated probe pool, Redis `PING`), run concurrently | a probe that rejects or times out reports `down` |
-| Redis connect / command | 2 s / **500 ms**; no offline queue; 1 retry per request; reconnect `min(n × 200, 2000)` ms forever | cache-miss / fallback path on timeout. A Redis that stalls while still connected opens the per-client breaker after 3 consecutive failures for 5 s (one half-open probe then decides): at most 3 × 500 ms per 5 s per process on the idempotency and rate-limit paths (fixed [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10)) |
+| Redis connect / command / socket | 2 s / **500 ms** / **2 s** (`socketTimeout`: a connection with commands outstanding and no byte for 2 s is destroyed and redialled — a half-open socket after an un-RST failover recovers in seconds, not ~15 min); no offline queue; 1 retry per request; reconnect `min(n × 200, 2000)` ms forever | cache-miss / fallback path on timeout. A Redis that stalls while still connected opens the per-client breaker after 3 consecutive failures for 5 s (one half-open probe then decides): at most 3 × 500 ms per 5 s per process on the idempotency and rate-limit paths (fixed [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10)) |
 | HTTP server | `requestTimeout` 30 s, `headersTimeout` 66 s, `keepAliveTimeout` 65 s | |
 | Graceful shutdown | `SHUTDOWN_TIMEOUT_MS` (10 s) for drain **and** resource close | [infrastructure.md](./infrastructure.md) → Boot and shutdown |
 

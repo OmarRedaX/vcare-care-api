@@ -152,6 +152,8 @@ describe("lib/error/errorHandler", () => {
         expect(line).toBeDefined();
         expect(line?.level).toBe("error");
         expect(line?.requestId).toBe(REQUEST_ID);
+        expect(line?.route).toBe("GET /t"); // L7
+        expect(line?.status).toBe(500);
         const error = line?.error as { name: string; message?: string; stack?: string };
         expect(error.name).toBe("Error");
         expect(error.message).toBe("synthetic unknown failure");
@@ -197,7 +199,7 @@ describe("lib/error/errorHandler", () => {
 
         const errorLines = logs.lines().filter((entry) => entry.message === "unhandled_error");
         expect(errorLines).toHaveLength(1);
-        expect(errorLines[0]?.code).toBe("InternalError");
+        expect(errorLines[0]).toMatchObject({ code: "InternalError", route: "GET /t", status: 500 });
     });
 
     it("should not write a second body when headers were already sent", async () => {
@@ -211,7 +213,10 @@ describe("lib/error/errorHandler", () => {
 
         expect(res.status).toBe(200);
         expect(res.text).toBe("partial");
-        expect(logs.lines().some((entry) => entry.message === "error_after_headers_sent")).toBe(true);
+        expect(logs.lines().find((entry) => entry.message === "error_after_headers_sent")).toMatchObject({
+            route: "GET /t", // L7
+            status: 200,
+        });
     });
 
     it("should set res.locals.errorCode when rendering an error", async () => {

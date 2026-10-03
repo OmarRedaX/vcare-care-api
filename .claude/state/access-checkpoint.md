@@ -83,6 +83,81 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - 2026-10-03 Docker started; test stack up. INTEGRATION GREEN: 18 suites, 180 pass, 2 skipped (win32 SIGTERM). The 5 extended suites cover migrations (partitions, rollback round-trip, guarded DROP ROLE), health C1/A7, logs #6 + token hygiene, envelope #5, idempotency #11. README counts updated; tasks.md (tests) flipped [x]. /write-tests access DONE (uncommitted).
 
+- 2026-10-03 COMMITTED 1b5d546 fix(auth) jwks-fetcher discard crash + efc1d83 test(access); PUSHED by the user (github.com edge 20.233.83.145 unreachable from this network — use git -c http.curloptResolve=github.com:443:140.82.121.4 if push times out again).
+
+## /manual-qa access (started 2026-10-03)
+- Identity started by orchestrator: `PORT=3020 INTERNAL_PORT=3120 npx tsx --env-file-if-exists=.env src/server.ts` in ../vcare-identity-api (its .env still says 3000/3100).
+- HARNESS FIX (uncommitted): scripts/access-qa-server.ts never called redis.connect() (client is lazyConnect) → ready showed redis down forever; now connects in the background like server.ts. typecheck + lint clean.
+- Care QA server on :3001 → ready {database up, redis up, identityJwks up}. NOTE: on Windows TaskStop leaves the tsx node child alive — kill the PID holding the port (netstat -ano | grep :3001).
+- flow-qa-runner DISPATCHED.
+- qa: harness scripts/access-qa-server.ts now also mounts audit/params/nested/idempotency/rate-limit test routers (dev-only; typecheck+lint clean). New scripts/access-qa-fake-identity.ts (fake JWKS + edge-token mint on 127.0.0.1:3021) and scripts/curl-test-access.sh.
+- qa: QA server 3001 restarted by qa-runner with log capture (scratchpad); edge harness 3011 → fake 3021. Identity QA accounts created through the real register flow (worker run temporarily, then stopped): patient id 1, doctor id 2, admin id 3 (promoted in Identity DB); variants via Identity DB UPDATE before login.
+- qa: run 1 → 139 pass / 4 fail; all 4 were script expectation errors (#11 store-on-2nd-request per spec §12.4; rate-limit 1 s window stretched by node spawns) — script fixed, re-run pending.
+- qa: #10 stall verified by hand (scratchpad black-hole proxy → third harness :3012 on Redis DB 1): breaker opens after 2 slow requests (2 failed cmds each), then ~1 ms server-side, rate limiter degraded, readiness degraded; replay resumes + redis_breaker_closed after a fresh connection. Observation: byte-dropping stall desyncs ioredis until reconnect (integration test also forces disconnect).
+- qa: JWKS outage O1–O12 all per spec (identityJwks down but readiness 200 ok; cached keys verify; care restart while Identity down → 401 until the 60 s gate, then no_keys fetch → 200 + up). Identity restarted by qa-runner (PORT=3020 INTERNAL_PORT=3120, log in session scratchpad); care :3001 restarted by qa-runner (log in session scratchpad).
+- qa: final scripted run 143/143; total 167 pass / 0 fail. docs/access/manual-qa.md written, tasks.md (manual-qa) [x], INDEX row added. Not committed.
+- /manual-qa access VERIFIED by orchestrator 2026-10-03: 167 pass / 0 fail; typecheck + lint + bash -n clean; no secrets in outputs. UNCOMMITTED: scripts/access-qa-server.ts, scripts/access-qa-fake-identity.ts, scripts/curl-test-access.sh, docs/access/manual-qa.md, docs/access/tasks.md, docs/INDEX.md. Left running: Identity 3020/3120, care QA server 3001.
+- Observations for /review-code: (1) ioredis does not reconnect after a byte-dropping stall (likely proxy artefact); (2) malformed :param without token → 400 not 401 (Express decodes before userGuard); (3) unhandled_error log line lacks `route`.
+
+- 2026-10-03 COMMITTED fc4da16 test(access) QA harness + curl script, 5af702c docs(access) manual QA results; PUSHED origin/feature/access (created the remote branch).
+
+## /review-code access (started 2026-10-03)
+- First review (no docs/access/reviews/), non-trivial (129 files, ~10k lines) → parallel path. Dimensions per user: correctness · security-auth · conventions-layering (+contract drift C1/C2) · database-migrations (+perf/indexing) · tests. Domain-rules N/A (no business routes; suspended/ev gates folded into security).
+- Scope file list: session scratchpad access-review-files.txt (git diff --name-only main...feature/access -- src scripts tests).
+- 5 flow-code-reviewer (mode candidates) DISPATCHED. QA observations routed: (1) redis reconnect → correctness, (2) :param 400 vs 401 → security-auth, (3) unhandled_error no route → conventions.
+- CANDIDATES DONE (all 5): correctness M3 L1 · security H1 M2 L1 · conventions L5 docs2 · database H1 M2 L2 · tests M3 L3 = 26 raw. Saved in session scratchpad access-review/candidates-*.md. Merges: boot-assertion holes (security H + correctness route() method merge) → one; ensure-app-login takeover (security L + database M) → one. QA obs: (1) correctness says REAL (no socketTimeout); (2) security DISMISSED (Express decodes in Layer.match, spec §12.1/A17); (3) conventions CONFIRMED Low.
+- Then: merge candidates → 1 verify-findings reviewer writes docs/access/reviews/review-<YYYYMMDD-HHMM>.md. No code changes. Ask user before committing.
+
+- VERIFIED (verify-findings reviewer): docs/access/reviews/review-20261003-1600.md — 14 OPEN: Critical 0 · High 1 · Medium 2 · Low 9 · Docs 2; 11 refuted.
+  High: boot route assertion 4 holes (handler before authorize, terminal router.use(fn), mounted sub-app, router.route() method merge) — src/lib/rbac/assert-routes-authorized.ts.
+  Medium: ensure-app-login password in migration_failed log on mid-DDL connection drop; Redis no socketTimeout (QA obs 1 confirmed).
+  QA obs: (1) confirmed Medium, (2) dismissed, (3) confirmed Low.
+- CARRY TO doctors review (refuted here only because spec defers them): boot assertion is guard-kind blind (user-guard route on internal listener would boot → must fail once serviceGuard lands); doctor suspended_at check is opt-in per policy (make it fail closed for doctor-role policies).
+- 2026-10-03 COMMITTED 6e80c4e docs(access): code review findings; PUSHED origin/feature/access.
+
+## /develop access --fix-review (started 2026-10-03)
+- Docker test stack up (5434/6381). flow-developer DISPATCHED (fix-review mode, all 14 findings, severity order). It appends "- fix: ..." progress lines below.
+- fix: started; Fix-review section (14 tasks) added to docs/access/tasks.md. Order: H1 → M1 → M2 → L1..L9 → D1 D2.
+- fix: H1 RESOLVED — boot assertion: per-method chains, handler_before_authorize, middleware_without_policy (markPreAuth marker on global/pre-auth middleware), sub-app walk; unit + boot tests green. Docs (spec/rbac/skill) pending in D-pass.
+- fix: M1 RESOLVED (app_login_ddl_failed, SQLSTATE only; unit tests via real Logger) + L1 RESOLVED (refuse privileged/owning existing role: app_login_role_privileged; db-roles integration CREATEDB test). unit knex 46 pass, db-roles 12 pass.
+- fix: M2 RESOLVED — REDIS_SOCKET_TIMEOUT_MS 2000 in createRedis (no disconnect on breaker open, justified); stall test self-recovers (fails without the fix); unit redis option test.
+- fix: L2+L3 RESOLVED — migrations 20261003120000_audit_logs_column_insert_grants + 20261003120100_audit_logs_partitions_attach (both with downs); db-roles/worker-partitions/migrations tests updated+added (L3 test fails at 2058 ms on old fn). NOTE dev DB 5432 needs npm run migrate by the user.
+- fix: L4 RESOLVED — TickOutcome done|incomplete; --once exits 1 + worker_once_incomplete (default-row + lock-held child-process tests); runbook updated (also ensure-app-login failures, redis socket timeout, new boot errors).
+- fix: L5 RESOLVED — validateBody unknownMembers:"strip" option; JWKS strips extras, rejects d; tests added (spec line pending in docs pass).
+- fix: L6+L7 RESOLVED — lib/http/once-next.ts used by idempotency+rate-limit; isRedactedKey in redact used by audit; route+status on unhandled_error/error_after_headers_sent; tests unit+logs integration green.
+- fix: L8 RESOLVED — interval tick alone, trickle body timeout, boot refresh (process.test cross-platform + SIGTERM ordering); each verified to fail without the product behaviour; fixed latent seenHeaders race in jwks-fetcher X-Request-Id test.
+- fix: L9 RESOLVED — tests/helpers/test-database.ts guard in global-setup + ownerDb/truncateAll; unit test. All code findings done; next: D1 contract bearerUser + hub sync, D2 INDEX/tasks notes, docs (spec, rbac shard, skill, ADR 0018 addendum), full verification.
+- fix: D1+D2 RESOLVED — contract bearerUser claims + hub sync (freshness OK, hook OK); INDEX/tasks notes; docs updated: spec, rbac, data-model, infrastructure, resilience, runbook, ADR 0018 addendum, service card, skills rbac-ownership-guard + write-migration. Next: full verification.
+- fix: VERIFIED (fix-review done, uncommitted): typecheck clean, lint clean, build clean; unit 48 suites / 760 pass; integration 18 suites / 189 pass / 2 skipped (two consecutive runs). Review file: 14 RESOLVED, 0 OPEN, 0 DISPUTED. Hub: catalog card + contract copy re-synced (uncommitted, branch docs/care-access-deltas), freshness OK. Dev DB 5432 needs npm run migrate (2 new migrations). Identity skill copies (rbac-ownership-guard, write-migration) now differ from care's — mirror decision for the user.
+
+- VERIFIED by orchestrator 2026-10-03: typecheck + lint clean; unit 48 / 760 pass; integration 18 / 189 pass / 2 skipped (test stack 5434/6381); review 14 RESOLVED / 0 OPEN. Spot-checked boot assertion + attach migration. UNCOMMITTED (63 files + 6 new). Pending user: commit OK?; migrate dev DB 5432 + curl QA re-run?; mirror 2 skills into identity?
+
+- 2026-10-03 COMMITTED 245205c fix(access) + 11aa5a3 docs(access) (not pushed). Identity feature/auth: 2 skills mirrored from care (uncommitted).
+- QA re-run: dev DB 5432 migrated (6/6, ensure-app-login created:false OK). Care harness :3001 restarted on new code (log in session scratchpad care-3001.log) → ready up/up/up, boot JWKS refresh logged. Identity 3020/3120 still running. Waiting on user to run curl-test-access.sh (QA_PASSWORD is a user secret).
+
+- QA RE-RUN DONE 2026-10-03: curl-test-access.sh 143/143 exit 0 with fresh accounts QA_EMAIL_PREFIX=qa.access2 (ids 4/5/6; synthetic password in THIS session's scratchpad qa-password.txt only); Identity worker run for registration then killed. unhandled_error has route+status; worker --once on dev exit 0. docs/access/manual-qa.md "Re-run after fix-review" section (F1-F4) added — UNCOMMITTED. All QA processes stopped (care 3001 + Identity 3020/3120 killed on user request).
+
+- 2026-10-03 COMMITTED 8529504 docs(access) manual QA re-run (not pushed).
+
+## /review-code access — RE-REVIEW (started 2026-10-03)
+- Re-review mode (review-20261003-1600.md has 14 RESOLVED) → single flow-code-reviewer mode full DISPATCHED. It appends "- rereview: ..." lines here.
+- rereview: 2026-10-03 — all 14 RESOLVED verified (annotated "· verified 2026-10-03"); review file KEPT with 2 NEW OPEN: High `router.param`/`app.param` callbacks bypass assertRoutesAuthorized (probe: boot passed, anonymous 200); Low ensureAppLogin takes over a role that is a member of another role (probe: GRANT care → taken over, DELETE audit_logs allowed). typecheck+lint clean; unit 48/760 (one load flake in pre-existing jwks-fetcher 5xx case, green on rerun); integration 18/189 + 2 skipped. Next: /develop access --fix-review.
+
+- Orchestrator 2026-10-03: re-review confirmed 14 verified + 2 NEW OPEN (High router.param/app.param bypass of boot assertion; Low ensureAppLogin role membership). Review file kept (uncommitted annotations).
+
+## /develop access --fix-review ROUND 2 (started 2026-10-03)
+- flow-developer DISPATCHED for the 2 new OPEN items. It appends "- fix2: ..." lines here.
+- fix2: H RESOLVED — assertRoutesAuthorized throws `param_callback_without_policy: <name> under <path>` for any router.param/app.param on a walked router (root, nested, sub-app via routerOf → handle.router, probe-exempt); no exemption (no .param use in src/tests). Unit 5 cases (4 fail on old code) + boot integration case.
+- fix2: L RESOLVED — ensureAppLogin refuses `has_other_memberships` (pg_auth_members, any role but vcare_app; parameterised) with app_login_role_privileged; role check moved under withFixedFailure (fixed app_login_ddl_failed) per M1 note. Unit 2 new cases; db-roles 2 cases (owner role, pg_write_all_data; fail on old code).
+- fix2: docs — spec §3.4.4/§3.8/A8/A14/§9 lists, rbac.md, infrastructure.md, runbook.md, ADR 0018 addendum, tasks.md (Fix-review round 2), rbac-ownership-guard skill copied to ../vcare-identity-api (identical, uncommitted there). Review file: 16 RESOLVED / 0 OPEN.
+- fix2: VERIFIED (uncommitted): typecheck + lint clean; unit 48 suites / 767 pass; integration 18 suites / 192 pass / 2 skipped (test stack 5434/6381). Dev DB 5432 untouched — its existing care_app must be a member of vcare_app only or ensure-app-login now refuses.
+
+- Orchestrator VERIFIED round 2 (2026-10-03): typecheck + lint clean; unit 48 / 767; integration 18 / 192 + 2 skipped; review 16 RESOLVED / 0 OPEN. ADR 0018: reverted the in-place edit of the committed round-1 bullet, appended a separate round-2 bullet instead. Dev care_app member of vcare_app only (read-only check) → ensure-app-login safe. Stray agent shell b6niw3erg stopped. UNCOMMITTED; identity rbac skill re-mirrored (uncommitted).
+
+- 2026-10-03 COMMITTED round 2: 237dd10 fix(access), eb6498d docs(access) (not pushed).
+- /review-code access RE-REVIEW 2: single flow-code-reviewer (full) DISPATCHED; appends "- rereview2: ..." lines.
+
+- /update-docs access DONE + VERIFIED by orchestrator 2026-10-03: spec implemented v1.1.0 (§15 as-built), tasks done, INDEX, ADR 0018 note, last_verified bumps; no contract/card change. Re-review 2 CLEAN (review file deleted; typecheck+lint clean; unit 48/767; integration 18/192+2 skipped on 5434/6381). UNCOMMITTED: those docs + review deletion + checkpoint.
+
 ## ▶ NEXT STEP
-/write-tests access DONE, UNCOMMITTED (ask user before committing: "test(access): ..." on feature/access; exclude AGENTS.md/.codex).
-Then: /manual-qa access (real Identity 3020/3120, native dev Postgres 5432 / Redis 6379 DB 1) → /review-code access → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
+Ask user: commit docs(access) (final) → push feature/access (git -c http.curloptResolve=github.com:443:140.82.121.4 push if timeout) → open PR to main "Closes #19 #5 #6 #10 #11" + Claude Code attribution → raise hub (docs/care-access-deltas) + identity (feature/auth) uncommitted changes.

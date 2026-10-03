@@ -14,7 +14,15 @@ import { container } from "../src/lib/di/container";
 import { TOKENS } from "../src/lib/di/tokens";
 import { runMain } from "../src/lib/lifecycle/run-main";
 import { logger } from "../src/lib/logger/logger";
-import { buildAccessTestRouter } from "../tests/helpers/test-routers";
+import { redis } from "../src/lib/redis/redis";
+import {
+    buildAccessTestRouter,
+    buildAuditTestRouter,
+    buildIdempotencyRouter,
+    buildNestedRouter,
+    buildParamRouter,
+    buildRateLimitRouter,
+} from "../tests/helpers/test-routers";
 
 function main(): void {
     const env = getEnv();
@@ -25,8 +33,23 @@ function main(): void {
 
     registerDependencies(env);
     container.resolve<JwksCache>(TOKENS.JwksCache).start();
+    // Same as server.ts: the client is lazyConnect, so connect in the background (Redis is Tier 2).
+    redis.connect().catch(() => {
+        logger.warn("redis_unavailable");
+    });
 
-    const app = createPublicApp({ extraRouters: [{ path: "/api", router: buildAccessTestRouter() }] });
+    // Test-only routers of access spec §9.3 plus the §12 regression routers (#5 params, #6 nested, #10/#11
+    // idempotency + rate limit) so scripts/curl-test-access.sh can reach every behaviour over real HTTP.
+    const app = createPublicApp({
+        extraRouters: [
+            { path: "/api", router: buildAccessTestRouter() },
+            { path: "/api", router: buildAuditTestRouter() },
+            { path: "/api", router: buildParamRouter() },
+            { path: "/api", router: buildNestedRouter() },
+            { path: "/api", router: buildIdempotencyRouter() },
+            { path: "/api", router: buildRateLimitRouter("qa-limited", 3, 1_000) },
+        ],
+    });
     app.listen(env.PORT, "127.0.0.1", () => {
         logger.info("access_qa_server_started", { port: env.PORT });
     });

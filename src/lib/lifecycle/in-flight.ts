@@ -2,6 +2,7 @@ import type { RequestHandler, Response } from "express";
 import { container } from "../di/container";
 import { TOKENS } from "../di/tokens";
 import type { ShutdownState } from "./shutdown-state";
+import { markPreAuth } from "../rbac/markers";
 
 export class InFlightCounter {
     private current = 0;
@@ -56,7 +57,7 @@ function closeConnectionWhenDraining(res: Response, state: ShutdownState): void 
 
 /** Counts live requests so shutdown can drain them. Decrements exactly once per request. */
 export function inFlight(counter?: InFlightCounter, state?: ShutdownState): RequestHandler {
-    return (_req, res, next) => {
+    return markPreAuth((_req, res, next) => {
         const target =
             counter ??
             (container.isRegistered(TOKENS.InFlightCounter)
@@ -86,5 +87,5 @@ export function inFlight(counter?: InFlightCounter, state?: ShutdownState): Requ
         res.on("close", release);
 
         next();
-    };
+    });
 }

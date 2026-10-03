@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -97,9 +97,10 @@ Built by `createKnex` (`lib/knex/knex.ts`); full rationale in the [foundation sp
 it owns every table, sequence, and function and runs the migrations (`care-migrate` only). `vcare_app` is a `NOLOGIN`
 group role created by migration `create_app_role` with `CONNECT` and `USAGE ON SCHEMA public` (never `CREATE`);
 every table migration grants it exactly what the code needs, explicitly (no `ALTER DEFAULT PRIVILEGES`); append-only
-tables get `INSERT, SELECT` only. `care_app` is the login of `care-api` and `care-worker` (`DATABASE_URL`), member of
+tables get `INSERT, SELECT` only (column-level `INSERT` on `audit_logs`: never `id`/`created_at`). `care_app` is the login of `care-api` and `care-worker` (`DATABASE_URL`), member of
 `vcare_app`, `NOSUPERUSER NOCREATEDB NOCREATEROLE`; `node dist/migrate.js ensure-app-login` creates it or re-syncs its
-password and membership (never a migration, so no password is committed). `care-migrate` runs `latest` then
+password and membership (never a migration, so no password is committed); it refuses an existing role that is
+privileged, owns objects, or is a member of any role other than `vcare_app` (`app_login_role_privileged`) and never logs a failed DDL statement (`app_login_ddl_failed`). `care-migrate` runs `latest` then
 `ensure-app-login`; the owner needs `CREATEROLE`. The worker creates `audit_logs` partitions only through the
 owner-defined `SECURITY DEFINER` function `audit_logs_ensure_partitions(int)`.
 
@@ -241,7 +242,9 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
 
 ## Boot and shutdown
 - **Boot route assertion:** `createPublicApp` / `createInternalApp` call `assertRoutesAuthorized(app.router)` after
-  mounting health and the module routers; `route_without_policy: <METHODS> <path>` or `route_without_guard: …` (and
+  mounting health and the module routers; `route_without_policy: <METHOD> <path>`, `route_without_guard: …`,
+  `handler_before_authorize: …`, `middleware_without_policy: <fn> under <path>`, or
+  `param_callback_without_policy: <name> under <path>` (a `router.param` / `app.param` callback; and
   `policy_invalid: …` / `route_without_policy` thrown by `authorize` at registration) become `boot_failed`, exit 1.
 - **JWKS cache:** `server.ts` starts it after DI registration (one background fetch, never awaited, + the 5-minute
   interval, `unref`'d) and stops it first on shutdown (clears the interval, aborts an in-flight fetch).
@@ -267,7 +270,8 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
 - **`care-worker`:** `worker_stopping`, then every loop finishes its current tick and the worker pool is destroyed,
   both bounded by `SHUTDOWN_TIMEOUT_MS` (`worker_stop_timeout` and exit 1 on overrun). `node dist/worker.js --once
   <loop>` runs exactly one tick of that loop, closes the pool, and exits 0 (`worker_loop_unknown` / `worker_tick_failed`
-  → exit 1).
+  / `worker_once_incomplete` — the tick ran but did not reach its goal, e.g. partitions not ensured or the lock held
+  elsewhere — → exit 1).
 
 ## Local stack (compose)
 `docker-compose.yml` (`name: vcare-care`): Postgres 17 on `127.0.0.1:5433` and Redis 7 on `127.0.0.1:6380`, both on

@@ -48,6 +48,11 @@ export function normalizeKey(key: string): string {
 
 const REDACTED_SET = new Set(REDACTED_KEYS.map(normalizeKey));
 
+/** Whether the logger redacts `key` (after normalization) — the one answer, also used by `lib/audit` metadata checks. */
+export function isRedactedKey(key: string): boolean {
+    return REDACTED_SET.has(normalizeKey(key));
+}
+
 function redactValue(value: unknown, depth: number, path: Set<object>): unknown {
     if (depth > MAX_DEPTH) {
         return "[Truncated]";

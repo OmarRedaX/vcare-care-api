@@ -4,6 +4,7 @@ import { canonicalJson } from "../../pkg/utils/canonical-json";
 import { isUuid } from "../../pkg/utils/uuid";
 import { Conflict, IdempotencyConflict, ValidationFailed } from "../error/errors";
 import { clientIp } from "../http/client-ip";
+import { onceNext } from "../http/once-next";
 import { captureRoute, routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
 import { isRedisReady, isRedisUsable, resolveRedis } from "../redis/redis";
@@ -112,21 +113,7 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
 
         // `next` is called at most once from the async block; an unexpected throw is forwarded exactly once, or logged
         // when the request already moved on (fix #11: no promise here can reject unobserved).
-        let forwarded = false;
-        const forward = (error?: unknown): void => {
-            if (forwarded) {
-                return;
-            }
-            forwarded = true;
-            next(error);
-        };
-        const fail = (error: unknown): void => {
-            if (!forwarded && !res.headersSent) {
-                forward(error);
-                return;
-            }
-            logger.error("idempotency_internal_error", { requestId: req.requestId, route: routeLabel(req), error });
-        };
+        const { forward, fail, markResponded } = onceNext(req, res, next, "idempotency_internal_error");
 
         void (async () => {
             let acquired: boolean;
@@ -176,7 +163,7 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
                     forward(IN_FLIGHT_CONFLICT);
                     return;
                 }
-                forwarded = true; // the response is written here; `next` is never called
+                markResponded(); // the response is written here; `next` is never called
                 replay(req, res, record);
                 return;
             }

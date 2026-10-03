@@ -9,6 +9,7 @@ import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
 import { requestLogger } from "./lib/logger/request-logger";
 import { assertRoutesAuthorized } from "./lib/rbac/assert-routes-authorized";
+import { markPreAuth } from "./lib/rbac/markers";
 import { requestId } from "./lib/request-id/request-id";
 import { buildPublicRoutes } from "./routes";
 
@@ -23,14 +24,14 @@ export function createPublicApp(options?: AppOptions): express.Express {
     app.use(requestId());
     app.use(inFlight());
     app.use(requestLogger());
-    app.use(helmet());
+    app.use(markPreAuth(helmet()));
 
     if (env.NODE_ENV === "development" && env.CORS_ORIGINS.length > 0) {
         app.use(cors({ origins: env.CORS_ORIGINS }));
     }
     app.use(optionsNotFound);
 
-    app.use(express.json({ limit: "100kb", strict: true, type: "application/json" }));
+    app.use(markPreAuth(express.json({ limit: "100kb", strict: true, type: "application/json" })));
 
     app.use("/api/health", buildHealthRouter());
     app.use("/api", buildPublicRoutes());

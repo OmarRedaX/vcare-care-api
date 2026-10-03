@@ -47,6 +47,19 @@ describe("lib/worker/LoopRunner", () => {
         await runner.stop();
     });
 
+    it("should keep ticking and log nothing when a tick reports incomplete (only --once acts on it, L4)", async () => {
+        const { logger, lines } = collectingLogger();
+        const tick = jest.fn(() => Promise.resolve("incomplete" as const));
+        const runner = new LoopRunner([{ name: "audit-partitions", intervalMs: 1_000, tick }], { logger });
+
+        runner.start();
+        await jest.advanceTimersByTimeAsync(2_000);
+        expect(tick).toHaveBeenCalledTimes(3);
+        expect(lines.filter((line) => line.message !== "metric")).toEqual([]); // no worker_tick_failed
+
+        await runner.stop();
+    });
+
     it("should be idempotent when start is called twice", async () => {
         const { logger } = collectingLogger();
         const tick = jest.fn(() => Promise.resolve());

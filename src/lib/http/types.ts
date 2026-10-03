@@ -28,3 +28,10 @@ export interface RouteLocals {
 export interface CorsOptions {
     origins: readonly string[];
 }
+
+/** `onceNext(...)`: `next` runs at most once; late errors are logged with the route (lib/http/once-next.ts). */
+export interface OnceNext {
+    forward: (error?: unknown) => void;
+    fail: (error: unknown) => void;
+    markResponded: () => void;
+}

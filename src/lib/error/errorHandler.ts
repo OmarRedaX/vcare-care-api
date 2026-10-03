@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { routeLabel } from "../http/route-pattern";
 import { logger } from "../logger/logger";
 import { AppError } from "./AppError";
 import { InternalError, NotFound, ValidationFailed } from "./errors";
@@ -58,7 +59,12 @@ function mapClientError(error: unknown): AppError | undefined {
  */
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
     if (res.headersSent) {
-        logger.error("error_after_headers_sent", { requestId: req.requestId, error: err });
+        logger.error("error_after_headers_sent", {
+            requestId: req.requestId,
+            route: routeLabel(req),
+            status: res.statusCode,
+            error: err,
+        });
         res.end();
         return;
     }
@@ -67,7 +73,13 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     if (err instanceof AppError) {
         appError = err;
         if (appError.status >= 500) {
-            logger.error("unhandled_error", { requestId: req.requestId, code: appError.code, error: err });
+            logger.error("unhandled_error", {
+                requestId: req.requestId,
+                route: routeLabel(req),
+                status: appError.status,
+                code: appError.code,
+                error: err,
+            });
         }
     } else {
         const detail = bodyParserDetail(err);
@@ -78,7 +90,12 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
             appError = clientError;
         } else {
             appError = InternalError;
-            logger.error("unhandled_error", { requestId: req.requestId, error: err });
+            logger.error("unhandled_error", {
+                requestId: req.requestId,
+                route: routeLabel(req),
+                status: InternalError.status,
+                error: err,
+            });
         }
     }
 

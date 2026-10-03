@@ -2600,8 +2600,10 @@ components:
         User access token issued by identity-service (EdDSA, 15 min). Verified locally against
         `IDENTITY_JWKS_URL` (cached in memory; re-fetched once older than Identity's 5-minute `max-age` and on an unknown
         `kid` at most once per minute; while refreshes fail, cached keys stay trusted for at most 1 hour after the last
-        successful fetch). Required claims:
-        `iss=vcare-identity`, `aud` contains `vcare-care`, `typ=user`, `sub` (user id), `role`, `status`, `ev`.
+        successful fetch). Header `alg` must be `EdDSA`. Required claims:
+        `iss=vcare-identity`, `aud` contains `vcare-care`, `typ=user`, `sub` (user id), `exp`, `iat`, `jti` (≤ 64 chars),
+        `role`, `status`, `ev`. `exp` and `nbf` are checked with a 30 s clock tolerance; an expired token →
+        `401 TokenExpired`, any other failure → `401 Unauthorized`.
         If no cached key matches and JWKS cannot be fetched → `401 Unauthorized` (verification is never skipped).
     serviceToken:
       type: http

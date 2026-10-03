@@ -5,6 +5,7 @@ import { loadTestEnv } from "../setup-env";
 import { ensureAppLogin } from "../../src/lib/knex/app-login";
 import { createKnex } from "../../src/lib/knex/knex";
 import { migrationConfig } from "../../src/lib/knex/knexfile";
+import { assertTestDatabase, assertTestDatabaseUrl } from "../helpers/test-database";
 
 /**
  * Runs once before the integration suites, as the OWNER (`MIGRATION_DATABASE_URL`, ADR 0018): migrate the real test
@@ -19,6 +20,9 @@ export default async function globalSetup(): Promise<void> {
     if (ownerUrl === undefined || appUrl === undefined) {
         throw new Error("MIGRATION_DATABASE_URL and DATABASE_URL must be set — is .env.test present?");
     }
+    // L9: never migrate, roll back, or re-password anything but a *_test database with NODE_ENV=test.
+    assertTestDatabaseUrl(ownerUrl);
+    assertTestDatabaseUrl(appUrl);
 
     const owner = createKnex({
         url: ownerUrl,
@@ -28,6 +32,7 @@ export default async function globalSetup(): Promise<void> {
     });
 
     try {
+        await assertTestDatabase(owner);
         await owner.migrate.latest(migrationConfig);
         await ensureAppLogin(owner, appUrl);
     } finally {

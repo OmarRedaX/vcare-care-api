@@ -67,6 +67,29 @@ describe("boot-time route authorization (integration: real app factories)", () =
         expect(() => createInternalApp()).toThrow("route_without_policy: GET /:userId/summary");
     });
 
+    it("should throw middleware_without_policy from createPublicApp when a module router mounts a terminal handler with use (H1)", () => {
+        const router = Router();
+        router.get("/specialties", userGuard(), authorize({ kind: "user", roles: ["admin"], owner: { kind: "none" } }), handler);
+        router.use("/specialties/export", handler);
+        jest.mocked(buildPublicRoutes).mockReturnValueOnce(router);
+        expect(() => createPublicApp()).toThrow(/^middleware_without_policy: /);
+    });
+
+    it("should throw handler_before_authorize from createPublicApp when a controller runs between guard and authorize (H1)", () => {
+        const router = Router();
+        router.get("/specialties", userGuard(), handler, authorize({ kind: "user", roles: ["admin"], owner: { kind: "none" } }));
+        jest.mocked(buildPublicRoutes).mockReturnValueOnce(router);
+        expect(() => createPublicApp()).toThrow("handler_before_authorize: GET /specialties");
+    });
+
+    it("should throw param_callback_without_policy from createPublicApp when a module router registers router.param (review 2026-10-03)", () => {
+        const router = Router();
+        router.param("id", (_req, _res, next) => next());
+        router.get("/specialties/:id", userGuard(), authorize({ kind: "user", roles: ["admin"], owner: { kind: "none" } }), handler);
+        jest.mocked(buildPublicRoutes).mockReturnValueOnce(router);
+        expect(() => createPublicApp()).toThrow("param_callback_without_policy: id under /");
+    });
+
     it("should throw route_without_policy at registration when a route passes an undefined policy (A8)", () => {
         expect(() => {
             const router = Router();

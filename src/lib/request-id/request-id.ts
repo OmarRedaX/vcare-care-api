@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import { isUuid } from "../../pkg/utils/uuid";
 import { logger } from "../logger/logger";
 import { requestContext } from "../logger/request-context";
+import { markPreAuth } from "../rbac/markers";
 
 /**
  * Mounted FIRST on both listeners: adopts a valid incoming `X-Request-Id` (any UUID version, lower-cased)
@@ -10,7 +11,7 @@ import { requestContext } from "../logger/request-context";
  * it, and opens the AsyncLocalStorage context for the rest of the request.
  */
 export function requestId(): RequestHandler {
-    return (req, res, next) => {
+    return markPreAuth((req, res, next) => {
         const incoming = req.get("X-Request-Id");
         const id = incoming !== undefined && isUuid(incoming) ? incoming.toLowerCase() : randomUUID();
 
@@ -21,5 +22,5 @@ export function requestId(): RequestHandler {
         requestContext.run({ requestId: id }, () => {
             next();
         });
-    };
+    });
 }

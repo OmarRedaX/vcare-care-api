@@ -4,7 +4,9 @@ import { JWKS_MAX_KEYS } from "./constants";
 
 /**
  * One key of Identity's JWKS — mirrors the hub copy of Identity's contract (`Jwk`). Validated, never trusted
- * (CLAUDE.md → Cross-service integration: a malformed response is a failure, not data).
+ * (CLAUDE.md → Cross-service integration: a malformed response is a failure, not data). The contract's `Jwk` allows
+ * extra members, so unknown PUBLIC members (`key_ops`, `x5t`, …) are stripped (`unknownMembers: "strip"`), never
+ * imported; the six members below stay strict.
  */
 export class JwkDto {
     @Equals("OKP")
@@ -27,9 +29,13 @@ export class JwkDto {
 
     @Equals("sig")
     use!: string;
+
+    /** The Ed25519 PRIVATE key member: its presence means Identity is leaking key material — refuse the whole set. */
+    @Equals(undefined, { message: "private key material is not allowed" })
+    d?: never;
 }
 
-/** Identity's `GET /.well-known/jwks.json` body (`Jwks`). Unknown members are rejected. */
+/** Identity's `GET /.well-known/jwks.json` body (`Jwks`). Unknown members are stripped (see `JwkDto`). */
 export class JwksDocumentDto {
     @IsArray()
     @ArrayMinSize(1)

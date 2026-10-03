@@ -13,7 +13,8 @@ const WORKER_STATEMENT_TIMEOUT_MS = 5_000;
 
 /**
  * `node dist/worker.js --once <loop>` (runbook): exactly one tick of the named loop with a fresh AbortController, then
- * the pool is closed and the process exits — 0 on success, 1 for an unknown loop or a tick that throws.
+ * the pool is closed and the process exits — 0 on success, 1 for an unknown loop, a tick that throws, or a tick that
+ * reports `"incomplete"` (e.g. audit partitions not ensured, or the lock held by another worker).
  */
 async function runOnce(name: string | undefined, loops: WorkerLoop[], workerDb: Knex): Promise<never> {
     const loop = loops.find((candidate) => candidate.name === name);
@@ -23,8 +24,13 @@ async function runOnce(name: string | undefined, loops: WorkerLoop[], workerDb: 
         code = 1;
     } else {
         try {
-            await loop.tick(new AbortController().signal);
-            logger.info("worker_once_completed", { loop: loop.name });
+            const outcome = await loop.tick(new AbortController().signal);
+            if (outcome === "incomplete") {
+                logger.error("worker_once_incomplete", { loop: loop.name });
+                code = 1;
+            } else {
+                logger.info("worker_once_completed", { loop: loop.name });
+            }
         } catch (error) {
             logger.error("worker_tick_failed", { loop: loop.name, error });
             code = 1;

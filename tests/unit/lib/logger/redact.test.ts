@@ -1,4 +1,4 @@
-import { normalizeKey, REDACTED_KEYS, redact } from "../../../../src/lib/logger/redact";
+import { isRedactedKey, normalizeKey, REDACTED_KEYS, redact } from "../../../../src/lib/logger/redact";
 
 /** One row per key: a later module that appends a key must append a row here (spec §3.4.4). */
 const EXPECTED_KEYS = [
@@ -64,6 +64,15 @@ describe("lib/logger/redact", () => {
 
     it("should normalise keys by lower-casing and removing _ and -", () => {
         expect(normalizeKey("Set-Cookie_Header")).toBe("setcookieheader");
+    });
+
+    it("should answer isRedactedKey with the same normalisation the redactor uses (lib/audit relies on it, L6)", () => {
+        expect(isRedactedKey("complaint_text")).toBe(true);
+        expect(isRedactedKey("Date-Of-Birth")).toBe(true);
+        expect(isRedactedKey("consultationId")).toBe(false);
+        for (const key of REDACTED_KEYS) {
+            expect(isRedactedKey(key)).toBe(true);
+        }
     });
 
     it("should redact whole objects when a redacted key holds an object", () => {

@@ -68,9 +68,19 @@ export type AccessDenialReason =
 /** The minimal Express 5 router-layer view `assertRoutesAuthorized` reads. */
 export interface RouteLayer {
     handle?: unknown;
+    /** The handler's function name (Express sets it); used only in boot error messages. */
+    name?: string;
+    /** On a route's own stack: the lower-case verb, or `undefined` for `.all(...)`. */
+    method?: string;
     route?: {
         path?: unknown;
         methods?: Record<string, boolean | undefined>;
         stack?: readonly RouteLayer[];
     };
+}
+
+/** One method's handler chain of a route, as Express dispatches it (`.all` entries interleaved in order). */
+export interface RouteChain {
+    label: string;
+    handlers: readonly unknown[];
 }

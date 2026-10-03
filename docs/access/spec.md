@@ -3,10 +3,10 @@ title: access — Spec
 owner: care-team
 service: care-service
 module: access
-status: ready
-version: 1.0.0
+status: implemented
+version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [spec, access, auth, jwks, jose, rbac, authorize, audit, audit-logs, partitions, postgres-roles, worker, redis-breaker]
 related: [access-brainstorm, foundation-spec, rbac, data-model, infrastructure, resilience, integration, deployment, runbook, quickstart, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0009-audit-logs-monthly-partitions, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
@@ -177,6 +177,15 @@ DROP TABLE IF EXISTS audit_logs;   -- drops every partition and their grants wit
 - `created_at DEFAULT NOW()` is the transaction start time, so every row of one transaction shares a timestamp; the
   `(id, created_at)` key stays unique through `id`.
 
+> **Superseded in part (review 2026-10-03, L2/L3):** migration 4 `20261003120000_audit_logs_column_insert_grants`
+> replaces the table-level `INSERT` on `audit_logs`, `audit_logs_default`, and every partition with
+> `INSERT (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata)` (+ `SELECT`), so the app
+> role can never set `id` or `created_at`; migration 5 `20261003120100_audit_logs_partitions_attach` replaces the
+> function body: `CREATE TABLE … (LIKE public.audit_logs INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` then
+> `ALTER TABLE public.audit_logs ATTACH PARTITION …` (SHARE UPDATE EXCLUSIVE on the parent — never blocks inserts),
+> the same column-level grant, `lock_timeout = '200ms'`. The SQL below is migration 3 as it ran; the grants and the
+> function body shown are no longer current.
+
 #### Migration 3 — `create_audit_logs_ensure_partitions`
 The worker connects as `care_app`, and PostgreSQL requires the **owner of the parent** to create a partition
 (`CREATE TABLE <name> PARTITION OF audit_logs` checks parent ownership; `vcare_app` also has no `CREATE` on `public`). Giving the
@@ -338,7 +347,10 @@ class JwkDto { @Equals("OKP") kty; @Equals("Ed25519") crv; @IsString() @Matches(
                @IsString() @Length(1, 128) kid; @Equals("EdDSA") alg; @Equals("sig") use; }
 class JwksDocumentDto { @IsArray() @ArrayMinSize(1) @ArrayMaxSize(16) @ValidateNested({ each: true }) @Type(() => JwkDto) keys; }
 ```
-Unknown members are rejected (`forbidNonWhitelisted`), duplicate `kid`s make the document invalid. Any failure →
+Unknown **public** members (`key_ops`, `x5t`, …; the contract's `Jwk` allows extras) are **stripped**, not rejected —
+`validateBody(JwksDocumentDto, body, { unknownMembers: "strip" })`, never imported (review 2026-10-03, L5; the contract
+wins over the earlier `forbidNonWhitelisted` choice). A private `d` member is declared (`@Equals(undefined)`) and fails
+the whole document. Duplicate `kid`s make the document invalid. Any failure →
 `invalid_document`: the **whole** response is rejected and the previous key set is kept (a malformed response is a
 failure, not data). Each key is imported with jose `importJWK(jwk, "EdDSA")`; an import failure is also
 `invalid_document`.
@@ -503,10 +515,26 @@ a check whose `appliesTo` is empty or not ⊆ `roles`, duplicate check names, a 
 ```ts
 export function assertRoutesAuthorized(router: Router): void;   // throws on the first violation
 ```
-Walks Express 5 `router.stack` recursively (identity's algorithm). For every `layer.route`:
-- no handler with `AUTHORIZE_MARKER` → throws `route_without_policy: <METHODS> <path>`;
+Walks Express 5 `router.stack` recursively (identity's algorithm, tightened by review 2026-10-03 H1 — deny by default
+at every depth). For every `layer.route`, **one chain per method** (`route.stack` grouped by `entry.method`; `.all`
+entries, `method === undefined`, are interleaved into every verb's chain and also form an `ALL` chain), and per chain:
+- no handler with `AUTHORIZE_MARKER` → throws `route_without_policy: <METHOD> <path>`;
 - no handler with `GUARD_MARKER` **before** the first `AUTHORIZE_MARKER` handler → throws
-  `route_without_guard: <METHODS> <path>`.
+  `route_without_guard: <METHOD> <path>`;
+- any handler before `authorize` that is not a guard, a `markPreAuth` handler, or a 4-arity error handler → throws
+  `handler_before_authorize: <METHOD> <path>`.
+Every **non-route** layer must be a router (walked), an Express 5 sub-app mounted with `router.use` (its `app.router`
+is walked), a probe-exempt router, a 4-arity error handler (`sealRouter`'s capture), or middleware carrying
+`PRE_AUTH_MARKER` (`markPreAuth`, `lib/rbac/markers.ts`) — anything else (`router.use(path, handler)`, the `app.use`
+`mounted_app` wrapper) throws `middleware_without_policy: <fn name> under <path>`. `markPreAuth` is applied where the
+middleware is defined: `requestId`, `inFlight`, `requestLogger`, `cors`, `optionsNotFound`, `noStore`, `rateLimit`;
+`app.ts`/`internal-app.ts` mark the third-party `helmet()` and `express.json()`.
+Every walked router — the root `app.router`, nested routers, a sub-app's `app.router`, and probe-exempt routers —
+must have no `router.param` / `app.param` callbacks (`router.params[name]` non-empty) → else throws
+`param_callback_without_policy: <name> under <path>` (review 2026-10-03, round 2). Express 5 `processParams` runs them
+for every matched layer whose path has that param **before** the route's guard and `authorize`, so a by-id loader
+would answer an anonymous caller (404 before 401) and skip the ownership 404. **Never use `router.param`; load by id
+inside the service after `authorize`.**
 Layers whose handle carries `PROBE_EXEMPT_MARKER` are skipped (the health router: `buildHealthRouter()` returns
 `markProbeExempt(sealRouter(router))`). `createPublicApp`/`createInternalApp` call it on `app.router` before the
 `extraRouters` loop, so test-only routers are never checked and production never has them. Runs in **every**
@@ -587,7 +615,9 @@ export function buildAuditPartitionLoop(deps: { db: Knex; logger: Logger; months
 2. `buildWorkerLoops({ env, db: workerDb, logger })` → `[buildAuditPartitionLoop({ db, logger, monthsAhead:
    env.AUDIT_PARTITION_MONTHS_AHEAD })]` (`WorkerLoopDeps` in `lib/worker/types.ts`).
 3. Stop path: `runner.stop()` then `workerDb.destroy()`, both inside the existing `SHUTDOWN_TIMEOUT_MS` deadline.
-4. **`--once <loop>`** (`node dist/worker.js --once audit-partitions`, already referenced by `runbook.md`): build the
+4. **`--once <loop>`** (`node dist/worker.js --once audit-partitions`, already referenced by `runbook.md`; review
+   2026-10-03 L4: a tick may return `TickOutcome` `"incomplete"` — the partition loop does when `ensure()` returned
+   `"locked"` or `"failed"` — and `--once` then logs `worker_once_incomplete` and exits 1; `LoopRunner` ignores it): build the
    loops, run exactly one tick of the named loop with a fresh `AbortController`, destroy the pool, exit 0; unknown
    name → `error worker_loop_unknown` + exit 1; a tick that throws → `error worker_tick_failed` + exit 1.
 
@@ -607,11 +637,21 @@ export function buildAuditPartitionLoop(deps: { db: Knex; logger: Logger; months
   ```
   1. Parse user and password from `appDatabaseUrl` (URL-decoded). User must match `^[a-z_][a-z0-9_]{0,62}$`; password
      non-empty; else throws `app_login_url_invalid` (no value in the message).
-  2. As owner: `SELECT 1 FROM pg_roles WHERE rolname = ?`. Absent → build the DDL server-side with
+  2. As owner: one parameterised `pg_roles` lookup of the login (attributes, owned objects, memberships — see 4).
+     Absent → build the DDL server-side with
      `SELECT format('CREATE ROLE %I WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L IN ROLE vcare_app', ?, ?) AS ddl`
      and execute the result. Present → `ALTER ROLE %I WITH LOGIN PASSWORD %L` and `GRANT vcare_app TO %I` (both via
      `format`). Quoting is PostgreSQL's (`%I`/`%L`); nothing is concatenated in TypeScript.
   3. Log `info app_login_ensured` `{ created }` only — never the user name, password, or URL.
+  4. (Review 2026-10-03, L1 + M1.) An existing role that has `SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION`, or
+     `BYPASSRLS`, or owns objects (`pg_shdepend` deptype `o`), or (round 2) is a direct member (`pg_auth_members`) of
+     any role other than `vcare_app` — the owner role, `pg_write_all_data`, `pg_read_all_data`, `pg_monitor`, … —
+     whose privileges it would inherit, is **refused** with `app_login_role_privileged` before any DDL (the
+     transaction rolls back) — never taken over and never silently demoted. Every failure of the role check or of a
+     DDL build/execute is rethrown as the fixed `app_login_ddl_failed` carrying only a SQLSTATE `code` (Knex
+     prefixes the SQL — which holds the password — to the message of a failed statement, and a dropped connection
+     has no SQLSTATE, so the message would otherwise be logged by `migration_failed`; the role check is wrapped too so
+     the login name stays out even when the caller's pool interpolates bindings).
 - `make` template gains a reminder comment: grant `vcare_app` explicitly; append-only tables get `INSERT, SELECT` only.
 - `package.json`: `"migrate:ensure-app-login": "tsx --env-file-if-exists=.env src/migrate.ts ensure-app-login"`
   (the existing tooling test asserts every `migrate*` script loads `.env`).
@@ -699,15 +739,15 @@ package.json  eslint.config.mjs  .env.example  .env.test  docker-compose.yml
 | A5 | Cached keys are trusted for at most 1 h after the last successful fetch; with no usable key the answer is `401`, never a skipped verification | `JwksCache.getKey`, `UserTokenVerifier` |
 | A6 | A successful fetch replaces the key set wholesale (a removed `kid` stops verifying immediately); a failed or malformed fetch keeps the previous set | `JwksCache` |
 | A7 | Readiness reports `checks.identityJwks` from cache state without a network call; it never changes `status` or the HTTP code | `HealthService.ready` |
-| A8 | A route registered with `authorize(undefined)` or an invalid policy throws at construction; a route without `authorize`, or without a guard before it, stops the process at boot; health is exempt by marker; test routers are mounted after the check | `authorize`, `assertRoutesAuthorized`, `createPublicApp`/`createInternalApp` |
+| A8 | A route registered with `authorize(undefined)` or an invalid policy throws at construction; a route method without `authorize`, without a guard before it, or with a non-guard/non-pre-auth handler before it, and any unmarked non-route, non-router layer (`router.use(path, fn)`, an unwalkable sub-app), and any `router.param` / `app.param` callback on a walked router (never use `router.param`; load by id inside the service after `authorize`), stops the process at boot; health is exempt by marker; test routers are mounted after the check | `authorize`, `assertRoutesAuthorized`, `createPublicApp`/`createInternalApp` |
 | A9 | `authorize` order and outcomes: no principal 401 · role 403 · status 403 (default `active`; `suspended` never allowed) · email 403 `EmailNotVerified` · checks 403 · ownership 404/403 | `authorize` |
 | A10 | Ownership and checks decide from the database with `auth` and path params only; the request body is not passed to them | `AccessContext` type + tests |
 | A11 | `audit.record` writes exactly one row inside the caller's transaction, refuses a non-transaction connection, and the row disappears when the transaction rolls back | `AuditRecorder` + Postgres |
 | A12 | Audit rows hold no clinical text or PII: flat scalar metadata, ≤ 2 KB (DB ≤ 4 KB), no redacted key names, strings ≤ 500; user actors carry a user id, service/system actors do not | `AuditRecorder` validation + `chk_audit_logs_*` |
 | A13 | `audit_logs` is append-only for the app: `INSERT`/`SELECT` succeed; `UPDATE`, `DELETE`, `TRUNCATE` fail with `42501` on the parent, the default partition, and every monthly partition | grants (migrations 2, 3) |
-| A14 | `care-api` and `care-worker` connect as `care_app` (member of `vcare_app`), which cannot create tables or alter `audit_logs`; migrations run as the owner; the two URLs must name different roles | migration 1, `ensure-app-login`, env refine |
+| A14 | `care-api` and `care-worker` connect as `care_app` (member of `vcare_app`), which cannot create tables or alter `audit_logs` and can INSERT only the seven non-key `audit_logs` columns (never `id`/`created_at`); migrations run as the owner; the two URLs must name different roles; `ensure-app-login` refuses a privileged, object-owning, or other-role-member existing role | migration 1, `ensure-app-login`, env refine |
 | A15 | After a successful worker tick the partitions for the current UTC month and the next `AUDIT_PARTITION_MONTHS_AHEAD` months exist with grants; ticks are idempotent; concurrent ticks serialize on one advisory lock and never fail on a duplicate | `audit_logs_ensure_partitions` + `partition-loop` |
-| A16 | A failed ensure emits `audit_partition_missing`; a non-empty `DEFAULT` partition emits `audit_default_partition_nonempty` and its row-count gauge | `partition-loop` |
+| A16 | A failed ensure emits `audit_partition_missing`; a non-empty `DEFAULT` partition emits `audit_default_partition_nonempty` and its row-count gauge; `worker --once audit-partitions` exits 1 unless that tick ensured the partitions; creating a month never blocks concurrent audit inserts (ATTACH) | `partition-loop` |
 | A17 | A malformed percent-encoded path parameter → `400 ValidationFailed`, no `unhandled_error`, the raw value never logged (#5) | `errorHandler` (§12.1) |
 | A18 | `request_completed.route` keeps the full mount prefix when a nested router's handler throws (#6) | `captureRoute`/`sealRouter` (§12.2) |
 | A19 | A Redis that stalls while `status === "ready"` costs at most `REDIS_BREAKER_FAILURE_THRESHOLD` command timeouts per open window; then idempotency is skipped and rate limits fall back without touching Redis (#10) | `RedisBreaker` (§12.3) |
@@ -758,7 +798,7 @@ No new code. All are in the contract `ErrorCode` enum and CLAUDE.md → API conv
   `migrationDatabaseUrl` (each with a redaction-test row).
 - **Database privileges:** least privilege by role split (A13, A14). `audit_logs_ensure_partitions` is the only
   `SECURITY DEFINER` object: integer argument bounded 0–12, `search_path = pg_catalog, pg_temp`, every identifier
-  schema-qualified and `%I`-quoted, `EXECUTE` revoked from `PUBLIC` and granted to `vcare_app` only, `lock_timeout 2s`.
+  schema-qualified and `%I`-quoted, `EXECUTE` revoked from `PUBLIC` and granted to `vcare_app` only, `lock_timeout` 200 ms (migration 5; was 2 s).
   The app role can call it (idempotent and bounded); it cannot create anything else.
 - **Token handling:** `alg` pinned to `EdDSA`; key chosen by `kid` only from Identity's set; `crit`/`b64` handled by
   jose; tokens > 4 096 chars rejected before parsing; the per-minute demand-fetch gate stops random-`kid` tokens from
@@ -779,7 +819,7 @@ No new code. All are in the contract `ErrorCode` enum and CLAUDE.md → API conv
 | `authorize` | 0 queries for `none`/`self` and no checks; +1 indexed query per resolver and per applicable check (module-supplied) | modules count them in their route's query budget |
 | `audit.record` | 1 `INSERT` into the current month's partition (PK index only) | < 2 ms, inside the caller's budget (booking < 200 ms) |
 | readiness | unchanged probes + an in-memory `status()` read | unchanged (< 1 s) |
-| worker tick (daily) | 1 transaction (lock + function) + 1 bounded `LIMIT 1001` count | `lock_timeout 2s`, statement timeout 5 s |
+| worker tick (daily) | 1 transaction (lock + function) + 1 bounded `LIMIT 1001` count | `lock_timeout` 200 ms (ATTACH: never blocks inserts), statement timeout 5 s |
 | Redis breaker open (§12.3) | 0 Redis round trips on idempotency/rate-limit until the half-open probe | removes the 500 ms per-command stall of #10 |
 
 Partition pruning keeps audit inserts and future time-bounded reads on one partition (ADR 0009). No query of this
@@ -810,12 +850,12 @@ plus every signed token string used in a suite.
 - `lib/auth/user-token-verifier.test.ts`: should return the AuthContext when the token is valid (A2) · should throw Unauthorized when the signature, iss, aud, typ, alg, or kid is wrong (A2) · should throw Unauthorized when sub, exp, iat, or jti is missing or sub is not a positive safe integer (A2) · should throw Unauthorized when role, status, or ev has the wrong shape (A2) · should throw TokenExpired when exp + 30 s has passed (A3) · should accept a token 29 s past exp (A3) · should throw Unauthorized when an alg=none or HS256 token is presented (A2) · should throw Unauthorized and log token_verification_error when the key source throws unexpectedly (A5).
 - `lib/auth/user-guard.test.ts`: should return Unauthorized when the header is missing, not Bearer, has two tokens, or exceeds 4 096 chars · should set req.auth and the request-context userId and role when verification succeeds · should ignore X-User-Id and X-Role (A1) · should carry GUARD_MARKER.
 - `lib/rbac/authorize.test.ts`: should throw route_without_policy when the policy is undefined (A8) · should throw policy_invalid for each invalid shape incl. a status list containing suspended (A8) · should return 401 when req.auth is missing · 403 when the role is not listed · 403 when the status is not allowed for that role, with active as the default · 403 when the token status is suspended even for onboarding policies · 403 EmailNotVerified when emailVerified is required and ev is false · run only checks that apply to the role and deny with Forbidden · 404 on deny-not-found and 403 on deny-forbidden · 403 on an unknown decision value · run status, email, and checks before the ownership resolver (A9) · pass only auth and params to resolvers and checks (A10) · log access_denied with a reason and no ids.
-- `lib/rbac/assert-routes-authorized.test.ts`: should throw route_without_policy naming method and path when a route lacks authorize (A8) · should throw route_without_guard when authorize precedes the guard · should walk nested routers · should skip probe-exempt routers · should pass when every route is guarded and authorized.
+- `lib/rbac/assert-routes-authorized.test.ts`: should throw route_without_policy naming method and path when a route lacks authorize (A8) · should throw route_without_guard when authorize precedes the guard · should walk nested routers · should skip probe-exempt routers · should pass when every route is guarded and authorized. · (review 2026-10-03, H1) handler_before_authorize (between guard and authorize; before the guard) · middleware_without_policy for a terminal `router.use(path, fn)` and unmarked middleware; pass for `markPreAuth`/error handlers · walk a sub-app mounted with `router.use`; throw for `app.use`'s `mounted_app` · per-method `router.route()` chains in both orderings · `.all` entries in every chain. · (round 2) param_callback_without_policy for `router.param` in a module router, `app.param` on the root, `app.param` on a mounted sub-app, and a probe-exempt router; pass guarded `:param` routes with no param callback.
 - `lib/rbac/roles.test.ts`: should keep ROLES and ACCOUNT_STATUSES equal to the lib/types unions.
 - `lib/audit/audit.test.ts` (fake trx): should insert one row with explicit columns and the context request id (A11) · should throw audit_requires_transaction when given a non-transaction connection (A11) · should map user, service, and system actors to actor_user_id/actor_role (A12) · should reject a bad action, entityType, entityId, metadata key, nested value, oversize string, oversize object, or a REDACTED_KEYS key (A12) · should log audit_write_failed and emit the metric without metadata, then rethrow, when the insert fails.
 - `lib/audit/partition-loop.test.ts` (fake Knex): should skip and log locked_elsewhere when the advisory lock is not acquired · should log created partitions and emit audit_partition_missing 0 · should log audit_partition_missing and emit 1 without rethrowing when the function fails (A16) · should still run the default-partition check after a failure · should warn and emit the row gauge when the default partition is non-empty (A16) · should return immediately when the signal is aborted.
 - `lib/config/env.test.ts`: should require IDENTITY_JWKS_URL · should reject a non-http(s) IDENTITY_JWKS_URL · should accept a missing MIGRATION_DATABASE_URL in envSchema and require it in getMigrationEnv · should reject MIGRATION_DATABASE_URL when it uses the same user as DATABASE_URL (A14) · should apply the same query-string refines to MIGRATION_DATABASE_URL · should bound AUDIT_PARTITION_MONTHS_AHEAD to 1..12 and default it to 2.
-- `lib/knex/app-login.test.ts`: should build CREATE ROLE through format() when the login is absent · should ALTER and GRANT when present · should reject a URL without a password or with an invalid user name without echoing it · should log only created.
+- `lib/knex/app-login.test.ts`: should build CREATE ROLE through format() when the login is absent · should ALTER and GRANT when present · should reject a URL without a password or with an invalid user name without echoing it · should log only created. · (review 2026-10-03) refuse privileged / object-owner / other-role-member rows with app_login_role_privileged and run no DDL · code-less DDL and role-check failures → app_login_ddl_failed without the password or login name · SQLSTATE kept.
 - `app/health/health.service.test.ts`: should report identityJwks up/down from the cache and keep status and httpStatus unchanged in every Postgres/Redis/shutdown combination (A7).
 - `pkg/utils/id.test.ts`: should parse 1 and 9007199254740991 · should reject 0, leading zeros, signs, decimals, 17 digits, and unsafe integers.
 - `lib/logger/redact.test.ts`: one row per new key (`connectionString`, `databaseUrl`, `migrationDatabaseUrl`).
@@ -843,11 +883,11 @@ actorFromAuth(req.auth), action: "test.performed", entityType: "test_entity", en
 ### 9.4 Integration tests (`tests/integration/`)
 - `auth.test.ts` (fake JWKS): should return 200 with the token's userId and role for a patient, a doctor, and an admin (A2) · should return 401 Unauthorized with no token, a non-Bearer scheme, a tampered token, a wrong aud, a wrong iss, typ=service, or an unknown kid (A2) · should return 401 TokenExpired for an expired token (A3) · should ignore X-User-Id and X-Role headers (A1) · should accept a token signed by a newly added key after exactly one extra JWKS request (A4) · should make at most one JWKS request for two unknown-kid requests within a minute (A4) · should reject a token whose kid was removed after the next refresh (A6) · should keep verifying with cached keys when the JWKS server fails (A5) · should return 401 when the JWKS server is down and no key matches (A5) · should forward X-Request-Id on a request-triggered JWKS fetch.
 - `rbac.test.ts` (routes of §9.3; RBAC matrix — CLAUDE.md → Testing policy "RBAC per route"): for each route × {no token, patient, doctor, admin} assert 401/403/200 per the table (A9) · onboarding: pending/rejected doctor 200, suspended doctor 403, pending patient 403 · verified: ev=false 403 EmailNotVerified, ev=true 201 · owned: owner 200, patient non-owner 404, doctor non-owner 403, unknown id 404, non-numeric id 404 · owned with a body `{ "ownerUserId": 101 }` from a non-owner still 404 (A10) · checked: doctor 9001 403, other doctor 200, admin 9001 200 (check does not apply) · pending patient on `owned/:id` gets 403 before any ownership query (A9).
-- `boot.test.ts`: should throw route_without_policy from createPublicApp when buildPublicRoutes returns an unpoliced route (module mock) (A8) · should throw route_without_guard likewise · should start with test routers that lack authorize because extraRouters are mounted after the check (A8) · should keep health reachable without a token on both listeners.
+- `boot.test.ts`: should throw route_without_policy from createPublicApp when buildPublicRoutes returns an unpoliced route (module mock) (A8) · should throw route_without_guard likewise · should start with test routers that lack authorize because extraRouters are mounted after the check (A8) · should keep health reachable without a token on both listeners. · (H1) middleware_without_policy and handler_before_authorize through the real createPublicApp. · (round 2) param_callback_without_policy through the real createPublicApp.
 - `audit.test.ts`: should write exactly one row with actor, action, entity, request id, and metadata when the transaction commits (A11) · should leave no row when the transaction rolls back (A11) · should return 500 and write no row when the metadata is invalid (A12) · should reject UPDATE, DELETE, and TRUNCATE on audit_logs, audit_logs_default, and a monthly partition with 42501 as care_app (A13) · should allow INSERT and SELECT as care_app (A13) · should reject a metadata object over 4 KB at the database (A12) · should reject a user actor without a user id at the database (A12).
-- `db-roles.test.ts`: should connect the request pool as care_app with vcare_app membership (A14) · should deny CREATE TABLE in public and ALTER TABLE audit_logs to care_app (A14) · should deny EXECUTE on audit_logs_ensure_partitions to a role outside vcare_app (owner creates a throwaway role) · should pin the function's search_path and SECURITY DEFINER (`pg_proc.prosecdef`, `proconfig`) · should make ensureAppLogin idempotent and resync the password on a second run.
+- `db-roles.test.ts`: should connect the request pool as care_app with vcare_app membership (A14) · should deny CREATE TABLE in public and ALTER TABLE audit_logs to care_app (A14) · should deny EXECUTE on audit_logs_ensure_partitions to a role outside vcare_app (owner creates a throwaway role) · should pin the function's search_path and SECURITY DEFINER (`pg_proc.prosecdef`, `proconfig`) · should make ensureAppLogin idempotent and resync the password on a second run. · (review 2026-10-03) column-level INSERT on the parent and every partition; care_app `INSERT … (created_at)` / `(id)` → 42501 while `AuditRecorder.record` inserts (L2) · `ensureAppLogin` refuses a pre-existing CREATEDB login (L1) · (round 2) refuses a pre-existing login that is a member of the owner role / `pg_write_all_data`, membership untouched · function `lock_timeout=200ms`.
 - `migrations.test.ts` (updated): should create partitions for the current UTC month and the next two after migrate latest · should round-trip rollback and latest for every migration (the existing btree_gist case now rolls back the whole batch; its `finally` re-runs `latest` and `ensureAppLogin`, because dropping `vcare_app` removes `care_app`'s membership) · should keep vcare_app when another database still references it (DROP ROLE guarded).
-- `worker-partitions.test.ts` (real Postgres, two Knex pools as care_app): should create the configured months and grant them when a month is missing (owner drops a future partition first) (A15) · should create nothing on a second tick (A15) · should complete two concurrent ticks from two pools with one partition set and no error (A15) · should skip when another session holds the advisory lock, then create once it is released (A15) · should report audit_default_partition_nonempty with rows when a far-future row lands in the default partition (A16) · should report audit_partition_missing when a default-partition row blocks a new month (A16) · should run one tick and exit 0 for `worker --once audit-partitions`, and exit 1 for an unknown loop (child process; skipped on win32 like the foundation process tests).
+- `worker-partitions.test.ts` (real Postgres, two Knex pools as care_app): should create the configured months and grant them when a month is missing (owner drops a future partition first) (A15) · should create nothing on a second tick (A15) · should complete two concurrent ticks from two pools with one partition set and no error (A15) · should skip when another session holds the advisory lock, then create once it is released (A15) · should report audit_default_partition_nonempty with rows when a far-future row lands in the default partition (A16) · should report audit_partition_missing when a default-partition row blocks a new month (A16) · should run one tick and exit 0 for `worker --once audit-partitions`, and exit 1 for an unknown loop (child process; skipped on win32 like the foundation process tests). · (review 2026-10-03) `--once` exits 1 with `worker_once_incomplete` when a default row blocks a month or the lock is held (L4) · a concurrent audit insert completes < 200 ms while a tick attaches a month under an open audit transaction (L3).
 - `health.test.ts` (updated): should include identityJwks up when the fake JWKS served keys (A7) · should report identityJwks down and keep 200 ok when the JWKS fetch failed (A7) · should report identityJwks down and keep 503 down when Postgres is down · should match the updated contract HealthStatus on both listeners (contract conformance).
 - `logs.test.ts` (updated): should never contain a token, a token signature, the Authorization header, the JWKS path, or an audit metadata value in captured logs across all auth, rbac, audit, and JWKS-failure scenarios.
 - Contract conformance: every 401/403/404 body above is validated against `ErrorEnvelope` with a `code` from `ErrorCode`.
@@ -963,6 +1003,14 @@ should log and emit the metric once per transition. Integration `redis-stall.tes
 `black-hole-proxy` helper: connected, then black-holed while `status` stays `ready`) — after 3 slow requests, the next
 idempotency and rate-limited requests complete in < 100 ms with `idempotency_skipped{reason:"redis_breaker_open"}` and
 `rate_limiter_degraded`; after the proxy forwards again and 5 s pass, Redis is used again.
+
+**Socket timeout (review 2026-10-03, M2).** `createRedis` also sets `socketTimeout: REDIS_SOCKET_TIMEOUT_MS` (2 000 ms;
+`REDIS_COMMAND_TIMEOUT_MS = 500` < socket 2 s < `REDIS_BREAKER_OPEN_MS` 5 s; constants, not env): a connection with
+commands outstanding that receives no byte for 2 s is destroyed and `retryStrategy` redials, so a half-open socket
+(un-RST failover) recovers within seconds instead of ~15 min and the half-open probe lands on the fresh connection.
+The breaker does not disconnect on open (it also opens on slow-but-alive replies). `redis-stall.test.ts` no longer
+disconnects the client itself: it asserts `redis_breaker_closed` within `REDIS_SOCKET_TIMEOUT_MS +
+REDIS_BREAKER_OPEN_MS + 3 s`, a new proxied connection, and `redis_recovered`.
 
 ### 12.4 [#11](https://github.com/OmarRedaX/vcare-care-api/issues/11) — malformed idempotency record crashes the process
 > "a stored `done` record without a numeric `status` makes `replay()` throw inside an unguarded async block →
@@ -1103,6 +1151,10 @@ hand-edited).
   `kid` at most once per minute; while refreshes fail, cached keys stay trusted for at most 1 hour after the last
   successful fetch). Required claims:
   ```
+- **C3 — `bearerUser` claims (applied 2026-10-03, review D1).** The required-claims line now lists what the verifier
+  already enforced: header `alg=EdDSA`; `sub`, `exp`, `iat`, `jti` (≤ 64 chars), `role`, `status`, `ev`; `exp`/`nbf`
+  with a 30 s tolerance; expired → `401 TokenExpired`, otherwise `401 Unauthorized`. No behaviour change; the hub copy
+  was re-synced.
 
 ### 14.3 Platform changes (applied 2026-10-02)
 The orchestrator applied these; this spec does not edit them. They are listed so `/update-docs` and reviewers can
@@ -1127,3 +1179,37 @@ This spec matches the current CLAUDE.md wording:
   `INSERT, SELECT` only. `care-migrate` runs `ensure-app-login` after `latest`. §2.1, §2.2, §3.8, and §3.10 implement
   exactly this. The `USAGE` grant on a table's own sequence (`audit_logs_id_seq`) belongs to its `INSERT` grant: it is
   not a table privilege.
+
+---
+
+## 15. As-built notes (2026-10-03)
+
+Spec v1.0.0 was written before the build; v1.1.0 records the as-built state after `/develop`, `/write-tests`,
+`/manual-qa`, two fix-review rounds, and a clean re-review (the review file was deleted; the module has no open
+findings). The sections above already carry the review-driven changes inline, marked "review 2026-10-03" or
+"round 2". The intentional divergences from the v1.0.0 text:
+
+- **Boot route assertion (§3.4.4) is stricter than v1.0.0.** It checks per-method chains, throws
+  `handler_before_authorize`, `middleware_without_policy` (router-level layers must be routers, error handlers, or
+  `markPreAuth` middleware), walks mounted sub-apps, and throws `param_callback_without_policy` for any
+  `router.param` / `app.param` callback on a walked router (no exemption; none exists in `src/` or `tests/`).
+- **`ensureAppLogin` (§3.8) refuses** an existing role that is privileged, owns objects, or is a member of any role
+  other than `vcare_app` (`app_login_role_privileged`); DDL failures surface as `app_login_ddl_failed` carrying only
+  the SQLSTATE (the password never reaches a log line).
+- **`audit_logs` grants (§2.2) are column-level for `INSERT`** (migration `20261003120000_audit_logs_column_insert_grants`)
+  and partitions are created with `CREATE TABLE ... (LIKE ...)` + `ATTACH PARTITION` under `lock_timeout` 200 ms
+  (migration `20261003120100_audit_logs_partitions_attach`). The app role cannot set `id` or `created_at`.
+- **Worker (§3.6):** `--once audit-partitions` exits 1 (`worker_once_incomplete`) when partitions were not ensured or
+  the advisory lock was held.
+- **Redis (§12.3):** `socketTimeout` 2 s on every client (constant `REDIS_SOCKET_TIMEOUT_MS`, not an env var).
+- **JWKS DTO (§3.3.2):** unknown public members are stripped; a private `d` member is rejected.
+- **Contract:** C1 and C2 applied; D1 added claims `exp`, `iat`, `jti` and the 30 s tolerance to `bearerUser`. No
+  further contract drift as of this date; no route was added.
+- **Known, deliberate:** a malformed `:param` without a token returns 400 `ValidationFailed`, not 401 (Express decodes
+  params before `userGuard`; §12.1 / A17).
+- **Test results (2026-10-03):** unit 48 suites / 767 passed; integration 18 suites / 192 passed, 2 skipped (POSIX
+  SIGTERM tests on win32); manual QA 167 pass at the first run, 143/143 scripted re-run after the first fix-review
+  ([manual-qa.md](./manual-qa.md)).
+- **Carry to the `doctors` review:** the boot assertion is guard-kind blind (a user-guard route on the internal
+  listener would boot; must fail once `serviceGuard` lands), and the doctor `suspended_at` check is opt-in per policy
+  (make it fail closed for doctor-role policies).

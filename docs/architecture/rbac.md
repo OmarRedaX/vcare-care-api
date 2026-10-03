@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [rbac, authorization, ownership, privacy, security]
 related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -16,9 +16,15 @@ Implementation guidance: the **`rbac-ownership-guard`** skill. Every route here 
 
 ## Principles
 1. **Deny by default.** Every route has `authorize(policy)`; `authorize(undefined)` or an invalid policy throws at
-   route registration, and `assertRoutesAuthorized(app.router)` stops the process at boot when a route lacks
-   `authorize` or a guard before it (`route_without_policy` / `route_without_guard`). Health is the only exemption, by
-   explicit marker (`markProbeExempt`).
+   route registration, and `assertRoutesAuthorized(app.router)` stops the process at boot when any route **method**
+   (per verb; `.all` entries count for every verb) lacks `authorize`, lacks a guard before it, or runs any other
+   handler before it (`route_without_policy` / `route_without_guard` / `handler_before_authorize`), and when any
+   non-route layer is neither a router (sub-apps included), an error handler, nor middleware explicitly marked
+   `markPreAuth` (`middleware_without_policy` — so `router.use(path, handler)` cannot serve unpoliced), and when any
+   walked router has a `router.param` / `app.param` callback (`param_callback_without_policy` — Express runs those
+   before the route's guard; never use `router.param`, load by id inside the service after `authorize`). Health is
+   the only exemption from guard + policy, by explicit marker (`markProbeExempt`); it is not exempt from the param
+   check.
 2. **The principal is the verified token only** — `req.auth` from the user-guard (user JWT, verified locally via
    Identity's JWKS cached in memory, `lib/auth`) or the service-guard (service JWT, lands with the doctors module).
    `X-User-Id`, `X-Role`, `X-Forwarded-User`, body ids, and path params never grant access; ownership resolvers and

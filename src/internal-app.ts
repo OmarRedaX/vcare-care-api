@@ -7,6 +7,7 @@ import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
 import { requestLogger } from "./lib/logger/request-logger";
 import { assertRoutesAuthorized } from "./lib/rbac/assert-routes-authorized";
+import { markPreAuth } from "./lib/rbac/markers";
 import { requestId } from "./lib/request-id/request-id";
 import { buildInternalRoutes } from "./internal-routes";
 
@@ -19,10 +20,10 @@ export function createInternalApp(options?: AppOptions): express.Express {
     app.use(requestId());
     app.use(inFlight());
     app.use(requestLogger());
-    app.use(helmet());
+    app.use(markPreAuth(helmet()));
     app.use(optionsNotFound);
 
-    app.use(express.json({ limit: "100kb", strict: true, type: "application/json" }));
+    app.use(markPreAuth(express.json({ limit: "100kb", strict: true, type: "application/json" })));
 
     app.use("/internal/health", buildHealthRouter());
     app.use("/internal", buildInternalRoutes());

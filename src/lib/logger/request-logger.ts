@@ -1,13 +1,14 @@
 import type { RequestHandler } from "express";
 import { routePattern } from "../http/route-pattern";
 import { logger } from "./logger";
+import { markPreAuth } from "../rbac/markers";
 
 /**
  * One `request_completed` line per request. NEVER logs the URL, query string, headers, or body —
  * only the matched route pattern, method, status, error code, and duration.
  */
 export function requestLogger(): RequestHandler {
-    return (req, res, next) => {
+    return markPreAuth((req, res, next) => {
         const startedAt = performance.now();
         let settled = false;
 
@@ -52,5 +53,5 @@ export function requestLogger(): RequestHandler {
         });
 
         next();
-    };
+    });
 }

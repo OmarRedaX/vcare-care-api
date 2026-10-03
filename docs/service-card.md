@@ -3,7 +3,7 @@ title: Care Service — Service Card
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [service-card, catalog, care]
 related: [index, system-design, runbook, integration, data-model]
 sync_to_hub: catalog/care-service.card.md
@@ -22,7 +22,7 @@ sync_to_hub: catalog/care-service.card.md
 | **Status** | foundation built (2026-09-28): both listeners, health live/ready, migrations, `care-worker`; access base built (2026-10-02): user-token verification via Identity's JWKS, deny-by-default `authorize` with a boot route assertion, append-only `audit_logs` (monthly partitions, `audit-partitions` worker loop), owner/app database roles; no business modules yet |
 | **Tier** | 1 (booking and consultations are on the synchronous patient path) · availability target **99.9 %** monthly (ADR 0005) |
 | **Runtime** | Node.js 24 LTS + TypeScript (strict), Express 5. `care-api`: two listeners, public `PORT=3001` (`/api/*`), internal `INTERNAL_PORT=3101` (`/internal/*`), 2–6 tasks. `care-worker`: sync retrier, notification outbox, reminders, cache refresh, audit partitions (1 task) |
-| **Datastores** | PostgreSQL 17 (own `care` database, `btree_gist`; primary + async replica; up to `DATABASE_POOL_MAX` + 1 readiness-probe connection per API task, 2 per worker task; two roles — owner `care` for migrations only, app login `care_app` in the `NOLOGIN` group `vcare_app` for `care-api`/`care-worker`, explicit per-table grants, `audit_logs` append-only by grant — ADR 0018) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
+| **Datastores** | PostgreSQL 17 (own `care` database, `btree_gist`; primary + async replica; up to `DATABASE_POOL_MAX` + 1 readiness-probe connection per API task, 2 per worker task; two roles — owner `care` for migrations only, app login `care_app` in the `NOLOGIN` group `vcare_app` for `care-api`/`care-worker`, explicit per-table grants, `audit_logs` append-only by grant with column-level `INSERT` — ADR 0018) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
 
 ## Responsibilities
 The medical marketplace: doctor profiles and credentialing, specialties, working hours, schedule

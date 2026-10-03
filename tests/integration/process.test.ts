@@ -26,7 +26,11 @@ function childEnv(overrides: Record<string, string | undefined>): NodeJS.Process
     return env;
 }
 
-function run(entrypoint: string, env: NodeJS.ProcessEnv, options?: { signalAfter?: string; timeoutMs?: number }): Promise<RunResult> {
+function run(
+    entrypoint: string,
+    env: NodeJS.ProcessEnv,
+    options?: { signalAfter?: string; signal?: NodeJS.Signals; timeoutMs?: number },
+): Promise<RunResult> {
     return new Promise<RunResult>((resolve, reject) => {
         const child = spawn(process.execPath, ["--import", "tsx", entrypoint], {
             cwd: REPO_ROOT,
@@ -46,7 +50,7 @@ function run(entrypoint: string, env: NodeJS.ProcessEnv, options?: { signalAfter
             stdout += chunk.toString("utf8");
             if (options?.signalAfter !== undefined && !signalled && stdout.includes(options.signalAfter)) {
                 signalled = true;
-                child.kill("SIGTERM");
+                child.kill(options.signal ?? "SIGTERM");
             }
         });
         child.stderr.on("data", (chunk: Buffer) => {
@@ -91,16 +95,40 @@ describe("entrypoint environment validation (F1)", () => {
     }, 40_000);
 });
 
+/** The boot JWKS refresh outcome: `.env.test` points IDENTITY_JWKS_URL at an unreachable port, so it fails fast. */
+const isBootJwksLine = (line: Record<string, unknown>): boolean =>
+    (line.message === "jwks_refreshed" || line.message === "jwks_refresh_failed") && line.trigger === "boot";
+
+describe("server boot wiring (L8)", () => {
+    // Runs on every platform: the child is killed once the line appears, no graceful shutdown is needed.
+    it("should start the JWKS cache at boot: one boot-triggered refresh is logged without any request", async () => {
+        const result = await run("src/server.ts", childEnv({ PORT: "34983", INTERNAL_PORT: "34984", LOG_LEVEL: "info" }), {
+            signalAfter: '"trigger":"boot"',
+            signal: "SIGKILL",
+        });
+        const lines = jsonLines(result.stdout + result.stderr);
+        const boot = lines.find(isBootJwksLine);
+        expect(boot).toBeDefined();
+        expect(boot).toMatchObject({ message: "jwks_refresh_failed", reason: "network" });
+        expect(lines.filter((line) => line.message === "request_completed")).toEqual([]);
+    }, 40_000);
+});
+
 describeSignals("graceful shutdown on SIGTERM (F19, F20)", () => {
     it("should log shutdown_started and shutdown_complete and exit 0 when the server receives SIGTERM", async () => {
         const result = await run("src/server.ts", childEnv({ PORT: "34981", INTERNAL_PORT: "34982", LOG_LEVEL: "info" }), {
-            signalAfter: "server_started",
+            signalAfter: '"trigger":"boot"',
         });
 
         expect(result.code).toBe(0);
-        const messages = jsonLines(result.stdout).map((line) => line.message);
+        const lines = jsonLines(result.stdout);
+        const messages = lines.map((line) => line.message);
         expect(messages).toEqual(expect.arrayContaining(["server_started", "shutdown_started", "shutdown_complete"]));
         expect(messages.indexOf("shutdown_started")).toBeLessThan(messages.indexOf("shutdown_complete"));
+        // L8: the booted server refreshed the JWKS on its own before shutting down.
+        const bootAt = lines.findIndex(isBootJwksLine);
+        expect(bootAt).toBeGreaterThanOrEqual(0);
+        expect(bootAt).toBeLessThan(messages.indexOf("shutdown_complete"));
     }, 40_000);
 
     it("should log worker_stopping and exit 0 when the idle worker receives SIGTERM", async () => {

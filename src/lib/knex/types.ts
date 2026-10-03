@@ -38,6 +38,14 @@ export interface AppLoginCredentials {
     password: string;
 }
 
+/** `ensureAppLogin`'s check of an existing app role (snake_case: the raw `pg_roles` row). */
+export interface ExistingAppRoleRow {
+    privileged: boolean;
+    owns_objects: boolean;
+    /** A direct `pg_auth_members` membership in any role other than `vcare_app` (owner, `pg_write_all_data`, …). */
+    has_other_memberships: boolean;
+}
+
 export interface AppLoginResult {
     /** `true` when the login was created; `false` when it existed and its password and membership were re-synced. */
     created: boolean;

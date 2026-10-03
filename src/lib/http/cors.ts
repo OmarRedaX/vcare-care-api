@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
 import type { CorsOptions } from "./types";
+import { markPreAuth } from "../rbac/markers";
 
 const ALLOWED_METHODS = "GET, POST, PATCH, DELETE";
 const ALLOWED_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Request-Id";
@@ -15,7 +16,7 @@ const MAX_AGE_SECONDS = "600";
 export function cors(options: CorsOptions): RequestHandler {
     const allowed = new Set(options.origins);
 
-    return (req, res, next) => {
+    return markPreAuth((req, res, next) => {
         const origin = req.get("Origin");
         if (origin === undefined || !allowed.has(origin)) {
             next();
@@ -35,5 +36,5 @@ export function cors(options: CorsOptions): RequestHandler {
         }
 
         next();
-    };
+    });
 }

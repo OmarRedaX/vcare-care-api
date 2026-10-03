@@ -11,8 +11,8 @@ center, and the audit log.
 > internal listener, config, DI, errors, logging, request ids, validation, Knex, Redis, idempotency, rate
 > limiting, graceful shutdown, worker loop, health probes, the `btree_gist` migration, Docker and CI.
 > The shared access base (JWKS user guard, `authorize`, audit log, worker partition loop — [`docs/access/`](./docs/access/))
-> is built and tested: `npm test` 46 suites / 724 tests pass; `npm run test:integration` 18 suites, 180 passed,
-> 2 SIGTERM cases skipped on Windows (green on Linux CI) (2026-10-03). Manual QA ([`docs/foundation/manual-qa.md`](./docs/foundation/manual-qa.md),
+> is built and tested: `npm test` 48 suites / 760 tests pass; `npm run test:integration` 18 suites, 189 passed,
+> 2 SIGTERM cases skipped on Windows (green on Linux CI) (2026-10-03, after the access fix-review). Manual QA ([`docs/foundation/manual-qa.md`](./docs/foundation/manual-qa.md),
 > `scripts/curl-test-foundation.sh`) passed 50 of 52 scenarios. No domain endpoints exist yet;
 > [`contracts/openapi.yaml`](./contracts/openapi.yaml) is the design they get built against.
 >
