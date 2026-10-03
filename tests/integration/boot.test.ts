@@ -1,0 +1,107 @@
+import { Router } from "express";
+import type { RequestHandler } from "express";
+import request from "supertest";
+import { createPublicApp } from "../../src/app";
+import { createInternalApp } from "../../src/internal-app";
+import { userGuard } from "../../src/lib/auth/user-guard";
+import { authorize } from "../../src/lib/rbac/authorize";
+import { buildInternalRoutes } from "../../src/internal-routes";
+import type * as InternalRoutesModule from "../../src/internal-routes";
+import { buildPublicRoutes } from "../../src/routes";
+import type * as RoutesModule from "../../src/routes";
+import { buildTestApps } from "../helpers/app";
+import { expectHealthLiveBody } from "../helpers/contract";
+import { closeDb, truncateAll } from "../helpers/db";
+import { closeRedis, ensureRedisReady } from "../helpers/redis";
+import { buildEnvelopeRouter } from "../helpers/test-routers";
+
+/**
+ * The module routers are the one thing replaced here (spec §9.4 "module mock"): no business module exists yet, so an
+ * unpoliced route can only reach the real createPublicApp/createInternalApp through src/routes.ts. Everything else —
+ * health, middleware, the boot assertion — is the real wiring.
+ */
+jest.mock("../../src/routes", () => {
+    const actual = jest.requireActual<typeof RoutesModule>("../../src/routes");
+    return { buildPublicRoutes: jest.fn(actual.buildPublicRoutes) };
+});
+jest.mock("../../src/internal-routes", () => {
+    const actual = jest.requireActual<typeof InternalRoutesModule>("../../src/internal-routes");
+    return { buildInternalRoutes: jest.fn(actual.buildInternalRoutes) };
+});
+
+const handler: RequestHandler = (_req, res) => {
+    res.json({ ok: true });
+};
+
+describe("boot-time route authorization (integration: real app factories)", () => {
+    beforeAll(async () => {
+        await ensureRedisReady();
+        await truncateAll();
+    });
+
+    afterAll(async () => {
+        await closeRedis();
+        await closeDb();
+    });
+
+    it("should throw route_without_policy from createPublicApp when a module route has no authorize (A8)", () => {
+        const router = Router();
+        router.get("/specialties", handler);
+        jest.mocked(buildPublicRoutes).mockReturnValueOnce(router);
+        expect(() => createPublicApp()).toThrow("route_without_policy: GET /specialties");
+    });
+
+    it("should throw route_without_guard from createPublicApp when authorize is not preceded by a guard (A8)", () => {
+        const router = Router();
+        router.post("/specialties", authorize({ kind: "user", roles: ["admin"], owner: { kind: "none" } }), handler);
+        jest.mocked(buildPublicRoutes).mockReturnValueOnce(router);
+        expect(() => createPublicApp()).toThrow("route_without_guard: POST /specialties");
+    });
+
+    it("should throw route_without_policy from createInternalApp for an unpoliced nested internal route (A8)", () => {
+        const inner = Router();
+        inner.get("/:userId/summary", userGuard(), handler);
+        const router = Router();
+        router.use("/doctors", inner);
+        jest.mocked(buildInternalRoutes).mockReturnValueOnce(router);
+        expect(() => createInternalApp()).toThrow("route_without_policy: GET /:userId/summary");
+    });
+
+    it("should throw route_without_policy at registration when a route passes an undefined policy (A8)", () => {
+        expect(() => {
+            const router = Router();
+            router.get("/x", userGuard(), authorize(undefined), handler);
+        }).toThrow("route_without_policy");
+    });
+
+    it("should boot with the real module routers (every production route guarded and authorized)", () => {
+        expect(() => buildTestApps()).not.toThrow();
+    });
+
+    it("should start with test routers that lack authorize because extraRouters are mounted after the check (A8)", async () => {
+        const { publicApp, internalApp } = buildTestApps({
+            publicRouters: [{ path: "/api", router: buildEnvelopeRouter() }],
+            internalRouters: [{ path: "/internal", router: buildEnvelopeRouter() }],
+        });
+        expect((await request(publicApp).get("/api/__test/context")).status).toBe(200);
+        expect((await request(internalApp).get("/internal/__test/context")).status).toBe(200);
+    });
+
+    it("should keep health reachable without a token on both listeners (probe-exempt)", async () => {
+        const { publicApp, internalApp } = buildTestApps();
+        for (const [app, path] of [
+            [publicApp, "/api/health/live"],
+            [internalApp, "/internal/health/live"],
+        ] as const) {
+            const res = await request(app).get(path);
+            expect(res.status).toBe(200);
+            expectHealthLiveBody(res.body);
+        }
+        for (const [app, path] of [
+            [publicApp, "/api/health/ready"],
+            [internalApp, "/internal/health/ready"],
+        ] as const) {
+            expect((await request(app).get(path)).status).toBe(200);
+        }
+    });
+});

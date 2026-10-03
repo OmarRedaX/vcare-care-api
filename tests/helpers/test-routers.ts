@@ -283,14 +283,20 @@ export function buildAccessTestRouter(): Router {
     return sealRouter(router);
 }
 
+/** Clinical fixture text used by the invalid-metadata audit path; it must never reach a row or a log line. */
+export const AUDIT_CLINICAL_FIXTURE = "SYNTHETIC-COMPLAINT-7731";
+
 /**
- * `POST /api/__test/audit` body `{ fail?: boolean }`: one audit row in a transaction that commits (201) or rolls back
- * (500). Mount at `/api`.
+ * `POST /api/__test/audit` body `{ fail?: boolean, invalid?: boolean }`: one audit row in a transaction that commits
+ * (201) or rolls back (500). `invalid` passes clinical text under a redacted metadata key (rejected → 500, no row).
+ * Mount at `/api`.
  */
 export function buildAuditTestRouter(): Router {
     const router = Router();
     router.post("/__test/audit", userGuard(), authorize(ACCESS_TEST_POLICIES.audit), async (req: Request, res: Response) => {
-        const fail = (req.body as { fail?: unknown } | undefined)?.fail === true;
+        const body = req.body as { fail?: unknown; invalid?: unknown } | undefined;
+        const fail = body?.fail === true;
+        const invalid = body?.invalid === true;
         const auth = req.auth;
         if (auth === undefined) {
             throw new Error("unreachable: authorize requires a principal");
@@ -302,7 +308,7 @@ export function buildAuditTestRouter(): Router {
                 action: "test.performed",
                 entityType: "test_entity",
                 entityId: 1,
-                metadata: { reason: "synthetic" },
+                metadata: invalid ? { complaintText: AUDIT_CLINICAL_FIXTURE } : { reason: "synthetic" },
             });
             if (fail) {
                 throw new Error("synthetic rollback");

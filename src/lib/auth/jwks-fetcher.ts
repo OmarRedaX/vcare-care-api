@@ -58,6 +58,9 @@ export async function fetchJwksDocument(url: string, signal: AbortSignal): Promi
     }
 
     const discard = (): void => {
+        // Destroying an undici body emits 'error' (RequestAbortedError); without a listener that is an uncaught
+        // exception that would take the whole process down on any non-200 / non-JSON JWKS response.
+        response.body.on("error", () => undefined);
         response.body.destroy();
     };
 

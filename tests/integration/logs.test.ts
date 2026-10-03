@@ -6,7 +6,17 @@ import { buildTestApps, withContainerOverrides } from "../helpers/app";
 import { closeDb, truncateAll } from "../helpers/db";
 import { captureLogs, expectNoSensitiveStrings } from "../helpers/log-capture";
 import { closeRedis, createUnreachableRedis, ensureRedisReady } from "../helpers/redis";
-import { buildEnvelopeRouter, buildIdempotencyRouter } from "../helpers/test-routers";
+import { JWKS_PATH, startFakeJwks, withFakeJwksCache } from "../helpers/fake-jwks";
+import {
+    AUDIT_CLINICAL_FIXTURE,
+    buildAccessTestRouter,
+    buildAuditTestRouter,
+    buildEnvelopeRouter,
+    buildIdempotencyRouter,
+    buildNestedRouter,
+} from "../helpers/test-routers";
+import { signExpiredUserToken, signUserToken, tamperToken } from "../helpers/tokens";
+import type { FakeJwks } from "../helpers/types";
 
 jest.setTimeout(20_000);
 
@@ -198,5 +208,135 @@ describe("privacy of captured logs (integration)", () => {
         const completed = capture.lines().filter((line) => line.message === "request_completed");
         expect(completed.map((line) => line.requestId).sort()).toEqual(serviceLines.map((line) => line.requestId).sort());
         expect(completed[0]).toMatchObject({ route: "/api/__test/context", method: "GET", service: "care-service" });
+    });
+
+    describe("access: tokens, RBAC, audit, JWKS failures", () => {
+        const KID = "kid-log-probe-5521";
+        const JTI = "jti-log-probe-8812";
+        let fake: FakeJwks;
+
+        beforeAll(async () => {
+            fake = await startFakeJwks([KID]);
+        });
+
+        afterAll(async () => {
+            await fake.close();
+        });
+
+        function accessApp() {
+            return buildTestApps({
+                publicRouters: [
+                    { path: "/api", router: buildAccessTestRouter() },
+                    { path: "/api", router: buildAuditTestRouter() },
+                    { path: "/api", router: buildNestedRouter() },
+                ],
+            }).publicApp;
+        }
+
+        it("regression #6: should keep the full mount prefix in request_completed.route when a nested router's handler throws", async () => {
+            const app = accessApp();
+            const admin = await signUserToken(fake.key(KID), { sub: "303", role: "admin" });
+            const capture = captureLogs();
+            try {
+                await withFakeJwksCache(fake, async () => {
+                    expect((await request(app).get("/api/__test/nested/inner/boom/42")).status).toBe(500);
+                    expect(
+                        (await request(app).get("/api/__test/nested/guarded/boom/42").set("Authorization", `Bearer ${admin}`)).status,
+                    ).toBe(500);
+                });
+            } finally {
+                capture.restore();
+            }
+            const routes = capture
+                .lines()
+                .filter((line) => line.message === "request_completed")
+                .map((line) => line.route);
+            expect(routes).toEqual(["/api/__test/nested/inner/boom/:id", "/api/__test/nested/guarded/boom/:id"]);
+            expectNoSensitiveStrings(capture, ["/boom/42"]);
+        });
+
+        it("should never log a token, its parts, the Authorization header, the JWKS path, a kid, a jti, or an audit metadata value", async () => {
+            const app = accessApp();
+            const key = fake.key(KID);
+            const tokens = {
+                patient: await signUserToken(key, { sub: "101", role: "patient", jti: JTI }),
+                admin: await signUserToken(key, { sub: "303", role: "admin", jti: JTI }),
+                unverified: await signUserToken(key, { sub: "101", role: "patient", ev: false, jti: JTI }),
+                suspended: await signUserToken(key, { sub: "202", role: "doctor", status: "suspended", jti: JTI }),
+                expired: await signExpiredUserToken(key, { jti: JTI }),
+                tampered: tamperToken(await signUserToken(key, { jti: JTI })),
+                service: await signUserToken(key, { typ: "service", jti: JTI }),
+            };
+            const unknownKid = await signUserToken(key, { jti: JTI }, { header: { kid: "kid-unknown-log-probe-3307" } });
+            const bearer = (token: string) => `Bearer ${token}`;
+
+            const capture = captureLogs();
+            const statuses: number[] = [];
+            try {
+                await withFakeJwksCache(fake, async ({ cache }) => {
+                    const get = async (path: string, token?: string) => {
+                        const req = request(app).get(path);
+                        statuses.push((token === undefined ? await req : await req.set("Authorization", bearer(token))).status);
+                    };
+                    await get("/api/__test/access/any", tokens.patient); // 200
+                    await get("/api/__test/access/admin", tokens.patient); // 403 role
+                    await get("/api/__test/access/onboarding", tokens.suspended); // 403 status
+                    await get("/api/__test/access/owned/2", tokens.patient); // 404 ownership
+                    await get("/api/__test/access/any", tokens.expired); // 401 TokenExpired
+                    await get("/api/__test/access/any", tokens.tampered); // 401
+                    await get("/api/__test/access/any", tokens.service); // 401
+                    await get("/api/__test/access/any", unknownKid); // 401 after a gated refetch
+                    statuses.push(
+                        (await request(app).post("/api/__test/access/verified").set("Authorization", bearer(tokens.unverified)).send({}))
+                            .status,
+                    ); // 403 EmailNotVerified
+                    for (const body of [{}, { fail: true }, { invalid: true }]) {
+                        statuses.push(
+                            (await request(app).post("/api/__test/audit").set("Authorization", bearer(tokens.admin)).send(body)).status,
+                        ); // 201, 500, 500
+                    }
+
+                    // JWKS failures: a 503 and a malformed body are logged with host and reason only.
+                    fake.setMode("fail", { status: 503 });
+                    await cache.refresh("interval");
+                    fake.setMode("normal");
+                    fake.setBody('{"keys":[{"kty":"OKP","x":"SYNTHETIC-JWKS-BODY-4410"}]}');
+                    await cache.refresh("interval");
+                    fake.setBody(undefined);
+                });
+            } finally {
+                capture.restore();
+            }
+
+            expect(statuses).toEqual([200, 403, 403, 404, 401, 401, 401, 401, 403, 201, 500, 500]);
+            // The pipeline really logged (so the absence below is meaningful).
+            const messages = capture.lines().map((line) => line.message);
+            expect(messages.filter((message) => message === "request_completed")).toHaveLength(12);
+            expect(messages).toEqual(expect.arrayContaining(["access_denied", "jwks_refresh_failed", "unhandled_error", "jwks_refreshed"]));
+            const denied = capture.lines().filter((line) => line.message === "access_denied");
+            expect(denied.map((line) => line.reason)).toEqual(
+                expect.arrayContaining(["role", "status", "ownership_not_found", "email_unverified"]),
+            );
+            expect(capture.lines().find((line) => line.message === "jwks_refresh_failed")).toMatchObject({
+                host: new URL(fake.jwksUrl).host,
+                reason: "http_status",
+                status: 503,
+            });
+
+            const forbidden: string[] = [
+                "Bearer ",
+                JWKS_PATH,
+                KID,
+                "kid-unknown-log-probe-3307",
+                JTI,
+                '"reason":"synthetic"',
+                AUDIT_CLINICAL_FIXTURE,
+                "SYNTHETIC-JWKS-BODY-4410",
+                ...Object.values(tokens).flatMap((token) => [token, ...token.split(".")]),
+                unknownKid,
+            ];
+            expectNoSensitiveStrings(capture, forbidden);
+            expect(capture.text().toLowerCase()).not.toContain("authorization");
+        });
     });
 });

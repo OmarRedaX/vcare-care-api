@@ -227,3 +227,89 @@ describe("lib/error/errorHandler", () => {
         expect(codes).toEqual(["Conflict"]);
     });
 });
+
+/** Foundation issue #5: a malformed percent-encoded path parameter used to be a 500 with the raw value logged. */
+describe("regression #5: lib/error/errorHandler client errors", () => {
+    let logs: LogCapture;
+    beforeEach(() => {
+        logs = captureLogs();
+    });
+    afterEach(() => {
+        logs.restore();
+    });
+
+    it("should map a URIError to 400 ValidationFailed with the path detail and no log line", async () => {
+        const app = harness(() => {
+            const error = new URIError("Failed to decode param '%E0%A4%A'");
+            (error as URIError & { status: number }).status = 400;
+            throw error;
+        });
+        const res = await request(app).get("/t");
+        expect(res.status).toBe(400);
+        expect(res.body.error).toEqual({
+            code: "ValidationFailed",
+            message: "Request validation failed",
+            details: [{ field: "path", issue: "must be valid percent-encoding" }],
+            requestId: REQUEST_ID,
+        });
+        expect(logs.lines()).toEqual([]);
+        expect(logs.text()).not.toContain("%E0%A4%A");
+    });
+
+    it("should map a URIError from a real Express 5 :param route to 400 without echoing the raw value", async () => {
+        const app = express();
+        app.use((req, _res, next) => {
+            req.requestId = REQUEST_ID;
+            next();
+        });
+        app.get("/things/:value", (_req, res) => {
+            res.json({ ok: true });
+        });
+        app.use(errorHandler);
+        const res = await request(app).get("/things/%E0%A4%A");
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("ValidationFailed");
+        expect(JSON.stringify(res.body)).not.toContain("%E0%A4%A");
+        expect(logs.text()).not.toContain("%E0%A4%A");
+        expect(logs.lines().some((line) => line.message === "unhandled_error")).toBe(false);
+    });
+
+    it("should map a non-AppError with status 404 to NotFound and other 4xx to ValidationFailed without echoing the message", async () => {
+        const cases: Array<[Record<string, unknown>, number, string, unknown[]]> = [
+            [{ status: 404 }, 404, "NotFound", []],
+            [{ statusCode: 404 }, 404, "NotFound", []],
+            [{ status: 413 }, 400, "ValidationFailed", [{ field: "request", issue: "could not be processed" }]],
+            [{ statusCode: 415 }, 400, "ValidationFailed", [{ field: "request", issue: "could not be processed" }]],
+        ];
+        for (const [props, status, code, details] of cases) {
+            const app = harness(() => {
+                throw Object.assign(new Error("SYNTHETIC-RAW-VALUE-6610 in the message"), { name: "LibraryError" }, props);
+            });
+            const res = await request(app).get("/t");
+            expect(res.status).toBe(status);
+            expect(res.body.error.code).toBe(code);
+            expect(res.body.error.details).toEqual(details);
+            expect(JSON.stringify(res.body)).not.toContain("SYNTHETIC-RAW-VALUE-6610");
+        }
+        const mapped = logs.lines().filter((line) => line.message === "client_error_mapped");
+        expect(mapped).toHaveLength(4);
+        expect(mapped[0]).toMatchObject({ level: "warn", name: "LibraryError", status: 404 });
+        expect(logs.text()).not.toContain("SYNTHETIC-RAW-VALUE-6610");
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+        ["no status", {}],
+        ["a 5xx status", { status: 503 }],
+        ["a 3xx status", { status: 302 }],
+        ["a non-integer status", { status: 404.5 }],
+        ["a string status", { status: "404" }],
+    ])("should keep 500 InternalError for a non-AppError with %s", async (_label, props) => {
+        const app = harness(() => {
+            throw Object.assign(new Error("boom"), props);
+        });
+        const res = await request(app).get("/t");
+        expect(res.status).toBe(500);
+        expect(res.body.error.code).toBe("InternalError");
+        expect(logs.lines().some((line) => line.message === "unhandled_error")).toBe(true);
+    });
+});

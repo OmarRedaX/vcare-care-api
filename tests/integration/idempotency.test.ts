@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { TOKENS } from "../../src/lib/di/tokens";
+import { hashBody } from "../../src/lib/idempotency/idempotency";
 import { redis } from "../../src/lib/redis/redis";
 import { buildTestApps, withContainerOverrides } from "../helpers/app";
 import { expectErrorEnvelope, expectSuccessEnvelope } from "../helpers/contract";
@@ -261,6 +262,50 @@ describe("idempotency middleware (integration: real Redis)", () => {
             });
         } finally {
             unreachable.disconnect();
+        }
+    });
+
+    /**
+     * Foundation issue #11: a stored `done` record without a numeric status made replay() throw inside an unguarded
+     * async block (unhandledRejection → process exit 1); unparsable JSON was read as "absent" and answered 409 forever.
+     */
+    it.each([
+        ["a done record without a status", (hash: string) => JSON.stringify({ state: "done", bodyHash: hash })],
+        ["garbage", () => "garbage"],
+    ])("regression #11: should run the handler, stay up, and then store and replay normally when %s is stored under the key", async (_label, stored) => {
+        const app = publicApp();
+        const key = randomUUID();
+        const body = { amount: 7 };
+        const value = stored(hashBody(body));
+        // The principal is the loopback IP: seed both spellings so the computed key is covered either way.
+        for (const ip of ["127.0.0.1", "::1"]) {
+            await redis.set(`idem:POST ${ROUTE}:ip:${ip}:${key}`, value, "PX", 60_000);
+        }
+
+        const rejections: unknown[] = [];
+        const onRejection = (reason: unknown): void => {
+            rejections.push(reason);
+        };
+        process.on("unhandledRejection", onRejection);
+        try {
+            const first = await request(app).post(ROUTE).set("Idempotency-Key", key).send(body);
+            expect(first.status).toBe(201);
+            expect(counters.idem).toBe(1);
+
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const second = await request(app).post(ROUTE).set("Idempotency-Key", key).send(body);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const third = await request(app).post(ROUTE).set("Idempotency-Key", key).send(body);
+
+            expect(second.status).toBe(201);
+            expect(third.status).toBe(201);
+            expect(third.body).toEqual(second.body); // stored by the second request, replayed to the third
+            expect(counters.idem).toBe(2);
+            const record = JSON.parse((await redis.get(await storedKeyFor(ROUTE, key))) ?? "{}") as { state?: string; status?: number };
+            expect(record).toMatchObject({ state: "done", status: 201 });
+            expect(rejections).toEqual([]);
+        } finally {
+            process.off("unhandledRejection", onRejection);
         }
     });
 });

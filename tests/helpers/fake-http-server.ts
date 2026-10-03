@@ -43,8 +43,8 @@ export function startFakeHttpServer(routes: FakeRoute[]): Promise<FakeHttpServer
                     res.end(JSON.stringify({ error: "not_found" }));
                     return;
                 }
-                res.writeHead(route.status, { "Content-Type": "application/json" });
-                res.end(route.body === undefined ? "" : JSON.stringify(route.body));
+                res.writeHead(route.status, { "Content-Type": route.contentType ?? "application/json" });
+                res.end(route.rawBody ?? (route.body === undefined ? "" : JSON.stringify(route.body)));
             };
 
             if (mode === "slow") {

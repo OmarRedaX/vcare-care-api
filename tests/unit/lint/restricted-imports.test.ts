@@ -50,6 +50,53 @@ const SNIPPETS: Array<{ id: string; filePath: string; code: string }> = [
         filePath: "src/app/health/__lint_probe__.ts",
         code: 'import { TOKENS } from "../../lib/di/tokens";\nexport const probe = TOKENS;\n',
     },
+    // access spec §3.11: jose only under src/lib/auth, undici only in jwks-fetcher.ts (later lib/identity-client),
+    // no global fetch in src/.
+    {
+        id: "jose-outside-auth",
+        filePath: "src/lib/rbac/__lint_probe__.ts",
+        code: 'import { jwtVerify } from "jose";\nexport const probe = jwtVerify;\n',
+    },
+    {
+        id: "jose-subpath-in-app",
+        filePath: "src/app/health/__lint_probe__.ts",
+        code: 'import { errors } from "jose/errors";\nexport const probe = errors;\n',
+    },
+    {
+        id: "jose-inside-auth",
+        filePath: "src/lib/auth/__lint_probe__.ts",
+        code: 'import { jwtVerify } from "jose";\nexport const probe = jwtVerify;\n',
+    },
+    {
+        id: "undici-in-auth-outside-fetcher",
+        filePath: "src/lib/auth/__lint_probe__.ts",
+        code: 'import { request } from "undici";\nexport const probe = request;\n',
+    },
+    {
+        id: "undici-in-app",
+        filePath: "src/app/health/__lint_probe__.ts",
+        code: 'import { request } from "undici";\nexport const probe = request;\n',
+    },
+    {
+        id: "undici-in-fetcher",
+        filePath: "src/lib/auth/jwks-fetcher.ts",
+        code: 'import { request } from "undici";\nexport const probe = request;\n',
+    },
+    {
+        id: "undici-in-identity-client",
+        filePath: "src/lib/identity-client/__lint_probe__.ts",
+        code: 'import { request } from "undici";\nexport const probe = request;\n',
+    },
+    {
+        id: "global-fetch-in-src",
+        filePath: "src/lib/auth/jwks-fetcher.ts",
+        code: 'export const probe = (): Promise<unknown> => fetch("http://identity.example.test/.well-known/jwks.json");\n',
+    },
+    {
+        id: "jose-and-fetch-in-tests",
+        filePath: "tests/__lint_probe__.ts",
+        code: 'import { SignJWT } from "jose";\nexport const probe = [SignJWT, fetch];\n',
+    },
 ];
 
 const RUNNER = `
@@ -121,6 +168,35 @@ describe("eslint.config.mjs restricted imports (F23)", () => {
 
     it("should report an error when a test file imports an ORM or NestJS", () => {
         expect(restricted("any-imports-orm")).toHaveLength(2);
+    });
+
+    it("should report jose when it is imported outside src/lib/auth", () => {
+        for (const id of ["jose-outside-auth", "jose-subpath-in-app"]) {
+            expect(restricted(id)).toEqual([
+                expect.objectContaining({ message: expect.stringContaining("jose is imported only under src/lib/auth") as string }),
+            ]);
+        }
+        expect(results["jose-inside-auth"]).toEqual([]);
+    });
+
+    it("should report undici when it is imported outside jwks-fetcher.ts and lib/identity-client", () => {
+        for (const id of ["undici-in-auth-outside-fetcher", "undici-in-app"]) {
+            expect(restricted(id)).toEqual([
+                expect.objectContaining({ message: expect.stringContaining("undici is imported only in src/lib/auth/jwks-fetcher.ts") as string }),
+            ]);
+        }
+        expect(results["undici-in-fetcher"]).toEqual([]);
+        expect(results["undici-in-identity-client"]).toEqual([]);
+    });
+
+    it("should report the global fetch anywhere in src, even in the fetcher", () => {
+        expect((results["global-fetch-in-src"] ?? []).filter((message) => message.ruleId === "no-restricted-globals")).toEqual([
+            expect.objectContaining({ message: expect.stringContaining("Use undici") as string }),
+        ]);
+    });
+
+    it("should let tests import jose and use fetch", () => {
+        expect(results["jose-and-fetch-in-tests"]).toEqual([]);
     });
 
     it("should report nothing when pkg imports a sibling and app imports lib", () => {

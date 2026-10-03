@@ -74,6 +74,96 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         expect(await hasBtreeGist(migrator)).toBe(true);
     });
 
+    describe("access migrations (create_app_role, create_audit_logs, create_audit_logs_ensure_partitions)", () => {
+        /** `audit_logs_yYYYYmMM` for the UTC month `offset` months from now. */
+        const partition = (offset: number): string => {
+            const now = new Date();
+            const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
+            return `audit_logs_y${month.getUTCFullYear()}m${String(month.getUTCMonth() + 1).padStart(2, "0")}`;
+        };
+
+        async function accessObjects(conn: Knex) {
+            const result = await conn.raw<{
+                rows: Array<{ role: boolean; parent: string | null; fallback: string | null; fn: string | null }>;
+            }>(
+                `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vcare_app') AS role,
+                        to_regclass('public.audit_logs')::text AS parent,
+                        to_regclass('public.audit_logs_default')::text AS fallback,
+                        to_regprocedure('public.audit_logs_ensure_partitions(integer)')::text AS fn`,
+            );
+            return result.rows[0];
+        }
+
+        async function partitionExists(conn: Knex, name: string): Promise<boolean> {
+            const result = await conn.raw<{ rows: Array<{ oid: string | null }> }>("SELECT to_regclass(?)::text AS oid", [
+                `public.${name}`,
+            ]);
+            return result.rows[0]?.oid !== null;
+        }
+
+        async function restore(): Promise<void> {
+            await migrator.migrate.latest(migrationConfig);
+            // Dropping vcare_app removes care_app's membership: re-provision the login, like care-migrate does.
+            await ensureAppLogin(migrator, process.env.DATABASE_URL ?? "");
+        }
+
+        it("should create partitions for the current UTC month and the next two after migrate latest", async () => {
+            for (const offset of [0, 1, 2]) {
+                expect(await partitionExists(migrator, partition(offset))).toBe(true);
+            }
+            expect(await accessObjects(migrator)).toEqual({
+                role: true,
+                parent: "audit_logs",
+                fallback: "audit_logs_default",
+                fn: "audit_logs_ensure_partitions(integer)",
+            });
+            const kind = await migrator.raw<{ rows: Array<{ relkind: string }> }>(
+                "SELECT relkind FROM pg_class WHERE relname = 'audit_logs'",
+            );
+            expect(kind.rows[0]?.relkind).toBe("p"); // partitioned by range (created_at)
+        });
+
+        it("should round-trip rollback and latest for every migration, re-creating the access objects", async () => {
+            try {
+                await migrator.migrate.rollback(migrationConfig, true);
+                const [completed] = (await migrator.migrate.list(migrationConfig)) as [unknown[], unknown[]];
+                expect(completed).toHaveLength(0);
+                expect(await accessObjects(migrator)).toEqual({ role: false, parent: null, fallback: null, fn: null });
+            } finally {
+                await restore();
+            }
+            expect(await accessObjects(migrator)).toEqual({
+                role: true,
+                parent: "audit_logs",
+                fallback: "audit_logs_default",
+                fn: "audit_logs_ensure_partitions(integer)",
+            });
+            expect(await partitionExists(migrator, partition(0))).toBe(true);
+            // The app login works again with its group's grants.
+            const appCount = await db.raw<{ rows: Array<{ count: number }> }>("SELECT count(*)::int AS count FROM audit_logs");
+            expect(appCount.rows[0]?.count).toBe(0);
+        });
+
+        it("should keep vcare_app when another database of the cluster still references it (guarded DROP ROLE)", async () => {
+            const other = `care_test_rolecheck_${Date.now()}`;
+            await migrator.raw(`CREATE DATABASE ${other}`);
+            try {
+                await migrator.raw(`GRANT CONNECT ON DATABASE ${other} TO vcare_app`);
+                try {
+                    await migrator.migrate.rollback(migrationConfig, true);
+                    // The audit table went, the cluster-wide role stayed (NOTICE instead of a failed rollback).
+                    expect(await accessObjects(migrator)).toEqual({ role: true, parent: null, fallback: null, fn: null });
+                } finally {
+                    await restore();
+                }
+                expect((await accessObjects(migrator))?.parent).toBe("audit_logs");
+            } finally {
+                await migrator.raw(`REVOKE CONNECT ON DATABASE ${other} FROM vcare_app`);
+                await migrator.raw(`DROP DATABASE IF EXISTS ${other}`);
+            }
+        });
+    });
+
     it("should report UTC when SHOW TIME ZONE runs on a pooled connection (F8)", async () => {
         const results = await Promise.all(
             Array.from({ length: 3 }, () => db.raw<{ rows: Array<{ TimeZone: string }> }>("SHOW TIME ZONE")),

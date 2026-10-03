@@ -4,6 +4,7 @@ import type Redis from "ioredis";
 import request from "supertest";
 import { errorHandler } from "../../../../src/lib/error/errorHandler";
 import { logger } from "../../../../src/lib/logger/logger";
+import { MemoryLimiter } from "../../../../src/lib/rate-limit/memory-limiter";
 import { fallbackLimit, rateLimit } from "../../../../src/lib/rate-limit/rate-limit";
 import { byIp, byUser } from "../../../../src/lib/rate-limit/subjects";
 import type { RateLimitOptions } from "../../../../src/lib/rate-limit/types";
@@ -234,5 +235,65 @@ describe("lib/rate-limit/subjects", () => {
     it("should return the user id when authenticated and null when not for byUser", () => {
         expect(byUser({ auth: { userId: 31, role: "patient", status: "active", emailVerified: true } } as Request)).toBe("31");
         expect(byUser({} as Request)).toBeNull();
+    });
+});
+
+/** Foundation issue #11 (same pattern in the rate limiter): no promise in the middleware may reject unobserved. */
+describe("regression #11: lib/rate-limit unexpected failures", () => {
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    it("should forward an unexpected throw in the degrade path to next exactly once", async () => {
+        jest.spyOn(logger, "warn").mockImplementation(() => undefined);
+        jest.spyOn(logger, "metric").mockImplementation(() => undefined);
+        jest.spyOn(logger, "error").mockImplementation(() => undefined);
+        jest.spyOn(MemoryLimiter.prototype, "hit").mockImplementation(() => {
+            throw new Error("synthetic limiter failure");
+        });
+        // Ready and admitted by its (fresh) breaker, but the script call fails: degrade, then the fallback throws.
+        const stalled = {
+            status: "ready",
+            defineCommand: jest.fn(),
+            slidingWindowHit: jest.fn(() => Promise.reject(new Error("Command timed out"))),
+        } as unknown as Redis;
+        const rejections: unknown[] = [];
+        const onRejection = (reason: unknown): void => {
+            rejections.push(reason);
+        };
+        process.on("unhandledRejection", onRejection);
+        const nextCalls: unknown[] = [];
+        try {
+            const limiter = rateLimit({
+                name: uniqueName(),
+                limit: 4,
+                windowMs: 60_000,
+                subject: () => SUBJECT,
+                redis: stalled,
+            });
+            const app = express();
+            app.use(requestId());
+            app.get(
+                "/api/limited",
+                (req: Request, res: express.Response, next: (err?: unknown) => void) =>
+                    limiter(req, res, (err?: unknown) => {
+                        nextCalls.push(err);
+                        next(err);
+                    }),
+                (_req: Request, res: express.Response) => {
+                    res.json({ ok: true });
+                },
+            );
+            app.use(errorHandler);
+            const res = await request(app).get("/api/limited");
+            expect(res.status).toBe(500);
+            expect(res.body.error.code).toBe("InternalError");
+            expect(nextCalls).toHaveLength(1);
+            expect(nextCalls[0]).toBeInstanceOf(Error);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            expect(rejections).toEqual([]);
+        } finally {
+            process.off("unhandledRejection", onRejection);
+        }
     });
 });

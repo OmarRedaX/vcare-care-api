@@ -1,4 +1,4 @@
-import { InvalidEnvError, envSchema, parseEnv } from "../../../../src/lib/config/env";
+import { InvalidEnvError, envSchema, parseEnv, parseMigrationEnv } from "../../../../src/lib/config/env";
 import type * as EnvModule from "../../../../src/lib/config/env";
 import type { EnvSource } from "../../../../src/lib/config/types";
 
@@ -205,6 +205,76 @@ describe("lib/config/env getEnv", () => {
             process.env = saved;
             stderr.mockRestore();
             exit.mockRestore();
+        }
+    });
+});
+
+describe("lib/config/env — access variables (spec §3.10)", () => {
+    const OWNER_DB = "postgres://synthetic-owner:synthetic-owner-pass-3302@localhost:5434/care_test";
+
+    it("should require IDENTITY_JWKS_URL (no default)", () => {
+        expect(captureInvalid({ DATABASE_URL: SECRET_DB, REDIS_URL: SECRET_REDIS }).keys).toEqual(["IDENTITY_JWKS_URL"]);
+        expect(captureInvalid({ ...secretsOnly(), IDENTITY_JWKS_URL: "" }).keys).toEqual(["IDENTITY_JWKS_URL"]);
+    });
+
+    it.each(["ftp://identity.example.test/jwks", "file:///etc/jwks.json", "identity.example.test/jwks", "not a url"])(
+        "should reject a non-http(s) IDENTITY_JWKS_URL (%p)",
+        (url) => {
+            expect(captureInvalid({ ...secretsOnly(), IDENTITY_JWKS_URL: url }).keys).toEqual(["IDENTITY_JWKS_URL"]);
+        },
+    );
+
+    it("should accept http and https IDENTITY_JWKS_URL values", () => {
+        for (const url of ["http://localhost:3000/.well-known/jwks.json", "https://identity.example.test/.well-known/jwks.json"]) {
+            expect(parseEnv({ ...secretsOnly(), IDENTITY_JWKS_URL: url }).IDENTITY_JWKS_URL).toBe(url);
+        }
+    });
+
+    it("should accept a missing MIGRATION_DATABASE_URL in envSchema and require it in parseMigrationEnv", () => {
+        const env = parseEnv(secretsOnly());
+        expect(env.MIGRATION_DATABASE_URL).toBeUndefined();
+        let error: unknown;
+        try {
+            parseMigrationEnv(env);
+        } catch (caught) {
+            error = caught;
+        }
+        expect(error).toBeInstanceOf(InvalidEnvError);
+        expect((error as InvalidEnvError).keys).toEqual(["MIGRATION_DATABASE_URL"]);
+
+        const migration = parseMigrationEnv(parseEnv({ ...secretsOnly(), MIGRATION_DATABASE_URL: OWNER_DB }));
+        expect(migration.MIGRATION_DATABASE_URL).toBe(OWNER_DB);
+    });
+
+    it("should reject MIGRATION_DATABASE_URL when it uses the same user as DATABASE_URL (A14)", () => {
+        const sameUser = "postgres://synthetic-user:other-pass@db.example.test:5432/care";
+        const error = captureInvalid({ ...secretsOnly(), MIGRATION_DATABASE_URL: sameUser });
+        expect(error.keys).toEqual(["MIGRATION_DATABASE_URL"]);
+        expect(error.message).not.toContain("other-pass");
+        const result = envSchema.safeParse({ ...secretsOnly(), MIGRATION_DATABASE_URL: sameUser });
+        expect(result.error?.issues.map((issue) => issue.message)).toEqual(["must use a different role than DATABASE_URL"]);
+
+        // URL-encoding does not hide the collision.
+        const encoded = "postgres://synthetic%2Duser:x@db/care";
+        expect(captureInvalid({ ...secretsOnly(), MIGRATION_DATABASE_URL: encoded }).keys).toEqual(["MIGRATION_DATABASE_URL"]);
+    });
+
+    it.each([
+        ["a non-postgres scheme", "mysql://synthetic-owner:p@db/care"],
+        ["options in the query string", `${OWNER_DB}?options=-c%20TimeZone%3DUTC`],
+        ["application_name in the query string", `${OWNER_DB}?application_name=psql`],
+    ])("should apply the same refines to MIGRATION_DATABASE_URL (%s)", (_label, url) => {
+        expect(captureInvalid({ ...secretsOnly(), MIGRATION_DATABASE_URL: url }).keys).toEqual(["MIGRATION_DATABASE_URL"]);
+    });
+
+    it("should bound AUDIT_PARTITION_MONTHS_AHEAD to 1..12 and default it to 2", () => {
+        expect(parseEnv(secretsOnly()).AUDIT_PARTITION_MONTHS_AHEAD).toBe(2);
+        expect(parseEnv({ ...secretsOnly(), AUDIT_PARTITION_MONTHS_AHEAD: "1" }).AUDIT_PARTITION_MONTHS_AHEAD).toBe(1);
+        expect(parseEnv({ ...secretsOnly(), AUDIT_PARTITION_MONTHS_AHEAD: "12" }).AUDIT_PARTITION_MONTHS_AHEAD).toBe(12);
+        for (const value of ["0", "13", "1.5", "two"]) {
+            expect(captureInvalid({ ...secretsOnly(), AUDIT_PARTITION_MONTHS_AHEAD: value }).keys).toEqual([
+                "AUDIT_PARTITION_MONTHS_AHEAD",
+            ]);
         }
     });
 });

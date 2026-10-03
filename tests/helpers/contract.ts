@@ -181,6 +181,14 @@ export function expectHealthStatusBody(body: unknown, httpStatus: number): void 
     }
     expect(propertyEnum(block, "database")).toContain(parsed.checks.database);
     expect(propertyEnum(block, "redis")).toContain(parsed.checks.redis);
+    // access contract change C1: optional, informational `checks.identityJwks` (no other check key exists).
+    const declaredChecks = ["database", "redis", "identityJwks"].filter((key) => block.includes(`${key}:`));
+    for (const key of Object.keys(parsed.checks)) {
+        expect(declaredChecks).toContain(key);
+    }
+    if (parsed.checks.identityJwks !== undefined) {
+        expect(propertyEnum(block, "identityJwks")).toContain(parsed.checks.identityJwks);
+    }
     expect(parsed.status === "down").toBe(httpStatus === 503);
 }
 

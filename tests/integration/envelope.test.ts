@@ -2,8 +2,13 @@ import request from "supertest";
 import { buildTestApps } from "../helpers/app";
 import { expectErrorEnvelope, expectSuccessEnvelope } from "../helpers/contract";
 import { closeDb, truncateAll } from "../helpers/db";
+import { startFakeJwks, withFakeJwksCache } from "../helpers/fake-jwks";
+import { captureLogs, expectNoSensitiveStrings } from "../helpers/log-capture";
 import { closeRedis, ensureRedisReady } from "../helpers/redis";
-import { buildEnvelopeRouter } from "../helpers/test-routers";
+import { buildEnvelopeRouter, buildParamRouter } from "../helpers/test-routers";
+import { signUserToken } from "../helpers/tokens";
+import type { FakeJwks } from "../helpers/types";
+import { logger } from "../../src/lib/logger/logger";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -198,4 +203,65 @@ describe("error envelope, request id, security headers (integration)", () => {
             expect(res.headers["strict-transport-security"]).toBeDefined();
         }
     });
+
+    /** Foundation issue #5: a malformed percent-encoded path parameter was a 500 with the raw value logged. */
+    describe("regression #5: malformed path parameter", () => {
+        let fake: FakeJwks;
+
+        beforeAll(async () => {
+            fake = await startFakeJwks(["k1"]);
+        });
+
+        afterAll(async () => {
+            await fake.close();
+        });
+
+        it("should return 400 ValidationFailed for GET /api/__test/params/%E0%A4%A with a valid token and never log the raw value", async () => {
+            const app = buildTestApps({ publicRouters: [{ path: "/api", router: buildParamRouter() }] }).publicApp;
+            const token = await signUserToken(fake.key("k1"));
+            jest.replaceProperty(logger as unknown as { level: string }, "level", "debug");
+            const capture = captureLogs();
+            let res: request.Response;
+            try {
+                res = await withFakeJwksCacheResult(fake, () =>
+                    request(app).get("/api/__test/params/%E0%A4%A").set("Authorization", `Bearer ${token}`),
+                );
+            } finally {
+                capture.restore();
+                jest.restoreAllMocks();
+            }
+
+            expect(res.status).toBe(400);
+            expectErrorEnvelope(res.body, "ValidationFailed", res.headers["x-request-id"]);
+            expect(res.body.error.details).toEqual([{ field: "path", issue: "must be valid percent-encoding" }]);
+            expect(JSON.stringify(res.body)).not.toContain("%E0%A4%A");
+
+            const lines = capture.lines();
+            expect(lines.find((line) => line.message === "request_completed")).toMatchObject({
+                status: 400,
+                code: "ValidationFailed",
+            });
+            expect(lines.some((line) => line.message === "unhandled_error")).toBe(false);
+            expectNoSensitiveStrings(capture, ["%E0%A4%A", "E0%A4", token]);
+        });
+
+        it("should still decode a valid percent-encoded parameter", async () => {
+            const app = buildTestApps({ publicRouters: [{ path: "/api", router: buildParamRouter() }] }).publicApp;
+            const token = await signUserToken(fake.key("k1"));
+            const res = await withFakeJwksCacheResult(fake, () =>
+                request(app).get("/api/__test/params/caf%C3%A9").set("Authorization", `Bearer ${token}`),
+            );
+            expect(res.status).toBe(200);
+            expect(expectSuccessEnvelope(res.body)).toEqual({ value: "café" });
+        });
+    });
 });
+
+/** `withFakeJwksCache` returning the callback's value. */
+async function withFakeJwksCacheResult<T>(fake: FakeJwks, fn: () => Promise<T>): Promise<T> {
+    let result: T | undefined;
+    await withFakeJwksCache(fake, async () => {
+        result = await fn();
+    });
+    return result as T;
+}
