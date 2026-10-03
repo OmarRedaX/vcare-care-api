@@ -145,3 +145,36 @@ describe("app/health DTOs and controller", () => {
         });
     });
 });
+
+describe("app/health identityJwks (access spec §3.7, A7)", () => {
+    function withJwks(db: ProbeBehaviour, redis: ProbeBehaviour, shuttingDown: boolean, jwks: "up" | "down") {
+        const state = new ShutdownState();
+        if (shuttingDown) {
+            state.markShuttingDown();
+        }
+        const status = jest.fn(() => jwks);
+        return { svc: new HealthService(fakeDb(db), fakeRedis(redis), state, { status }), status };
+    }
+
+    const combos: Array<[ProbeBehaviour, ProbeBehaviour, boolean, number, string]> = [
+        ["up", "up", false, 200, "ok"],
+        ["up", "down", false, 200, "degraded"],
+        ["down", "up", false, 503, "down"],
+        ["down", "down", false, 503, "down"],
+        ["up", "up", true, 503, "down"],
+    ];
+
+    it.each(combos)(
+        "should report identityJwks from the cache and keep status and httpStatus unchanged when db=%s redis=%s shuttingDown=%s",
+        async (db, redis, shuttingDown, httpStatus, status) => {
+            for (const jwks of ["up", "down"] as const) {
+                const { svc, status: jwksStatus } = withJwks(db, redis, shuttingDown, jwks);
+                const result = await svc.ready();
+                expect(result.httpStatus).toBe(httpStatus);
+                expect(result.report.status).toBe(status);
+                expect(result.report.checks.identityJwks).toBe(jwks);
+                expect(jwksStatus).toHaveBeenCalledTimes(1); // an in-memory read: no network call to make
+            }
+        },
+    );
+});

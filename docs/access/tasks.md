@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 module: access
 status: in-progress
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [tasks, access, auth, jwks, rbac, audit, audit-logs, db-roles, worker, redis-breaker]
 related: [access-spec, access-brainstorm, adr-0018-db-role-split-explicit-grants-partition-function, adr-0009-audit-logs-monthly-partitions, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -46,7 +46,7 @@ order for a new module". The unit adds **no business route**: its "routes" are t
 - [x] (mount) `createPublicApp` / `createInternalApp` call `assertRoutesAuthorized(app.router)` before `extraRouters` (spec §3.2, §3.4.4)
 - [x] (tooling) `scripts/access-qa-server.ts` + `tests/helpers/test-routers.ts` `buildAccessTestRouter()` (spec §3.11, §9.3)
 - [x] (tests) keep existing unit tests green after the signature changes; integration infra: `global-setup.ts` migrates as owner + `ensureAppLogin`, `db.ts` `ownerDb` + parent-only `truncateAll` (spec §9.1). Full suites ← `/write-tests access`
-- [ ] (tests) ← `/write-tests access` (spec §9, §12 regressions)
+- [x] (tests) ← `/write-tests access` (spec §9, §12 regressions) — unit 46 suites / 724, integration 18 suites / 180 + 2 skipped on win32 (2026-10-03)
 - [ ] (manual-qa) ← `/manual-qa access` (spec §9.7, real local Identity)
 
 ### Docs (written during development — spec §13)

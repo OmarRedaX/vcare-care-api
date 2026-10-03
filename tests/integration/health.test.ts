@@ -17,10 +17,13 @@ import {
     expectErrorEnvelope,
     expectHealthLiveBody,
     expectHealthStatusBody,
+    inlineLists,
+    schemaBlock,
 } from "../helpers/contract";
 import { closeDb, truncateAll } from "../helpers/db";
+import { buildFakeJwksWiring, startFakeJwks } from "../helpers/fake-jwks";
 import { closeRedis, createUnreachableRedis, ensureRedisReady } from "../helpers/redis";
-import type { ContainerOverride } from "../helpers/types";
+import type { ContainerOverride, FakeJwks } from "../helpers/types";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -256,6 +259,95 @@ describe("health (integration: real Postgres + Redis)", () => {
         const res = await request(publicApp).post("/api/health/live");
         expect(res.status).toBe(404);
         expectErrorEnvelope(res.body, "NotFound");
+    });
+
+    describe("checks.identityJwks (access contract change C1, A7)", () => {
+        let fake: FakeJwks;
+
+        beforeAll(async () => {
+            fake = await startFakeJwks(["k1"]);
+        });
+
+        afterAll(async () => {
+            await fake.close();
+        });
+
+        /** Real HealthService wired to a real JwksCache on the fake Identity JWKS. */
+        function wiringWith(cache: JwksStatusSource, deps: { db?: Knex } = {}): ContainerOverride[] {
+            const service = new HealthService(deps.db ?? probeDb, redis, new ShutdownState(), cache);
+            return [
+                ...(deps.db !== undefined ? [{ token: TOKENS.ProbeDb, value: deps.db }] : []),
+                { token: TOKENS.HealthService, value: service },
+                { token: TOKENS.HealthController, value: new HealthController(service) },
+            ];
+        }
+
+        it("should report identityJwks up on both listeners when the fake JWKS served keys", async () => {
+            const { cache } = await buildFakeJwksWiring(fake);
+            fake.requests.length = 0;
+            await withContainerOverrides(wiringWith(cache), async () => {
+                const { publicApp, internalApp } = buildTestApps();
+                for (const [app, path] of [
+                    [publicApp, "/api/health/ready"],
+                    [internalApp, "/internal/health/ready"],
+                ] as const) {
+                    const res = await request(app).get(path);
+                    expect(res.status).toBe(200);
+                    expect(res.body).toEqual({ status: "ok", checks: { database: "up", redis: "up", identityJwks: "up" } });
+                    expectHealthStatusBody(res.body, res.status);
+                }
+            });
+            expect(fake.requests).toHaveLength(0); // the probe never calls Identity
+        });
+
+        it("should report identityJwks down and keep 200 ok when the latest JWKS refresh failed", async () => {
+            const { cache } = await buildFakeJwksWiring(fake);
+            fake.setMode("fail", { status: 503 });
+            try {
+                expect(await cache.refresh("interval")).toBe(false);
+            } finally {
+                fake.setMode("normal");
+            }
+            await withContainerOverrides(wiringWith(cache), async () => {
+                const { publicApp, internalApp } = buildTestApps();
+                for (const [app, path] of [
+                    [publicApp, "/api/health/ready"],
+                    [internalApp, "/internal/health/ready"],
+                ] as const) {
+                    const res = await request(app).get(path);
+                    expect(res.status).toBe(200);
+                    expect(res.body).toEqual({ status: "ok", checks: { database: "up", redis: "up", identityJwks: "down" } });
+                    expectHealthStatusBody(res.body, res.status);
+                }
+            });
+        });
+
+        it("should keep 503 down when Postgres is down even though identityJwks is up", async () => {
+            const { cache } = await buildFakeJwksWiring(fake);
+            const deadDb = createKnex({
+                url: "postgres://care:care@127.0.0.1:1/care_test",
+                poolMax: 1,
+                statementTimeoutMs: 2_000,
+                applicationName: "care-test",
+            });
+            try {
+                await withContainerOverrides(wiringWith(cache, { db: deadDb }), async () => {
+                    const res = await request(buildTestApps().publicApp).get("/api/health/ready");
+                    expect(res.status).toBe(503);
+                    expect(res.body).toEqual({ status: "down", checks: { database: "down", redis: "up", identityJwks: "up" } });
+                    expectHealthStatusBody(res.body, res.status);
+                });
+            } finally {
+                await deadDb.destroy();
+            }
+        });
+
+        it("should declare identityJwks as an optional up/down check in the contract", () => {
+            const block = schemaBlock("HealthStatus");
+            expect(block).toContain("identityJwks:");
+            const [, checksRequired = []] = inlineLists(block, "required");
+            expect(checksRequired.sort()).toEqual(["database", "redis"]);
+        });
     });
 
     it("should match the contract HealthLive and HealthStatus shapes and declared status codes exactly (contract conformance)", async () => {

@@ -446,3 +446,134 @@ describe("lib/idempotency key helpers", () => {
         expect(hashBody({ a: 1 })).toMatch(/^[0-9a-f]{64}$/);
     });
 });
+
+/** Foundation issue #11: a malformed stored record crashed the process (unhandled rejection) or answered 409 forever. */
+describe("regression #11: lib/idempotency malformed records", () => {
+    let warn: jest.SpyInstance;
+    let metric: jest.SpyInstance;
+    let error: jest.SpyInstance;
+
+    beforeEach(() => {
+        warn = jest.spyOn(logger, "warn").mockImplementation(() => undefined);
+        metric = jest.spyOn(logger, "metric").mockImplementation(() => undefined);
+        error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
+    });
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    /** The first SET NX finds `raw` already stored under the computed key (seeded at that moment). */
+    function seedOnFirstSet(redis: FakeRedis, raw: string): { key: () => string } {
+        let seededKey = "";
+        redis.set.mockImplementationOnce((key: string) => {
+            seededKey = key;
+            redis.store.set(key, raw);
+            return Promise.resolve(null);
+        });
+        return { key: () => seededKey };
+    }
+
+    const HASH = "a".repeat(64);
+
+    it.each<[string, string]>([
+        ["a done record without a numeric status", JSON.stringify({ state: "done", bodyHash: HASH, body: { x: 1 } })],
+        ["a done record with status 99", JSON.stringify({ state: "done", bodyHash: HASH, status: 99, body: null })],
+        ["a done record with a string status", JSON.stringify({ state: "done", bodyHash: HASH, status: "201", body: null })],
+        ["a done record without a body member", JSON.stringify({ state: "done", bodyHash: HASH, status: 201 })],
+        ["an in-progress record without an owner", JSON.stringify({ state: "in_progress", bodyHash: HASH })],
+        ["a record with a short bodyHash", JSON.stringify({ state: "done", bodyHash: "abc", status: 201, body: null })],
+        ["unparsable JSON", "garbage{"],
+        ["a JSON array", "[1,2]"],
+    ])("should treat %s as invalid, delete it, and call next instead of crashing or answering 409", async (_label, raw) => {
+        const redis = fakeRedis();
+        const seeded = seedOnFirstSet(redis, raw);
+        const { app, runs } = harness(redis);
+
+        const res = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        await settle();
+
+        expect(res.status).toBe(201);
+        expect(runs.count).toBe(1);
+        expect(redis.eval).toHaveBeenCalledWith(expect.any(String), 1, seeded.key(), raw);
+        expect(redis.store.has(seeded.key())).toBe(false);
+        expect(warn).toHaveBeenCalledWith("idempotency_record_invalid", expect.objectContaining({ route: "POST /api/things" }));
+        expect(metric).toHaveBeenCalledWith("idempotency_skipped", 1, { reason: "invalid_record" });
+        expect(error).not.toHaveBeenCalled();
+    });
+
+    it("should store and then replay normally on the next request after an invalid record was removed", async () => {
+        const redis = fakeRedis();
+        seedOnFirstSet(redis, "garbage{");
+        const { app, runs } = harness(redis);
+        await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        await settle();
+        // The invalid value was removed; the next request owns the key, stores its result, and a retry replays it.
+        const second = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        await settle();
+        const third = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        expect(second.status).toBe(201);
+        expect(third.status).toBe(201);
+        expect(third.body).toEqual(second.body);
+        expect(runs.count).toBe(2);
+    });
+
+    it("should not delete a record that changed between read and delete", async () => {
+        const redis = fakeRedis();
+        const replacement = JSON.stringify({ state: "in_progress", bodyHash: "b".repeat(64), owner: "other-attempt" });
+        let seededKey = "";
+        redis.set.mockImplementationOnce((key: string) => {
+            seededKey = key;
+            redis.store.set(key, replacement); // what Redis holds when the compare-and-delete runs ...
+            return Promise.resolve(null);
+        });
+        redis.get.mockImplementationOnce(() => Promise.resolve("garbage{")); // ... while the read saw a malformed value
+        const { app } = harness(redis);
+
+        const res = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+        await settle();
+        expect(res.status).toBe(201);
+        expect(redis.eval).toHaveBeenCalledWith(expect.any(String), 1, seededKey, "garbage{");
+        expect(redis.store.get(seededKey)).toBe(replacement);
+    });
+
+    it("should forward an unexpected throw to next exactly once and never reject unobserved", async () => {
+        const redis = fakeRedis();
+        seedOnFirstSet(redis, "garbage{");
+        metric.mockImplementationOnce(() => {
+            throw new Error("synthetic unexpected failure");
+        });
+        const rejections: unknown[] = [];
+        const onRejection = (reason: unknown): void => {
+            rejections.push(reason);
+        };
+        process.on("unhandledRejection", onRejection);
+        const nextCalls: unknown[] = [];
+        try {
+            const middleware = idempotency({ required: true, redis: redis as unknown as Redis });
+            const app = express();
+            app.use(requestId());
+            app.use(express.json());
+            app.post(
+                "/api/things",
+                (req: Request, res: Response, next: (err?: unknown) => void) =>
+                    middleware(req, res, (err?: unknown) => {
+                        nextCalls.push(err);
+                        next(err);
+                    }),
+                (_req: Request, res: Response) => {
+                    res.status(201).json({ ok: true });
+                },
+            );
+            app.use(errorHandler);
+            const res = await request(app).post("/api/things").set("Idempotency-Key", KEY).send({ a: 1 });
+            await settle();
+            expect(res.status).toBe(500);
+            expect(res.body.error.code).toBe("InternalError");
+            expect(nextCalls).toHaveLength(1);
+            expect(nextCalls[0]).toBeInstanceOf(Error);
+            expect(rejections).toEqual([]);
+        } finally {
+            process.off("unhandledRejection", onRejection);
+        }
+    });
+});

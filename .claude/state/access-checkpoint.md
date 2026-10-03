@@ -63,5 +63,26 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - 2026-10-02 COMMITTED+PUSHED care feature/access 6f77cb9 (develop + docs; AGENTS.md/.codex excluded). Identity feature/auth 27a1ea0: the 2 skills synced from care (only those files; CLAUDE.md, deployment.md, auth/spec.md edits still uncommitted there). Hub docs/care-access-deltas still UNCOMMITTED (deployment/landscape/data-ownership + IdentityJwksStale + synced card/contract).
 
+## /write-tests access (started 2026-10-02)
+- Baseline before: unit 34 suites / 448; integration 11 suites / 85 pass / 2 skipped. Test stack Docker 5434/6381 (never touch native dev 5432 / Redis 6379).
+- flow-test-author DISPATCHED (spec §9 + §12 regressions + lint cases + JWKS cache + audit grants + partitions + ensure-app-login + log hygiene). It appends "- test: ..." progress lines below.
+
+- test: helpers tests/helpers/{tokens,fake-jwks,fake-logger}.ts (+ types, fake-http-server rawBody/contentType); unit lib/auth/jwks-cache.test.ts (22) + jwks-fetcher.test.ts (13) green. PRODUCT BUG FIXED src/lib/auth/jwks-fetcher.ts discard(): body.destroy() without error listener → uncaughtException on any non-200/non-JSON JWKS response (process crash); added a no-op error listener.
+
+- test: unit user-token-verifier (39), user-guard (14), rbac authorize/assert-routes-authorized/roles (54), audit audit/partition-loop (45), knex/app-login + pkg/utils/id + redis/breaker regression #10 (44) — all green.
+
+- test: UNIT PHASE DONE — extended env (access vars), health.service (identityJwks A7), errorHandler (regression #5), route-pattern (regression #6), idempotency + rate-limit (regression #11), restricted-imports (jose/undici/fetch). typecheck + lint clean; npm test 46 suites / 724 pass.
+
+- test: integration auth.test.ts (14) + rbac.test.ts (22) green (fake JWKS + injected cache clock).
+
+- test: integration boot.test.ts (7, jest.mock of src/routes + src/internal-routes), audit.test.ts (18, grants 42501, DB checks, txn visibility), db-roles.test.ts (11, SECURITY DEFINER fn, ensureAppLogin + CLI + role collision) green. test-routers buildAuditTestRouter gained {invalid:true}.
+
+- test: integration worker-partitions.test.ts (9, incl. --once child process, runs on win32) + redis-stall.test.ts (1, regression #10 via black-hole proxy) green.
+
+- 2026-10-03 RESUMED (new session): working tree already has the 5 remaining integration extensions (migrations, health, logs, envelope, idempotency) — not yet run. Unit flake fixed: jwks-fetcher.test.ts cold first request exceeded the 150 ms test budget under parallel load → budget 400 ms + warm-up fetch in beforeAll. typecheck + lint clean; unit 46 suites / 724 pass. Docker Desktop NOT running → integration not yet run.
+
+- 2026-10-03 Docker started; test stack up. INTEGRATION GREEN: 18 suites, 180 pass, 2 skipped (win32 SIGTERM). The 5 extended suites cover migrations (partitions, rollback round-trip, guarded DROP ROLE), health C1/A7, logs #6 + token hygiene, envelope #5, idempotency #11. README counts updated; tasks.md (tests) flipped [x]. /write-tests access DONE (uncommitted).
+
 ## ▶ NEXT STEP
-/write-tests access → /manual-qa access (real Identity on 3020/3120) → /review-code access → /update-docs access → PR "Closes #19 #5 #6 #10 #11". Ask before commits. Hub docs/care-access-deltas committed+pushed b8cf0f4 (own remote branch; open a hub PR when care PR opens).
+/write-tests access DONE, UNCOMMITTED (ask user before committing: "test(access): ..." on feature/access; exclude AGENTS.md/.codex).
+Then: /manual-qa access (real Identity 3020/3120, native dev Postgres 5432 / Redis 6379 DB 1) → /review-code access → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
