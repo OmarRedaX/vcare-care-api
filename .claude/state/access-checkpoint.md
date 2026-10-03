@@ -99,5 +99,21 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 - /manual-qa access VERIFIED by orchestrator 2026-10-03: 167 pass / 0 fail; typecheck + lint + bash -n clean; no secrets in outputs. UNCOMMITTED: scripts/access-qa-server.ts, scripts/access-qa-fake-identity.ts, scripts/curl-test-access.sh, docs/access/manual-qa.md, docs/access/tasks.md, docs/INDEX.md. Left running: Identity 3020/3120, care QA server 3001.
 - Observations for /review-code: (1) ioredis does not reconnect after a byte-dropping stall (likely proxy artefact); (2) malformed :param without token → 400 not 401 (Express decodes before userGuard); (3) unhandled_error log line lacks `route`.
 
+- 2026-10-03 COMMITTED fc4da16 test(access) QA harness + curl script, 5af702c docs(access) manual QA results; PUSHED origin/feature/access (created the remote branch).
+
+## /review-code access (started 2026-10-03)
+- First review (no docs/access/reviews/), non-trivial (129 files, ~10k lines) → parallel path. Dimensions per user: correctness · security-auth · conventions-layering (+contract drift C1/C2) · database-migrations (+perf/indexing) · tests. Domain-rules N/A (no business routes; suspended/ev gates folded into security).
+- Scope file list: session scratchpad access-review-files.txt (git diff --name-only main...feature/access -- src scripts tests).
+- 5 flow-code-reviewer (mode candidates) DISPATCHED. QA observations routed: (1) redis reconnect → correctness, (2) :param 400 vs 401 → security-auth, (3) unhandled_error no route → conventions.
+- CANDIDATES DONE (all 5): correctness M3 L1 · security H1 M2 L1 · conventions L5 docs2 · database H1 M2 L2 · tests M3 L3 = 26 raw. Saved in session scratchpad access-review/candidates-*.md. Merges: boot-assertion holes (security H + correctness route() method merge) → one; ensure-app-login takeover (security L + database M) → one. QA obs: (1) correctness says REAL (no socketTimeout); (2) security DISMISSED (Express decodes in Layer.match, spec §12.1/A17); (3) conventions CONFIRMED Low.
+- Then: merge candidates → 1 verify-findings reviewer writes docs/access/reviews/review-<YYYYMMDD-HHMM>.md. No code changes. Ask user before committing.
+
+- VERIFIED (verify-findings reviewer): docs/access/reviews/review-20261003-1600.md — 14 OPEN: Critical 0 · High 1 · Medium 2 · Low 9 · Docs 2; 11 refuted.
+  High: boot route assertion 4 holes (handler before authorize, terminal router.use(fn), mounted sub-app, router.route() method merge) — src/lib/rbac/assert-routes-authorized.ts.
+  Medium: ensure-app-login password in migration_failed log on mid-DDL connection drop; Redis no socketTimeout (QA obs 1 confirmed).
+  QA obs: (1) confirmed Medium, (2) dismissed, (3) confirmed Low.
+- CARRY TO doctors review (refuted here only because spec defers them): boot assertion is guard-kind blind (user-guard route on internal listener would boot → must fail once serviceGuard lands); doctor suspended_at check is opt-in per policy (make it fail closed for doctor-role policies).
+- Review file UNCOMMITTED — waiting for user OK to commit.
+
 ## ▶ NEXT STEP
-AWAITING USER: approve commit of the /manual-qa access files (test(access)/docs(access)). Then /review-code access (feed the 3 observations above) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
+Ask user to commit review file (+ checkpoint) → /develop access --fix-review → /review-code access (re-review) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
