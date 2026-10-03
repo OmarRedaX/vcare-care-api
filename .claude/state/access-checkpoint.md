@@ -132,5 +132,10 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - VERIFIED by orchestrator 2026-10-03: typecheck + lint clean; unit 48 / 760 pass; integration 18 / 189 pass / 2 skipped (test stack 5434/6381); review 14 RESOLVED / 0 OPEN. Spot-checked boot assertion + attach migration. UNCOMMITTED (63 files + 6 new). Pending user: commit OK?; migrate dev DB 5432 + curl QA re-run?; mirror 2 skills into identity?
 
+- 2026-10-03 COMMITTED 245205c fix(access) + 11aa5a3 docs(access) (not pushed). Identity feature/auth: 2 skills mirrored from care (uncommitted).
+- QA re-run: dev DB 5432 migrated (6/6, ensure-app-login created:false OK). Care harness :3001 restarted on new code (log in session scratchpad care-3001.log) → ready up/up/up, boot JWKS refresh logged. Identity 3020/3120 still running. Waiting on user to run curl-test-access.sh (QA_PASSWORD is a user secret).
+
+- QA RE-RUN DONE 2026-10-03: curl-test-access.sh 143/143 exit 0 with fresh accounts QA_EMAIL_PREFIX=qa.access2 (ids 4/5/6; synthetic password in THIS session's scratchpad qa-password.txt only); Identity worker run for registration then killed. unhandled_error has route+status; worker --once on dev exit 0. docs/access/manual-qa.md "Re-run after fix-review" section (F1-F4) added — UNCOMMITTED. All QA processes stopped (care 3001 + Identity 3020/3120 killed on user request).
+
 ## ▶ NEXT STEP
-Ask user: commit fix-review; dev DB migrate + curl-test-access.sh re-run (needs Identity 3020 + QA servers); identity skill mirror. Then /review-code access (re-review) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
+Ask user to commit docs/access/manual-qa.md (+ checkpoint) → /review-code access (re-review; deletes the review file when all verified) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".

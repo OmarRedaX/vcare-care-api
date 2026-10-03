@@ -14,7 +14,8 @@ contracts: [contracts/openapi.yaml]
 # access — Manual QA (CURL)
 
 _Run: 2026-10-03 • Server: http://localhost:3001 (real Identity tokens) + http://localhost:3011 (edge tokens) •
-Result: 167 pass / 0 fail (143 scripted + 12 JWKS-outage + 7 Redis-stall + 5 log/worker checks)_
+Result: 167 pass / 0 fail (143 scripted + 12 JWKS-outage + 7 Redis-stall + 5 log/worker checks) •
+Re-run after the code-review fixes: 143 / 143 scripted + 3 checks (see "Re-run after fix-review")_
 
 `access` adds no business route. Spec §3.1 says it is exercised through **test-only routers**. The dev-only harness
 `scripts/access-qa-server.ts` mounts them on the real public app, never in `src/routes.ts` and never in the contract.
@@ -263,13 +264,34 @@ stops carrying bytes but stays open, so ioredis keeps `status=ready`. Durations 
 | L4 | `worker --once nope` | exit 1, `worker_loop_unknown` | exit 1, `worker_loop_unknown` | pass |
 | L5 | Partitions present | `audit_logs_default`, `audit_logs_y2026m10..m12` | as expected | pass |
 
+## Re-run after fix-review (2026-10-03)
+After `/develop access --fix-review` (commits `245205c`, `11aa5a3`; review `reviews/review-20261003-1600.md`), on
+the dev data stack migrated to the two new migrations (`20261003120000_audit_logs_column_insert_grants`,
+`20261003120100_audit_logs_partitions_attach`; `ensure-app-login` → `created: false`, the existing `care_app` passes
+the new privileged-role check). The `:3001` harness was restarted on the new code; Identity was the same
+`feature/auth` process on `:3020`/`:3120`. Fresh synthetic accounts were registered through the real flow with
+`QA_EMAIL_PREFIX=qa.access2` (Identity ids patient 4, doctor 5, admin 6; Identity worker run only for the
+registration codes, then stopped).
+
+| # | Check | Expected | Got | Result |
+|---|-------|----------|-----|--------|
+| F1 | `scripts/curl-test-access.sh` (all 12 sections, real + edge tokens, log hygiene on both harness logs) | 143 pass, exit 0 | 143 pass / 0 fail / 0 skipped, exit 0 | pass |
+| F2 | Harness boot under the stricter boot assertion (per-method chains, `handler_before_authorize`, `middleware_without_policy`, `markPreAuth` on global middleware) | starts; ready `ok` up/up/up; `jwks_refreshed {trigger: boot}` with no request | as expected | pass |
+| F3 | `unhandled_error` lines on `:3001` (review L7) | carry `route` and `status` | `route: "POST /api/__test/audit"`, `status: 500` (error body redacted) | pass |
+| F4 | `npx tsx src/worker.ts --once audit-partitions` on the migrated dev DB (review L4, new ATTACH function) | exit 0, `audit_partitions_ensured`, `worker_once_completed` | exit 0, `created: []`, `checked: 3` | pass |
+
+Not re-run by hand: the Redis stall (R-cases) — `tests/integration/redis-stall.test.ts` now recovers **without**
+the manual `disconnect(true)` (socket timeout 2 s) and fails without the fix; the JWKS extra-member / `d` cases —
+unit `jwks-cache.test.ts` (verified through `jose`); the `--once` exit 1 paths and the ATTACH concurrency budget —
+`tests/integration/worker-partitions.test.ts`; column-level INSERT 42501 — `tests/integration/db-roles.test.ts`.
+
 ## Failures / notes
 - **No real failures.** All 167 checks match the contract and the spec.
 - Corrected during the run (script expectations, not product bugs): (1) #11, spec §12.4: the request that meets an
   invalid record runs the handler **without storing**, so the second request stores and the third replays. The
   first draft expected the second to replay. (2) Rate limit: spawning `node` once per UUID stretched four calls past
   the 1 s window, so the first three now go in one `curl` process. (3) `curl -o` applies only to the first URL.
-- Observation (#10, not a failure): after a stall that **drops** bytes, ioredis's reply queue is desynced. The
+- Observation (#10, not a failure; **resolved** by review M2 — `socketTimeout` 2 s): after a stall that **drops** bytes, ioredis's reply queue is desynced. The
   connection never recovers by itself, readiness keeps reporting `redis: down`, and the breaker keeps probing
   every 5 s for about 500 ms each. Recovery needed a fresh connection (R7), and
   `tests/integration/redis-stall.test.ts` does the same (`disconnect(true)`). A real TCP partition retransmits
@@ -278,7 +300,7 @@ stops carrying bytes but stays open, so ioredis keeps `status=ready`. Durations 
 - Observation: `GET /api/__test/params/%E0%A4%A` **without** a token returns 400 `ValidationFailed`, not 401.
   Express decodes `:param` while matching the route, before `userGuard` runs. No data is disclosed. Spec §12.1
   defines only the with-token case (400).
-- Observation: `unhandled_error` log lines carry no `route` field. The paired `request_completed` line has the
+- Observation (**resolved** by review L7, see F3): `unhandled_error` log lines carry no `route` field. The paired `request_completed` line has the
   correct label (#6 fixed).
 - Not covered here (with where it is covered): the internal listener's `/internal/health/ready` `identityJwks` (the
   harness has no internal listener; `tests/integration/health.test.ts`); the boot assertion
