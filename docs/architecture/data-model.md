@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -29,7 +29,8 @@ will use (`knex.raw`, see the `write-migration` skill). Conventions:
 - **Roles and grants** ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)): the owner `care`
   owns everything and runs migrations; the app login `care_app` (member of `vcare_app`) is what `care-api` and
   `care-worker` use. Every table migration grants `vcare_app` explicitly (no `ALTER DEFAULT PRIVILEGES`); append-only
-  tables get `INSERT, SELECT` only (+ `USAGE` on their sequence).
+  tables get `INSERT, SELECT` only (+ `USAGE` on their sequence), the `INSERT` column-level so the app can never set
+  `id` or `created_at`.
 
 ## ERD
 
@@ -555,12 +556,16 @@ CREATE UNIQUE INDEX uq_help_articles_audience_title ON help_articles (audience, 
 
 ## `audit_logs`
 **Built by `access` (2026-10-02)** — migrations `20261002120100_create_audit_logs` and
-`20261002120200_create_audit_logs_ensure_partitions`. Range-partitioned by month from the first migration
+`20261002120200_create_audit_logs_ensure_partitions`, amended by its fix-review (2026-10-03):
+`20261003120000_audit_logs_column_insert_grants` (column-level `INSERT`) and
+`20261003120100_audit_logs_partitions_attach` (`LIKE` + `ATTACH PARTITION`, `lock_timeout` 200 ms). Range-partitioned by month from the first migration
 ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)); `care-worker` keeps the current UTC month and the next
 `AUDIT_PARTITION_MONTHS_AHEAD` months through `audit_logs_ensure_partitions(int)`; the `DEFAULT` partition must stay
 empty (alert otherwise); retention ≥ 6 years (detach + archive, never `DELETE`). Append-only **by grant**
-([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)): `vcare_app` holds `INSERT, SELECT` on the
-parent, the default partition, and every monthly partition, plus `USAGE` on the sequence — no `UPDATE`, `DELETE`, or
+([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)): `vcare_app` holds `SELECT` and a
+column-level `INSERT (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata)` on the
+parent, the default partition, and every monthly partition, plus `USAGE` on the sequence — it can never set `id` or
+`created_at` — no `UPDATE`, `DELETE`, or
 `TRUNCATE` anywhere. Rows are written only by `lib/audit` `AuditRecorder.record(trx, entry)` inside the caller's
 transaction.
 ```sql
@@ -582,15 +587,18 @@ CREATE TABLE audit_logs (
     CONSTRAINT chk_audit_logs_metadata_size CHECK (octet_length(metadata::text) <= 4096)
 ) PARTITION BY RANGE (created_at);
 CREATE TABLE audit_logs_default PARTITION OF audit_logs DEFAULT;
-GRANT INSERT, SELECT ON audit_logs TO vcare_app;
-GRANT INSERT, SELECT ON audit_logs_default TO vcare_app;
+-- As of 20261003120000 (column-level INSERT; the app never writes id or created_at):
+GRANT SELECT, INSERT (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata) ON audit_logs TO vcare_app;
+GRANT SELECT, INSERT (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata) ON audit_logs_default TO vcare_app;
 GRANT USAGE ON SEQUENCE audit_logs_id_seq TO vcare_app;
 
--- Owner-defined; the only SECURITY DEFINER object. Bounded 0..12, search_path pinned, lock_timeout 2 s.
--- Creates audit_logs_yYYYYmMM for the current UTC month + p_months_ahead and grants INSERT, SELECT to vcare_app.
-CREATE FUNCTION audit_logs_ensure_partitions(p_months_ahead integer)
+-- Owner-defined; the only SECURITY DEFINER object. Bounded 0..12, search_path pinned, lock_timeout 200 ms (20261003120100).
+-- Creates audit_logs_yYYYYmMM for the current UTC month + p_months_ahead as a standalone table
+-- (LIKE audit_logs INCLUDING DEFAULTS INCLUDING CONSTRAINTS), ATTACHes it (SHARE UPDATE EXCLUSIVE on the parent: never
+-- blocks audit inserts), and grants the same SELECT + column-level INSERT to vcare_app.
+CREATE OR REPLACE FUNCTION audit_logs_ensure_partitions(p_months_ahead integer)
     RETURNS TABLE (partition_name text, created boolean) LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path = pg_catalog, pg_temp SET lock_timeout = '2s' AS $fn$ … $fn$;
+    SET search_path = pg_catalog, pg_temp SET lock_timeout = '200ms' AS $fn$ … $fn$;
 REVOKE ALL ON FUNCTION audit_logs_ensure_partitions(integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION audit_logs_ensure_partitions(integer) TO vcare_app;
 SELECT partition_name, created FROM audit_logs_ensure_partitions(2);   -- the migration creates current + 2 months

@@ -55,15 +55,36 @@ order for a new module". The unit adds **no business route**: its "routes" are t
 - [x] (docs) `architecture/{rbac,overview,infrastructure,resilience,data-model,deployment,api,integration}.md`, `runbook.md`, `quickstart.md`, `foundation/spec.md` §1.4 / §13.3 (spec §13.2)
 - [x] (docs) `service-card.md` + hub re-sync (`check-freshness.sh`: OK); `docs/INDEX.md` rows (tasks, ADR 0018)
 
+### Fix-review — [reviews/review-20261003-1600.md](./reviews/review-20261003-1600.md) (2026-10-03)
+- [x] (policies) H1 boot route assertion: handler before `authorize`, terminal `router.use(path, fn)`, mounted sub-app, `router.route()` per-method chains; `markPreAuth` marker
+- [x] (repository) M1 `ensureAppLogin`: DDL failures rethrown as `app_login_ddl_failed` (SQLSTATE only)
+- [x] (service) M2 Redis `socketTimeout` (`REDIS_SOCKET_TIMEOUT_MS`); stall test recovers without a manual disconnect
+- [x] (repository) L1 `ensureAppLogin` refuses a privileged existing role (`app_login_role_privileged`)
+- [x] (migration) L2 column-level `INSERT` grant on `audit_logs` + partitions; function re-grants with the column list
+- [x] (migration) L3 partition creation via `CREATE TABLE … (LIKE …)` + `ATTACH PARTITION`, `lock_timeout` 200 ms
+- [x] (service) L4 `worker --once audit-partitions` exits 1 when partitions were not ensured or the lock was held
+- [x] (service) L5 JWKS DTO strips unknown public members, still rejects a private `d` member
+- [x] (service) L6 `lib/http/once-next.ts` shared by idempotency + rate-limit; `isRedactedKey` used by `lib/audit`
+- [x] (service) L7 `route` on `unhandled_error`, `error_after_headers_sent`, `rate_limit_internal_error`
+- [x] (tests) L8 JWKS refresh lifecycle pinned (interval tick, body-phase timeout, boot refresh)
+- [x] (tests) L9 `assertTestDatabase()` guard in integration global setup + `ownerDb`
+- [x] (contract) D1 `bearerUser` claims `exp`, `iat`, `jti` + 30 s tolerance; hub re-sync
+- [x] (docs) D2 `docs/INDEX.md` access/tasks row + these notes
+
 ## Notes
-- Results at the end of `/develop access` (2026-10-02): `npm run typecheck` clean · `npm run lint` clean ·
+- **Current state (2026-10-03):** build, `/write-tests access`, and `/manual-qa access` are done (commits `efc1d83`,
+  `fc4da16`, `5af702c`); Docker was up for them — migrations, `ensure-app-login`, the worker loop, and the
+  integration suite all ran against the test stack (Postgres 5434 / Redis 6381). The fix-review above adds two
+  migrations (`20261003120000_audit_logs_column_insert_grants`, `20261003120100_audit_logs_partitions_attach`): the
+  local dev database must be migrated by the user (`npm run migrate`); nothing touched it from this workflow.
+- History — results at the end of `/develop access` (2026-10-02): `npm run typecheck` clean · `npm run lint` clean ·
   `npm test` 34 suites / 448 tests pass · `npm run build` clean; `node dist/worker.js --once <unknown>` exits 1 with
   `worker_loop_unknown`, `--once audit-partitions` with Postgres down logs `audit_partition_missing` then
   `worker_tick_failed` and exits 1. A throwaway tsx smoke run (no DB; deleted) confirmed: no token 401, patient on an
   admin route 403, pending doctor on onboarding 200, suspended doctor 403, expired 401 `TokenExpired`, tampered 401,
   `%E0%A4%A` path param 400 `ValidationFailed`, nested-router route label keeps the prefix, one JWKS fetch, readiness
   `identityJwks: up`, boot assertion `route_without_policy` / `route_without_guard`, `policy_invalid` for `suspended`.
-- **Docker Desktop was not running** during `/develop access`: the three migrations, `ensure-app-login`, the worker
+- (History, resolved — see the first note.) **Docker Desktop was not running** during `/develop access`: the three migrations, `ensure-app-login`, the worker
   loop against Postgres, and the integration suite were **not** run against a database. The integration helpers were
   updated to compile and to the role split (owner `ownerDb`, global setup migrates as owner + `ensureAppLogin`); the
   migrations / health / knex-dead-connection suites got minimal compatibility edits only. Run
@@ -74,7 +95,7 @@ order for a new module". The unit adds **no business route**: its "routes" are t
   exits with `invalid_environment`.
 - `npm test` / `npm run test:integration` now run Jest through `node --experimental-vm-modules` (jose 6 is ESM-only;
   identity parity). `dist/` loads jose through Node 24's `require(esm)`.
-- Left for `/write-tests access`: every suite of spec §9.2–§9.4 and the §12 regressions, including the three new
+- (History, done in `/write-tests access`.) Every suite of spec §9.2–§9.4 and the §12 regressions, including the three
   `restricted-imports` lint cases (jose, undici, global `fetch`).
-- Platform delta for the orchestrator (not written here): hub `architecture/deployment.md` → Observability
+- Platform delta (done by the orchestrator 2026-10-02): hub `architecture/deployment.md` → Observability
   `IdentityJwksStale` alert (spec §13.1).

@@ -3,7 +3,7 @@ title: ADR 0018 — Database owner/app role split, explicit grants, and the SECU
 owner: care-team
 service: care-service
 status: accepted
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [adr, database, postgres, roles, grants, least-privilege, audit-logs, partitions, worker]
 related: [access-spec, adr-0008-care-worker-component, adr-0009-audit-logs-monthly-partitions, adr-0001-no-orm-knex-raw-sql, data-model, infrastructure, runbook]
 ---
@@ -78,3 +78,25 @@ Options considered (brainstorm 2026-10-02):
   `log_statement = 'ddl'` or `'all'` would log it. Keep it off for the provisioning run (runbook).
 - Creating a month while `audit_logs_default` holds a row inside its range fails; the worker reports
   `audit_partition_missing` and the runbook moves the rows.
+
+## Addendum 2026-10-03 — access fix-review (decision unchanged; details tightened)
+
+Appended, not rewritten (ADRs are append-only). Source: `docs/access/reviews/review-20261003-1600.md` (L1, L2, L3, M1).
+
+- **Column-level `INSERT` on `audit_logs`** (migration `20261003120000_audit_logs_column_insert_grants`). The
+  table-level `INSERT` of Decision 2 let the app role set `id` and `created_at` (back-dated or future-dated history, a
+  row parked in the default partition, a duplicate id). `vcare_app` now holds `SELECT` and
+  `INSERT (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata)` on the parent, the default
+  partition, and every monthly partition; the function grants the same per new partition. "Append-only tables get
+  `INSERT, SELECT` only" still holds — the `INSERT` is narrower.
+- **The function creates a month with `LIKE` + `ATTACH PARTITION`** (migration
+  `20261003120100_audit_logs_partitions_attach`). `CREATE TABLE … PARTITION OF` took `ACCESS EXCLUSIVE` on the parent,
+  so every audit insert queued behind it while any open transaction had written an audit row (measured: a concurrent
+  insert waited 2 058 ms). `ATTACH` takes `SHARE UPDATE EXCLUSIVE` on the parent (compatible with `INSERT`); the
+  function's `lock_timeout` is now 200 ms (the daily tick retries). The `SECURITY DEFINER` boundary, the bounded
+  integer argument, the pinned `search_path`, and the `EXECUTE` grants are unchanged.
+- **`ensure-app-login` refuses a privileged existing role** (`app_login_role_privileged`: `SUPERUSER`, `CREATEROLE`,
+  `CREATEDB`, `REPLICATION`, `BYPASSRLS`, or owned objects) rather than taking it over or demoting it, and rethrows any
+  DDL failure as the fixed `app_login_ddl_failed` (SQLSTATE `code` only), so the password inside the DDL can never
+  reach the `migration_failed` log line on a dropped connection.
+- **`worker --once audit-partitions` exits 1** unless that tick ensured the partitions (`worker_once_incomplete`).

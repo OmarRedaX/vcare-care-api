@@ -113,7 +113,24 @@ once the brief fixes scope (user workflow: issue → branch → PR).
   Medium: ensure-app-login password in migration_failed log on mid-DDL connection drop; Redis no socketTimeout (QA obs 1 confirmed).
   QA obs: (1) confirmed Medium, (2) dismissed, (3) confirmed Low.
 - CARRY TO doctors review (refuted here only because spec defers them): boot assertion is guard-kind blind (user-guard route on internal listener would boot → must fail once serviceGuard lands); doctor suspended_at check is opt-in per policy (make it fail closed for doctor-role policies).
-- Review file UNCOMMITTED — waiting for user OK to commit.
+- 2026-10-03 COMMITTED 6e80c4e docs(access): code review findings; PUSHED origin/feature/access.
+
+## /develop access --fix-review (started 2026-10-03)
+- Docker test stack up (5434/6381). flow-developer DISPATCHED (fix-review mode, all 14 findings, severity order). It appends "- fix: ..." progress lines below.
+- fix: started; Fix-review section (14 tasks) added to docs/access/tasks.md. Order: H1 → M1 → M2 → L1..L9 → D1 D2.
+- fix: H1 RESOLVED — boot assertion: per-method chains, handler_before_authorize, middleware_without_policy (markPreAuth marker on global/pre-auth middleware), sub-app walk; unit + boot tests green. Docs (spec/rbac/skill) pending in D-pass.
+- fix: M1 RESOLVED (app_login_ddl_failed, SQLSTATE only; unit tests via real Logger) + L1 RESOLVED (refuse privileged/owning existing role: app_login_role_privileged; db-roles integration CREATEDB test). unit knex 46 pass, db-roles 12 pass.
+- fix: M2 RESOLVED — REDIS_SOCKET_TIMEOUT_MS 2000 in createRedis (no disconnect on breaker open, justified); stall test self-recovers (fails without the fix); unit redis option test.
+- fix: L2+L3 RESOLVED — migrations 20261003120000_audit_logs_column_insert_grants + 20261003120100_audit_logs_partitions_attach (both with downs); db-roles/worker-partitions/migrations tests updated+added (L3 test fails at 2058 ms on old fn). NOTE dev DB 5432 needs npm run migrate by the user.
+- fix: L4 RESOLVED — TickOutcome done|incomplete; --once exits 1 + worker_once_incomplete (default-row + lock-held child-process tests); runbook updated (also ensure-app-login failures, redis socket timeout, new boot errors).
+- fix: L5 RESOLVED — validateBody unknownMembers:"strip" option; JWKS strips extras, rejects d; tests added (spec line pending in docs pass).
+- fix: L6+L7 RESOLVED — lib/http/once-next.ts used by idempotency+rate-limit; isRedactedKey in redact used by audit; route+status on unhandled_error/error_after_headers_sent; tests unit+logs integration green.
+- fix: L8 RESOLVED — interval tick alone, trickle body timeout, boot refresh (process.test cross-platform + SIGTERM ordering); each verified to fail without the product behaviour; fixed latent seenHeaders race in jwks-fetcher X-Request-Id test.
+- fix: L9 RESOLVED — tests/helpers/test-database.ts guard in global-setup + ownerDb/truncateAll; unit test. All code findings done; next: D1 contract bearerUser + hub sync, D2 INDEX/tasks notes, docs (spec, rbac shard, skill, ADR 0018 addendum), full verification.
+- fix: D1+D2 RESOLVED — contract bearerUser claims + hub sync (freshness OK, hook OK); INDEX/tasks notes; docs updated: spec, rbac, data-model, infrastructure, resilience, runbook, ADR 0018 addendum, service card, skills rbac-ownership-guard + write-migration. Next: full verification.
+- fix: VERIFIED (fix-review done, uncommitted): typecheck clean, lint clean, build clean; unit 48 suites / 760 pass; integration 18 suites / 189 pass / 2 skipped (two consecutive runs). Review file: 14 RESOLVED, 0 OPEN, 0 DISPUTED. Hub: catalog card + contract copy re-synced (uncommitted, branch docs/care-access-deltas), freshness OK. Dev DB 5432 needs npm run migrate (2 new migrations). Identity skill copies (rbac-ownership-guard, write-migration) now differ from care's — mirror decision for the user.
+
+- VERIFIED by orchestrator 2026-10-03: typecheck + lint clean; unit 48 / 760 pass; integration 18 / 189 pass / 2 skipped (test stack 5434/6381); review 14 RESOLVED / 0 OPEN. Spot-checked boot assertion + attach migration. UNCOMMITTED (63 files + 6 new). Pending user: commit OK?; migrate dev DB 5432 + curl QA re-run?; mirror 2 skills into identity?
 
 ## ▶ NEXT STEP
-Ask user to commit review file (+ checkpoint) → /develop access --fix-review → /review-code access (re-review) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
+Ask user: commit fix-review; dev DB migrate + curl-test-access.sh re-run (needs Identity 3020 + QA servers); identity skill mirror. Then /review-code access (re-review) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [runbook, operations, on-call, care]
 related: [resilience, integration, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -47,7 +47,7 @@ tasks below are live. Business alerts and the SQL for module tables are the inte
 | `WorkerHeartbeatStale` | **page** | `care-worker` heartbeat > 2 min old | worker crashed, stuck loop, deploy failed | Restart/redeploy `care-worker`. Requests are unaffected, but Case 3 retries, emails, and reminders are paused. |
 | `OutboxLagHigh` | ticket | oldest pending outbox row > 5 min for 5 min | email provider slow, Identity contacts lookup failing, worker saturated | Check provider status and `identity_call_failed{case=contacts}`; scale `care-worker` to 2. Never send emails by hand from the database. |
 | `OutboxDeadJobs` | ticket | any `notification_outbox.status='dead'` | persistent provider rejection | Inspect `last_error_code`; fix config; requeue with `status='pending', attempts=0, next_attempt_at=now()`. |
-| `AuditPartitionMissing` | ticket | `audit_partition_missing = 1` (`error audit_partition_missing`), next month's partition missing, or `audit_default_partition_rows > 0` (`warn audit_default_partition_nonempty`) | worker loop failing (lock timeout, permissions, worker down), or rows landed in `audit_logs_default` — which then blocks creating their month | Run one tick: `node dist/worker.js --once audit-partitions` (exit 0 = ensured). If it fails because the default partition holds rows of the new month, move them (task below). |
+| `AuditPartitionMissing` | ticket | `audit_partition_missing = 1` (`error audit_partition_missing`), next month's partition missing, or `audit_default_partition_rows > 0` (`warn audit_default_partition_nonempty`) | worker loop failing (lock timeout, permissions, worker down), or rows landed in `audit_logs_default` — which then blocks creating their month | Run one tick: `node dist/worker.js --once audit-partitions`. Exit 0 (`worker_once_completed`) = the partitions were ensured by that tick; exit 1 with `worker_once_incomplete` = not ensured — read the preceding `audit_partition_missing` `error.code` (`23514`: the default partition holds rows of the new month → move them, task below; `55P03`: lock timeout (200 ms) → retry) or, with no such line, another worker held the advisory lock → retry in a minute. |
 | `IdentityJwksStale` | **page** | `jwks_cache_age_s` > 1 800 (no successful JWKS refresh for 30 min; platform alert in hub `architecture/deployment.md` → Observability) | Identity public listener down, `IDENTITY_JWKS_URL` wrong, egress/network policy, a malformed JWKS response | At 3 600 s the cached keys are distrusted and **every authenticated Care request is 401** (health stays 200, `identityJwks: down`). Read `warn jwks_refresh_failed` (`host`, `reason`: `timeout`, `network`, `http_status` + `status`, `content_type`, `too_large`, `invalid_json`, `invalid_document`). `curl -s <IDENTITY_JWKS_URL>` from a Care task; check Identity's `/api/health/ready` and on-call. `error jwks_keys_expired` marks the 1 h crossing. Never "fix" by skipping verification. |
 | `IdentityReinstatementSyncPending` | ticket | a Case 4 job unsynced > 15 min | Identity degraded | Doctor stays unbookable (correct). Check Identity health; the retrier continues. |
 | `RateLimiterDegraded` | ticket | fallback limiter active for 2 min | Redis down or failing over | Check Redis; limits are per instance until it recovers. |
@@ -74,13 +74,14 @@ environment or a request.
 | `shutdown_forced` (warn) | a second signal arrived while draining; exit 1 immediately | Check the orchestrator's stop timeout is longer than `SHUTDOWN_TIMEOUT_MS`. |
 | `uncaught_error` (error) | an uncaught exception or unhandled rejection; the task shuts down with exit 1 | A bug: open an issue with the request id and `error.name`/`code`. |
 | `worker_started` / `worker_stopping` (info), `worker_stop_timeout` (error) | `care-worker` lifecycle; the timeout means a loop tick outlived `SHUTDOWN_TIMEOUT_MS` | See `WorkerHeartbeatStale`. |
-| `worker_loop_unknown` / `worker_tick_failed` (error) | `--once <loop>` named no loop, or its single tick threw; exit 1 | Check the loop name (`audit-partitions`); read `error` for the SQLSTATE. |
-| `route_without_policy: <METHODS> <path>` / `route_without_guard: …` / `policy_invalid: …` (inside `boot_failed`) | a route is mounted without `authorize`, without a guard before it, or with an invalid policy (e.g. a status list containing `suspended`); the process refuses to start | A code defect in the release: roll back. Never work around it by removing the check. |
+| `worker_loop_unknown` / `worker_tick_failed` / `worker_once_incomplete` (error) | `--once <loop>` named no loop, its single tick threw, or the tick ran but did not reach its goal (`audit-partitions`: not ensured, or the lock was held elsewhere); exit 1 | Check the loop name (`audit-partitions`); read `error` for the SQLSTATE, or the preceding `audit_partition_missing` line. |
+| `route_without_policy: <METHOD> <path>` / `route_without_guard: …` / `handler_before_authorize: …` / `middleware_without_policy: <fn> under <path>` / `policy_invalid: …` (inside `boot_failed`) | a route method is mounted without `authorize`, without a guard before it, with a non-guard handler before `authorize`, a router-level layer that is neither a router, an error handler, nor `markPreAuth` middleware, or an invalid policy (e.g. a status list containing `suspended`); the process refuses to start | A code defect in the release: roll back. Never work around it by removing the check. |
 | `jwks_refreshed` (info) / `jwks_refresh_failed` (warn) / `jwks_keys_expired` (error) | the JWKS cache loaded `keys` keys (`trigger`: `boot`, `interval`, `stale`, `unknown_kid`, `no_keys`) / a refresh failed (`host`, `reason`, `status?`; previous keys kept) / no successful refresh for 1 h — no key is trusted now | See `IdentityJwksStale`. One `jwks_refresh_failed` at boot while Identity starts is harmless. |
 | `access_denied` (info) | `authorize` denied a request; `reason` (`unauthenticated`, `role`, `status`, `email_unverified`, `check:<name>`, `ownership_not_found`, `ownership_forbidden`) and the route pattern — never ids | Expected traffic; a spike of one reason on one route after a deploy may be a policy regression. |
 | `token_verification_error` (error) | an unexpected error while verifying a token (a bug or the key source failing); the request got 401 (fail closed) | Open an issue with the request id; the token is never logged. |
 | `app_login_ensured` (info) | `ensure-app-login` created (`created: true`) or re-synced (`false`) the app login | — |
-| `redis_breaker_open` (warn) / `redis_breaker_closed` (info) | Redis commands failed 3 times in a row (stall while connected): idempotency and rate limits stop using Redis for 5 s, then one probe decides | Check Redis latency/CPU; see `RateLimiterDegraded`. |
+| `migration_failed` with `app_login_role_privileged` / `app_login_ddl_failed` (error) | `ensure-app-login` refused a privileged/owning existing role, or its role DDL failed (SQLSTATE `code` only) | See "Provision or rotate the app login". |
+| `redis_breaker_open` (warn) / `redis_breaker_closed` (info) | Redis commands failed 3 times in a row (stall while connected): idempotency and rate limits stop using Redis for 5 s, then one probe decides. A connection that gets no byte for 2 s while commands are outstanding (half-open socket after an un-RST failover) is destroyed and redialled (`redis_unavailable` → `redis_recovered`), so the probe lands on a fresh connection | Check Redis latency/CPU; see `RateLimiterDegraded`. |
 | `idempotency_record_invalid` (warn) | a stored idempotency value failed the shape check and was removed; the request ran without replay | A spike right after a deploy means a record-format change; otherwise investigate who writes `idem:*` keys. |
 | `client_error_mapped` (warn) | a non-`AppError` 4xx (`name`, `status`) was mapped to `400`/`404` | Usually a malformed client request; never contains the value. |
 
@@ -95,6 +96,11 @@ re-grants the membership; it logs only `app_login_ensured { created }`. To rotat
 worker tasks. **Keep server-side `log_statement = 'none'` while it runs** — the password travels inside a
 `CREATE/ALTER ROLE` statement, which `log_statement = 'ddl'`, `'mod'`, or `'all'` would log. Locally:
 `npm run migrate:ensure-app-login`.
+Failures (`migration_failed`, exit 1): `app_login_role_privileged` — the existing role named by `DATABASE_URL` has
+`SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION`, or `BYPASSRLS`, or owns objects; the command refuses to take it
+over (it never demotes a role). Point `DATABASE_URL` at the right login, or drop/fix that role by hand, then re-run.
+`app_login_ddl_failed` (with a SQLSTATE `code` when the server answered, none on a dropped connection) — the
+`CREATE/ALTER ROLE` failed; the message is fixed on purpose so the password can never reach the log. Re-run.
 
 ### Check the app role's grants
 ```sql
@@ -122,7 +128,7 @@ SELECT partition_name, created FROM audit_logs_ensure_partitions(2);            
 INSERT INTO audit_logs SELECT * FROM audit_move;                                  -- routed to the new partition
 COMMIT;
 ```
-Then run `node dist/worker.js --once audit-partitions` and confirm `audit_default_partition_rows` is 0. Record only the
+Then run `node dist/worker.js --once audit-partitions` (exit 0) and confirm `audit_default_partition_rows` is 0. Record only the
 row count and the month in the incident.
 
 ### Inspect an identity sync job

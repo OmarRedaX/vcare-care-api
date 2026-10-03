@@ -69,8 +69,12 @@ id exists. A resolver or check that throws → `500` through the error handler. 
 throws `route_without_policy` for `undefined` and `policy_invalid: …` for an invalid shape (empty, duplicate, or
 unknown roles; a `statuses` key not in `roles`; an empty list; **any list containing `suspended`**; a check whose
 `appliesTo` is empty or not ⊆ `roles`; duplicate or non-snake_case names). The app calls
-`assertRoutesAuthorized(app.router)` at boot: every route needs `authorize`, preceded by a guard
-(`route_without_policy` / `route_without_guard`); health is exempt by `markProbeExempt`.
+`assertRoutesAuthorized(app.router)` at boot (Care): every route **method chain** (per verb; `.all` entries count for
+every verb) needs `authorize`, preceded by a guard, with nothing but guards, `markPreAuth` middleware (`rateLimit`,
+`noStore`, …), or error handlers before it (`route_without_policy` / `route_without_guard` /
+`handler_before_authorize`); every non-route layer must be a router (an Express sub-app's `app.router` is walked), an
+error handler, or `markPreAuth` middleware, else `middleware_without_policy` — never mount a handler with
+`router.use(path, fn)`. Health is exempt by `markProbeExempt`. New pre-auth middleware is marked where it is defined.
 
 **Route composition** (every module `routes.ts` returns `sealRouter(router)`):
 ```ts

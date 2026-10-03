@@ -175,12 +175,23 @@ GRANT USAGE ON SEQUENCE specialties_id_seq TO vcare_app;
 
 ## Append-only tables (audit logs, record amendments)
 Append-only is a **grant**, not a habit: the app role gets `INSERT, SELECT` only (plus `USAGE` on the sequence) —
-no `UPDATE`, `DELETE`, or `TRUNCATE`, so history is tamper-evident even against an API bug.
+no `UPDATE`, `DELETE`, or `TRUNCATE`, so history is tamper-evident even against an API bug. The `INSERT` is
+**column-level**: the app never writes `id` or `created_at` (their defaults do), so it must not be able to — otherwise
+it can back-date or future-date history or duplicate an id (Care review 2026-10-03; migration
+`20261003120000_audit_logs_column_insert_grants`).
 ```sql
-GRANT INSERT, SELECT ON audit_logs TO vcare_app;
-GRANT INSERT, SELECT ON audit_logs_default TO vcare_app;   -- partitioned: the DEFAULT partition too
+GRANT SELECT, INSERT (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata) ON audit_logs TO vcare_app;
+GRANT SELECT, INSERT (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata) ON audit_logs_default TO vcare_app;
 GRANT USAGE ON SEQUENCE audit_logs_id_seq TO vcare_app;
 ```
+To narrow an existing table-level `INSERT`, `REVOKE INSERT ON t FROM vcare_app` first (it also revokes column grants),
+then grant the column list — on the parent **and every partition**.
+
+**Creating a partition on a live table:** never `CREATE TABLE … PARTITION OF parent` (ACCESS EXCLUSIVE on the parent:
+every insert queues behind it while any open transaction has written a row). Create a standalone table
+`(LIKE parent INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`, then `ALTER TABLE parent ATTACH PARTITION … FOR VALUES …`
+(SHARE UPDATE EXCLUSIVE — compatible with INSERT), with a short `lock_timeout` (Care: 200 ms;
+`20261003120100_audit_logs_partitions_attach`).
 For "editable for 24 h, then locked" rows (medical records), add `locked_at TIMESTAMPTZ NOT NULL` and a trigger that raises when `NEW` differs from `OLD` after `locked_at`:
 ```sql
 CREATE OR REPLACE FUNCTION forbid_update_after_lock() RETURNS trigger AS $$
@@ -244,5 +255,7 @@ CREATE TRIGGER trg_medical_records_forbid_update_after_lock
 | Editing a migration that ran | New migration |
 | Table without a grant, or `ALTER DEFAULT PRIVILEGES` | Explicit `GRANT … TO vcare_app` in the creating migration |
 | `UPDATE`/`DELETE` granted on an append-only table | `INSERT, SELECT` only (+ sequence `USAGE`) |
+| Table-level `INSERT` on an append-only table (app can set `id`/`created_at`) | Column-level `INSERT (<writable columns>)` |
+| `CREATE TABLE … PARTITION OF` a live parent | `CREATE TABLE … (LIKE parent …)` + `ATTACH PARTITION`, short `lock_timeout` |
 | Partition created by the app or worker as owner | Owner-defined, bounded `SECURITY DEFINER` function; the worker never holds the owner secret |
 | Empty or throwing `down()` | Real reversal |
