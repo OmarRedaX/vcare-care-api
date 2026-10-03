@@ -83,6 +83,21 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - 2026-10-03 Docker started; test stack up. INTEGRATION GREEN: 18 suites, 180 pass, 2 skipped (win32 SIGTERM). The 5 extended suites cover migrations (partitions, rollback round-trip, guarded DROP ROLE), health C1/A7, logs #6 + token hygiene, envelope #5, idempotency #11. README counts updated; tasks.md (tests) flipped [x]. /write-tests access DONE (uncommitted).
 
+- 2026-10-03 COMMITTED 1b5d546 fix(auth) jwks-fetcher discard crash + efc1d83 test(access); PUSHED by the user (github.com edge 20.233.83.145 unreachable from this network — use git -c http.curloptResolve=github.com:443:140.82.121.4 if push times out again).
+
+## /manual-qa access (started 2026-10-03)
+- Identity started by orchestrator: `PORT=3020 INTERNAL_PORT=3120 npx tsx --env-file-if-exists=.env src/server.ts` in ../vcare-identity-api (its .env still says 3000/3100).
+- HARNESS FIX (uncommitted): scripts/access-qa-server.ts never called redis.connect() (client is lazyConnect) → ready showed redis down forever; now connects in the background like server.ts. typecheck + lint clean.
+- Care QA server on :3001 → ready {database up, redis up, identityJwks up}. NOTE: on Windows TaskStop leaves the tsx node child alive — kill the PID holding the port (netstat -ano | grep :3001).
+- flow-qa-runner DISPATCHED.
+- qa: harness scripts/access-qa-server.ts now also mounts audit/params/nested/idempotency/rate-limit test routers (dev-only; typecheck+lint clean). New scripts/access-qa-fake-identity.ts (fake JWKS + edge-token mint on 127.0.0.1:3021) and scripts/curl-test-access.sh.
+- qa: QA server 3001 restarted by qa-runner with log capture (scratchpad); edge harness 3011 → fake 3021. Identity QA accounts created through the real register flow (worker run temporarily, then stopped): patient id 1, doctor id 2, admin id 3 (promoted in Identity DB); variants via Identity DB UPDATE before login.
+- qa: run 1 → 139 pass / 4 fail; all 4 were script expectation errors (#11 store-on-2nd-request per spec §12.4; rate-limit 1 s window stretched by node spawns) — script fixed, re-run pending.
+- qa: #10 stall verified by hand (scratchpad black-hole proxy → third harness :3012 on Redis DB 1): breaker opens after 2 slow requests (2 failed cmds each), then ~1 ms server-side, rate limiter degraded, readiness degraded; replay resumes + redis_breaker_closed after a fresh connection. Observation: byte-dropping stall desyncs ioredis until reconnect (integration test also forces disconnect).
+- qa: JWKS outage O1–O12 all per spec (identityJwks down but readiness 200 ok; cached keys verify; care restart while Identity down → 401 until the 60 s gate, then no_keys fetch → 200 + up). Identity restarted by qa-runner (PORT=3020 INTERNAL_PORT=3120, log in session scratchpad); care :3001 restarted by qa-runner (log in session scratchpad).
+- qa: final scripted run 143/143; total 167 pass / 0 fail. docs/access/manual-qa.md written, tasks.md (manual-qa) [x], INDEX row added. Not committed.
+- /manual-qa access VERIFIED by orchestrator 2026-10-03: 167 pass / 0 fail; typecheck + lint + bash -n clean; no secrets in outputs. UNCOMMITTED: scripts/access-qa-server.ts, scripts/access-qa-fake-identity.ts, scripts/curl-test-access.sh, docs/access/manual-qa.md, docs/access/tasks.md, docs/INDEX.md. Left running: Identity 3020/3120, care QA server 3001.
+- Observations for /review-code: (1) ioredis does not reconnect after a byte-dropping stall (likely proxy artefact); (2) malformed :param without token → 400 not 401 (Express decodes before userGuard); (3) unhandled_error log line lacks `route`.
+
 ## ▶ NEXT STEP
-/write-tests access DONE, UNCOMMITTED (ask user before committing: "test(access): ..." on feature/access; exclude AGENTS.md/.codex).
-Then: /manual-qa access (real Identity 3020/3120, native dev Postgres 5432 / Redis 6379 DB 1) → /review-code access → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
+AWAITING USER: approve commit of the /manual-qa access files (test(access)/docs(access)). Then /review-code access (feed the 3 observations above) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".

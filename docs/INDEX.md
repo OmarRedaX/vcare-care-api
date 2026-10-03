@@ -3,7 +3,7 @@ title: Care Service — Docs Index
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -73,6 +73,7 @@ spec, tasks, manual-qa, reviews/). Each module gets rows here when it starts.
 | [foundation/manual-qa.md](./foundation/manual-qa.md) | see the CURL QA runs of the foundation (health, request id, envelope, listener isolation, outages) and re-run them with `scripts/curl-test-foundation.sh` | how-to |
 | [access/brainstorm.md](./access/brainstorm.md) | see the agreed scope of the shared access base (user guard + JWKS, deny-by-default `authorize`, append-only `audit_logs` + app DB role, worker partition loop, foundation fixes #5 #6 #10 #11) before `specialties` | explanation |
 | [access/tasks.md](./access/tasks.md) | see what the access build did (task by task, build-order tags), what was not run (Docker was down), and what is left for `/write-tests` and `/manual-qa` | — |
+| [access/manual-qa.md](./access/manual-qa.md) | see the CURL QA of the access base against real local Identity tokens and minted edge tokens (user guard, RBAC matrix, audit row + partition, #5 #6 #10 #11, idempotency, JWKS outage/recovery, log hygiene) and re-run it with `scripts/curl-test-access.sh` | how-to |
 | [access/spec.md](./access/spec.md) | build or use the access base: JWKS cache and `userGuard()`, the `Policy` shape and `authorize` step order, the boot route assertion, `AuditRecorder.record(trx, entry)`, the `audit_logs` migrations, DB roles (`care` / `vcare_app` / `care_app`, `ensure-app-login`), the worker `audit-partitions` loop, `checks.identityJwks`, env additions, the fixes for #5 #6 #10 #11, the test plan, the decided contract edits C1/C2, and the `audit` module hand-off (read indexes deferred) | reference |
 
 ## Contract (source of truth — prose above derives from it)

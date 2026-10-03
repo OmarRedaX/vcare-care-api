@@ -47,7 +47,7 @@ order for a new module". The unit adds **no business route**: its "routes" are t
 - [x] (tooling) `scripts/access-qa-server.ts` + `tests/helpers/test-routers.ts` `buildAccessTestRouter()` (spec §3.11, §9.3)
 - [x] (tests) keep existing unit tests green after the signature changes; integration infra: `global-setup.ts` migrates as owner + `ensureAppLogin`, `db.ts` `ownerDb` + parent-only `truncateAll` (spec §9.1). Full suites ← `/write-tests access`
 - [x] (tests) ← `/write-tests access` (spec §9, §12 regressions) — unit 46 suites / 724, integration 18 suites / 180 + 2 skipped on win32 (2026-10-03)
-- [ ] (manual-qa) ← `/manual-qa access` (spec §9.7, real local Identity)
+- [x] (manual-qa) ← `/manual-qa access` (spec §9.7, real local Identity) — 167 pass / 0 fail (2026-10-03): [manual-qa.md](./manual-qa.md), `scripts/curl-test-access.sh` (+ dev-only `scripts/access-qa-fake-identity.ts`; harness `scripts/access-qa-server.ts` now also mounts the audit/params/nested/idempotency/rate-limit test routers)
 
 ### Docs (written during development — spec §13)
 - [x] (docs) `docs/adr/0018-db-role-split-explicit-grants-partition-function.md` (spec §13.1)
