@@ -81,7 +81,7 @@ Options considered (brainstorm 2026-10-02):
 
 ## Addendum 2026-10-03 — access fix-review (decision unchanged; details tightened)
 
-Appended, not rewritten (ADRs are append-only). Source: `docs/access/reviews/review-20261003-1600.md` (L1, L2, L3, M1).
+Appended, not rewritten (ADRs are append-only). Source: `docs/access/reviews/review-20261003-1600.md` (L1, L2, L3, M1; file deleted after the clean re-review of 2026-10-03).
 
 - **Column-level `INSERT` on `audit_logs`** (migration `20261003120000_audit_logs_column_insert_grants`). The
   table-level `INSERT` of Decision 2 let the app role set `id` and `created_at` (back-dated or future-dated history, a

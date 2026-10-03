@@ -154,5 +154,10 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - Orchestrator VERIFIED round 2 (2026-10-03): typecheck + lint clean; unit 48 / 767; integration 18 / 192 + 2 skipped; review 16 RESOLVED / 0 OPEN. ADR 0018: reverted the in-place edit of the committed round-1 bullet, appended a separate round-2 bullet instead. Dev care_app member of vcare_app only (read-only check) → ensure-app-login safe. Stray agent shell b6niw3erg stopped. UNCOMMITTED; identity rbac skill re-mirrored (uncommitted).
 
+- 2026-10-03 COMMITTED round 2: 237dd10 fix(access), eb6498d docs(access) (not pushed).
+- /review-code access RE-REVIEW 2: single flow-code-reviewer (full) DISPATCHED; appends "- rereview2: ..." lines.
+
+- /update-docs access DONE + VERIFIED by orchestrator 2026-10-03: spec implemented v1.1.0 (§15 as-built), tasks done, INDEX, ADR 0018 note, last_verified bumps; no contract/card change. Re-review 2 CLEAN (review file deleted; typecheck+lint clean; unit 48/767; integration 18/192+2 skipped on 5434/6381). UNCOMMITTED: those docs + review deletion + checkpoint.
+
 ## ▶ NEXT STEP
-Ask user to commit round 2 → /review-code access (re-review 2; deletes the file when all verified) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
+Ask user: commit docs(access) (final) → push feature/access (git -c http.curloptResolve=github.com:443:140.82.121.4 push if timeout) → open PR to main "Closes #19 #5 #6 #10 #11" + Claude Code attribution → raise hub (docs/care-access-deltas) + identity (feature/auth) uncommitted changes.

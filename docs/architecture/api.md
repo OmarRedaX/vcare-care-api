@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [api, reference, routes, rbac]
 related: [rbac, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
 ---

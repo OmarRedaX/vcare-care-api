@@ -3,7 +3,7 @@ title: access — Tasks
 owner: care-team
 service: care-service
 module: access
-status: in-progress
+status: done
 last_verified: 2026-10-03
 tags: [tasks, access, auth, jwks, rbac, audit, audit-logs, db-roles, worker, redis-breaker]
 related: [access-spec, access-brainstorm, adr-0018-db-role-split-explicit-grants-partition-function, adr-0009-audit-logs-monthly-partitions, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
@@ -11,7 +11,7 @@ related: [access-spec, access-brainstorm, adr-0018-db-role-split-explicit-grants
 
 # access — Tasks
 
-Source of truth: [spec.md](./spec.md) (status `ready`, version 1.0.0). Build order tags follow CLAUDE.md → "Build
+Source of truth: [spec.md](./spec.md) (status `implemented`, version 1.1.0). Build order tags follow CLAUDE.md → "Build
 order for a new module". The unit adds **no business route**: its "routes" are the mechanism (`userGuard`,
 `authorize`, boot assertion) and test-only routers mounted by integration tests (spec §9.3).
 
@@ -46,7 +46,7 @@ order for a new module". The unit adds **no business route**: its "routes" are t
 - [x] (mount) `createPublicApp` / `createInternalApp` call `assertRoutesAuthorized(app.router)` before `extraRouters` (spec §3.2, §3.4.4)
 - [x] (tooling) `scripts/access-qa-server.ts` + `tests/helpers/test-routers.ts` `buildAccessTestRouter()` (spec §3.11, §9.3)
 - [x] (tests) keep existing unit tests green after the signature changes; integration infra: `global-setup.ts` migrates as owner + `ensureAppLogin`, `db.ts` `ownerDb` + parent-only `truncateAll` (spec §9.1). Full suites ← `/write-tests access`
-- [x] (tests) ← `/write-tests access` (spec §9, §12 regressions) — unit 46 suites / 724, integration 18 suites / 180 + 2 skipped on win32 (2026-10-03)
+- [x] (tests) ← `/write-tests access` (spec §9, §12 regressions) — unit 46 suites / 724, integration 18 suites / 180 + 2 skipped on win32 (2026-10-03; at the end of the fix-review rounds: unit 48 suites / 767, integration 18 suites / 192 + 2 skipped)
 - [x] (manual-qa) ← `/manual-qa access` (spec §9.7, real local Identity) — 167 pass / 0 fail (2026-10-03): [manual-qa.md](./manual-qa.md), `scripts/curl-test-access.sh` (+ dev-only `scripts/access-qa-fake-identity.ts`; harness `scripts/access-qa-server.ts` now also mounts the audit/params/nested/idempotency/rate-limit test routers)
 
 ### Docs (written during development — spec §13)
@@ -55,7 +55,7 @@ order for a new module". The unit adds **no business route**: its "routes" are t
 - [x] (docs) `architecture/{rbac,overview,infrastructure,resilience,data-model,deployment,api,integration}.md`, `runbook.md`, `quickstart.md`, `foundation/spec.md` §1.4 / §13.3 (spec §13.2)
 - [x] (docs) `service-card.md` + hub re-sync (`check-freshness.sh`: OK); `docs/INDEX.md` rows (tasks, ADR 0018)
 
-### Fix-review — [reviews/review-20261003-1600.md](./reviews/review-20261003-1600.md) (2026-10-03)
+### Fix-review — `reviews/review-20261003-1600.md` (2026-10-03; the review file was deleted after the clean re-review)
 - [x] (policies) H1 boot route assertion: handler before `authorize`, terminal `router.use(path, fn)`, mounted sub-app, `router.route()` per-method chains; `markPreAuth` marker
 - [x] (repository) M1 `ensureAppLogin`: DDL failures rethrown as `app_login_ddl_failed` (SQLSTATE only)
 - [x] (service) M2 Redis `socketTimeout` (`REDIS_SOCKET_TIMEOUT_MS`); stall test recovers without a manual disconnect
@@ -76,6 +76,9 @@ order for a new module". The unit adds **no business route**: its "routes" are t
 - [x] (repository) L `ensureAppLogin` refuses an existing role that is a member of any role other than `vcare_app` (`app_login_role_privileged`); the role check also runs under the fixed-error wrapper
 
 ## Notes
+- **Final state (2026-10-03):** `/review-code access` re-review 2 verified all 16 findings resolved and found nothing
+  new, so `docs/access/reviews/` no longer exists (no review file = clean module). Unit 48 suites / 767 passed;
+  integration 18 suites / 192 passed + 2 skipped.
 - **Current state (2026-10-03):** build, `/write-tests access`, and `/manual-qa access` are done (commits `efc1d83`,
   `fc4da16`, `5af702c`); Docker was up for them — migrations, `ensure-app-login`, the worker loop, and the
   integration suite all ran against the test stack (Postgres 5434 / Redis 6381). The fix-review above adds two

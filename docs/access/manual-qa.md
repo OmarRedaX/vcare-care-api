@@ -265,7 +265,7 @@ stops carrying bytes but stays open, so ioredis keeps `status=ready`. Durations 
 | L5 | Partitions present | `audit_logs_default`, `audit_logs_y2026m10..m12` | as expected | pass |
 
 ## Re-run after fix-review (2026-10-03)
-After `/develop access --fix-review` (commits `245205c`, `11aa5a3`; review `reviews/review-20261003-1600.md`), on
+After `/develop access --fix-review` (commits `245205c`, `11aa5a3`; review `reviews/review-20261003-1600.md`, since deleted after the clean re-review), on
 the dev data stack migrated to the two new migrations (`20261003120000_audit_logs_column_insert_grants`,
 `20261003120100_audit_logs_partitions_attach`; `ensure-app-login` → `created: false`, the existing `care_app` passes
 the new privileged-role check). The `:3001` harness was restarted on the new code; Identity was the same

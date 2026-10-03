@@ -3,8 +3,8 @@ title: access — Spec
 owner: care-team
 service: care-service
 module: access
-status: ready
-version: 1.0.0
+status: implemented
+version: 1.1.0
 diataxis: reference
 last_verified: 2026-10-03
 tags: [spec, access, auth, jwks, jose, rbac, authorize, audit, audit-logs, partitions, postgres-roles, worker, redis-breaker]
@@ -1179,3 +1179,37 @@ This spec matches the current CLAUDE.md wording:
   `INSERT, SELECT` only. `care-migrate` runs `ensure-app-login` after `latest`. §2.1, §2.2, §3.8, and §3.10 implement
   exactly this. The `USAGE` grant on a table's own sequence (`audit_logs_id_seq`) belongs to its `INSERT` grant: it is
   not a table privilege.
+
+---
+
+## 15. As-built notes (2026-10-03)
+
+Spec v1.0.0 was written before the build; v1.1.0 records the as-built state after `/develop`, `/write-tests`,
+`/manual-qa`, two fix-review rounds, and a clean re-review (the review file was deleted; the module has no open
+findings). The sections above already carry the review-driven changes inline, marked "review 2026-10-03" or
+"round 2". The intentional divergences from the v1.0.0 text:
+
+- **Boot route assertion (§3.4.4) is stricter than v1.0.0.** It checks per-method chains, throws
+  `handler_before_authorize`, `middleware_without_policy` (router-level layers must be routers, error handlers, or
+  `markPreAuth` middleware), walks mounted sub-apps, and throws `param_callback_without_policy` for any
+  `router.param` / `app.param` callback on a walked router (no exemption; none exists in `src/` or `tests/`).
+- **`ensureAppLogin` (§3.8) refuses** an existing role that is privileged, owns objects, or is a member of any role
+  other than `vcare_app` (`app_login_role_privileged`); DDL failures surface as `app_login_ddl_failed` carrying only
+  the SQLSTATE (the password never reaches a log line).
+- **`audit_logs` grants (§2.2) are column-level for `INSERT`** (migration `20261003120000_audit_logs_column_insert_grants`)
+  and partitions are created with `CREATE TABLE ... (LIKE ...)` + `ATTACH PARTITION` under `lock_timeout` 200 ms
+  (migration `20261003120100_audit_logs_partitions_attach`). The app role cannot set `id` or `created_at`.
+- **Worker (§3.6):** `--once audit-partitions` exits 1 (`worker_once_incomplete`) when partitions were not ensured or
+  the advisory lock was held.
+- **Redis (§12.3):** `socketTimeout` 2 s on every client (constant `REDIS_SOCKET_TIMEOUT_MS`, not an env var).
+- **JWKS DTO (§3.3.2):** unknown public members are stripped; a private `d` member is rejected.
+- **Contract:** C1 and C2 applied; D1 added claims `exp`, `iat`, `jti` and the 30 s tolerance to `bearerUser`. No
+  further contract drift as of this date; no route was added.
+- **Known, deliberate:** a malformed `:param` without a token returns 400 `ValidationFailed`, not 401 (Express decodes
+  params before `userGuard`; §12.1 / A17).
+- **Test results (2026-10-03):** unit 48 suites / 767 passed; integration 18 suites / 192 passed, 2 skipped (POSIX
+  SIGTERM tests on win32); manual QA 167 pass at the first run, 143/143 scripted re-run after the first fix-review
+  ([manual-qa.md](./manual-qa.md)).
+- **Carry to the `doctors` review:** the boot assertion is guard-kind blind (a user-guard route on the internal
+  listener would boot; must fail once `serviceGuard` lands), and the doctor `suspended_at` check is opt-in per policy
+  (make it fail closed for doctor-role policies).
