@@ -71,6 +71,10 @@ order for a new module". The unit adds **no business route**: its "routes" are t
 - [x] (contract) D1 `bearerUser` claims `exp`, `iat`, `jti` + 30 s tolerance; hub re-sync
 - [x] (docs) D2 `docs/INDEX.md` access/tasks row + these notes
 
+### Fix-review round 2 — same review file, 2 new findings from the re-review (2026-10-03)
+- [x] (policies) H `assertRoutesAuthorized` throws `param_callback_without_policy` for any `router.param` / `app.param` callback on a walked router (root, nested, sub-app, probe-exempt)
+- [x] (repository) L `ensureAppLogin` refuses an existing role that is a member of any role other than `vcare_app` (`app_login_role_privileged`); the role check also runs under the fixed-error wrapper
+
 ## Notes
 - **Current state (2026-10-03):** build, `/write-tests access`, and `/manual-qa access` are done (commits `efc1d83`,
   `fc4da16`, `5af702c`); Docker was up for them — migrations, `ensure-app-login`, the worker loop, and the

@@ -20,8 +20,11 @@ Implementation guidance: the **`rbac-ownership-guard`** skill. Every route here 
    (per verb; `.all` entries count for every verb) lacks `authorize`, lacks a guard before it, or runs any other
    handler before it (`route_without_policy` / `route_without_guard` / `handler_before_authorize`), and when any
    non-route layer is neither a router (sub-apps included), an error handler, nor middleware explicitly marked
-   `markPreAuth` (`middleware_without_policy` — so `router.use(path, handler)` cannot serve unpoliced). Health is the
-   only exemption, by explicit marker (`markProbeExempt`).
+   `markPreAuth` (`middleware_without_policy` — so `router.use(path, handler)` cannot serve unpoliced), and when any
+   walked router has a `router.param` / `app.param` callback (`param_callback_without_policy` — Express runs those
+   before the route's guard; never use `router.param`, load by id inside the service after `authorize`). Health is
+   the only exemption from guard + policy, by explicit marker (`markProbeExempt`); it is not exempt from the param
+   check.
 2. **The principal is the verified token only** — `req.auth` from the user-guard (user JWT, verified locally via
    Identity's JWKS cached in memory, `lib/auth`) or the service-guard (service JWT, lands with the doctors module).
    `X-User-Id`, `X-Role`, `X-Forwarded-User`, body ids, and path params never grant access; ownership resolvers and

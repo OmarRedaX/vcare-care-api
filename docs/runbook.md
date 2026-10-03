@@ -75,12 +75,12 @@ environment or a request.
 | `uncaught_error` (error) | an uncaught exception or unhandled rejection; the task shuts down with exit 1 | A bug: open an issue with the request id and `error.name`/`code`. |
 | `worker_started` / `worker_stopping` (info), `worker_stop_timeout` (error) | `care-worker` lifecycle; the timeout means a loop tick outlived `SHUTDOWN_TIMEOUT_MS` | See `WorkerHeartbeatStale`. |
 | `worker_loop_unknown` / `worker_tick_failed` / `worker_once_incomplete` (error) | `--once <loop>` named no loop, its single tick threw, or the tick ran but did not reach its goal (`audit-partitions`: not ensured, or the lock was held elsewhere); exit 1 | Check the loop name (`audit-partitions`); read `error` for the SQLSTATE, or the preceding `audit_partition_missing` line. |
-| `route_without_policy: <METHOD> <path>` / `route_without_guard: …` / `handler_before_authorize: …` / `middleware_without_policy: <fn> under <path>` / `policy_invalid: …` (inside `boot_failed`) | a route method is mounted without `authorize`, without a guard before it, with a non-guard handler before `authorize`, a router-level layer that is neither a router, an error handler, nor `markPreAuth` middleware, or an invalid policy (e.g. a status list containing `suspended`); the process refuses to start | A code defect in the release: roll back. Never work around it by removing the check. |
+| `route_without_policy: <METHOD> <path>` / `route_without_guard: …` / `handler_before_authorize: …` / `middleware_without_policy: <fn> under <path>` / `param_callback_without_policy: <name> under <path>` / `policy_invalid: …` (inside `boot_failed`) | a route method is mounted without `authorize`, without a guard before it, with a non-guard handler before `authorize`, a router-level layer that is neither a router, an error handler, nor `markPreAuth` middleware, a `router.param` / `app.param` callback (it would run before the guard), or an invalid policy (e.g. a status list containing `suspended`); the process refuses to start | A code defect in the release: roll back. Never work around it by removing the check. |
 | `jwks_refreshed` (info) / `jwks_refresh_failed` (warn) / `jwks_keys_expired` (error) | the JWKS cache loaded `keys` keys (`trigger`: `boot`, `interval`, `stale`, `unknown_kid`, `no_keys`) / a refresh failed (`host`, `reason`, `status?`; previous keys kept) / no successful refresh for 1 h — no key is trusted now | See `IdentityJwksStale`. One `jwks_refresh_failed` at boot while Identity starts is harmless. |
 | `access_denied` (info) | `authorize` denied a request; `reason` (`unauthenticated`, `role`, `status`, `email_unverified`, `check:<name>`, `ownership_not_found`, `ownership_forbidden`) and the route pattern — never ids | Expected traffic; a spike of one reason on one route after a deploy may be a policy regression. |
 | `token_verification_error` (error) | an unexpected error while verifying a token (a bug or the key source failing); the request got 401 (fail closed) | Open an issue with the request id; the token is never logged. |
 | `app_login_ensured` (info) | `ensure-app-login` created (`created: true`) or re-synced (`false`) the app login | — |
-| `migration_failed` with `app_login_role_privileged` / `app_login_ddl_failed` (error) | `ensure-app-login` refused a privileged/owning existing role, or its role DDL failed (SQLSTATE `code` only) | See "Provision or rotate the app login". |
+| `migration_failed` with `app_login_role_privileged` / `app_login_ddl_failed` (error) | `ensure-app-login` refused a privileged/owning/other-role-member existing role, or its role check or DDL failed (SQLSTATE `code` only) | See "Provision or rotate the app login". |
 | `redis_breaker_open` (warn) / `redis_breaker_closed` (info) | Redis commands failed 3 times in a row (stall while connected): idempotency and rate limits stop using Redis for 5 s, then one probe decides. A connection that gets no byte for 2 s while commands are outstanding (half-open socket after an un-RST failover) is destroyed and redialled (`redis_unavailable` → `redis_recovered`), so the probe lands on a fresh connection | Check Redis latency/CPU; see `RateLimiterDegraded`. |
 | `idempotency_record_invalid` (warn) | a stored idempotency value failed the shape check and was removed; the request ran without replay | A spike right after a deploy means a record-format change; otherwise investigate who writes `idem:*` keys. |
 | `client_error_mapped` (warn) | a non-`AppError` 4xx (`name`, `status`) was mapped to `400`/`404` | Usually a malformed client request; never contains the value. |
@@ -97,10 +97,15 @@ worker tasks. **Keep server-side `log_statement = 'none'` while it runs** — th
 `CREATE/ALTER ROLE` statement, which `log_statement = 'ddl'`, `'mod'`, or `'all'` would log. Locally:
 `npm run migrate:ensure-app-login`.
 Failures (`migration_failed`, exit 1): `app_login_role_privileged` — the existing role named by `DATABASE_URL` has
-`SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION`, or `BYPASSRLS`, or owns objects; the command refuses to take it
-over (it never demotes a role). Point `DATABASE_URL` at the right login, or drop/fix that role by hand, then re-run.
-`app_login_ddl_failed` (with a SQLSTATE `code` when the server answered, none on a dropped connection) — the
-`CREATE/ALTER ROLE` failed; the message is fixed on purpose so the password can never reach the log. Re-run.
+`SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION`, or `BYPASSRLS`, owns objects, or is a direct member of any
+role other than `vcare_app` (e.g. `GRANT care TO care_app`, `pg_write_all_data`, `pg_read_all_data`, `pg_monitor` —
+it would inherit those rights); the command refuses to take it over (it never demotes a role or revokes a
+membership). Point `DATABASE_URL` at the right login, or fix that role by hand (as the owner, list its memberships
+with `SELECT g.rolname FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
+WHERE r.rolname = '<login>'` and `REVOKE <role> FROM <login>` for each one but `vcare_app`), then re-run.
+`app_login_ddl_failed` (with a SQLSTATE `code` when the server answered, none on a dropped connection) — the role
+check or the `CREATE/ALTER ROLE` failed; the message is fixed on purpose so the password and login name can never
+reach the log. Re-run.
 
 ### Check the app role's grants
 ```sql

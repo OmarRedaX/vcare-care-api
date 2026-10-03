@@ -137,5 +137,22 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - QA RE-RUN DONE 2026-10-03: curl-test-access.sh 143/143 exit 0 with fresh accounts QA_EMAIL_PREFIX=qa.access2 (ids 4/5/6; synthetic password in THIS session's scratchpad qa-password.txt only); Identity worker run for registration then killed. unhandled_error has route+status; worker --once on dev exit 0. docs/access/manual-qa.md "Re-run after fix-review" section (F1-F4) added — UNCOMMITTED. All QA processes stopped (care 3001 + Identity 3020/3120 killed on user request).
 
+- 2026-10-03 COMMITTED 8529504 docs(access) manual QA re-run (not pushed).
+
+## /review-code access — RE-REVIEW (started 2026-10-03)
+- Re-review mode (review-20261003-1600.md has 14 RESOLVED) → single flow-code-reviewer mode full DISPATCHED. It appends "- rereview: ..." lines here.
+- rereview: 2026-10-03 — all 14 RESOLVED verified (annotated "· verified 2026-10-03"); review file KEPT with 2 NEW OPEN: High `router.param`/`app.param` callbacks bypass assertRoutesAuthorized (probe: boot passed, anonymous 200); Low ensureAppLogin takes over a role that is a member of another role (probe: GRANT care → taken over, DELETE audit_logs allowed). typecheck+lint clean; unit 48/760 (one load flake in pre-existing jwks-fetcher 5xx case, green on rerun); integration 18/189 + 2 skipped. Next: /develop access --fix-review.
+
+- Orchestrator 2026-10-03: re-review confirmed 14 verified + 2 NEW OPEN (High router.param/app.param bypass of boot assertion; Low ensureAppLogin role membership). Review file kept (uncommitted annotations).
+
+## /develop access --fix-review ROUND 2 (started 2026-10-03)
+- flow-developer DISPATCHED for the 2 new OPEN items. It appends "- fix2: ..." lines here.
+- fix2: H RESOLVED — assertRoutesAuthorized throws `param_callback_without_policy: <name> under <path>` for any router.param/app.param on a walked router (root, nested, sub-app via routerOf → handle.router, probe-exempt); no exemption (no .param use in src/tests). Unit 5 cases (4 fail on old code) + boot integration case.
+- fix2: L RESOLVED — ensureAppLogin refuses `has_other_memberships` (pg_auth_members, any role but vcare_app; parameterised) with app_login_role_privileged; role check moved under withFixedFailure (fixed app_login_ddl_failed) per M1 note. Unit 2 new cases; db-roles 2 cases (owner role, pg_write_all_data; fail on old code).
+- fix2: docs — spec §3.4.4/§3.8/A8/A14/§9 lists, rbac.md, infrastructure.md, runbook.md, ADR 0018 addendum, tasks.md (Fix-review round 2), rbac-ownership-guard skill copied to ../vcare-identity-api (identical, uncommitted there). Review file: 16 RESOLVED / 0 OPEN.
+- fix2: VERIFIED (uncommitted): typecheck + lint clean; unit 48 suites / 767 pass; integration 18 suites / 192 pass / 2 skipped (test stack 5434/6381). Dev DB 5432 untouched — its existing care_app must be a member of vcare_app only or ensure-app-login now refuses.
+
+- Orchestrator VERIFIED round 2 (2026-10-03): typecheck + lint clean; unit 48 / 767; integration 18 / 192 + 2 skipped; review 16 RESOLVED / 0 OPEN. ADR 0018: reverted the in-place edit of the committed round-1 bullet, appended a separate round-2 bullet instead. Dev care_app member of vcare_app only (read-only check) → ensure-app-login safe. Stray agent shell b6niw3erg stopped. UNCOMMITTED; identity rbac skill re-mirrored (uncommitted).
+
 ## ▶ NEXT STEP
-Ask user to commit docs/access/manual-qa.md (+ checkpoint) → /review-code access (re-review; deletes the review file when all verified) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".
+Ask user to commit round 2 → /review-code access (re-review 2; deletes the file when all verified) → /update-docs access → PR "Closes #19 #5 #6 #10 #11".

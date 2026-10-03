@@ -75,6 +75,10 @@ every verb) needs `authorize`, preceded by a guard, with nothing but guards, `ma
 `handler_before_authorize`); every non-route layer must be a router (an Express sub-app's `app.router` is walked), an
 error handler, or `markPreAuth` middleware, else `middleware_without_policy` — never mount a handler with
 `router.use(path, fn)`. Health is exempt by `markProbeExempt`. New pre-auth middleware is marked where it is defined.
+**Never use `router.param` / `app.param`**: Express runs param callbacks before the matched route's guard and
+`authorize`, so a by-id loader would answer an anonymous caller (404 before 401) — any registration on any walked
+router (root, nested, sub-app, probe-exempt) throws `param_callback_without_policy: <name> under <path>`. Load by id
+inside the service, after `authorize`.
 
 **Route composition** (every module `routes.ts` returns `sealRouter(router)`):
 ```ts

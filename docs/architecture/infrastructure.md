@@ -100,7 +100,7 @@ every table migration grants it exactly what the code needs, explicitly (no `ALT
 tables get `INSERT, SELECT` only (column-level `INSERT` on `audit_logs`: never `id`/`created_at`). `care_app` is the login of `care-api` and `care-worker` (`DATABASE_URL`), member of
 `vcare_app`, `NOSUPERUSER NOCREATEDB NOCREATEROLE`; `node dist/migrate.js ensure-app-login` creates it or re-syncs its
 password and membership (never a migration, so no password is committed); it refuses an existing role that is
-privileged or owns objects (`app_login_role_privileged`) and never logs a failed DDL statement (`app_login_ddl_failed`). `care-migrate` runs `latest` then
+privileged, owns objects, or is a member of any role other than `vcare_app` (`app_login_role_privileged`) and never logs a failed DDL statement (`app_login_ddl_failed`). `care-migrate` runs `latest` then
 `ensure-app-login`; the owner needs `CREATEROLE`. The worker creates `audit_logs` partitions only through the
 owner-defined `SECURITY DEFINER` function `audit_logs_ensure_partitions(int)`.
 
@@ -243,7 +243,8 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
 ## Boot and shutdown
 - **Boot route assertion:** `createPublicApp` / `createInternalApp` call `assertRoutesAuthorized(app.router)` after
   mounting health and the module routers; `route_without_policy: <METHOD> <path>`, `route_without_guard: …`,
-  `handler_before_authorize: …`, or `middleware_without_policy: <fn> under <path>` (and
+  `handler_before_authorize: …`, `middleware_without_policy: <fn> under <path>`, or
+  `param_callback_without_policy: <name> under <path>` (a `router.param` / `app.param` callback; and
   `policy_invalid: …` / `route_without_policy` thrown by `authorize` at registration) become `boot_failed`, exit 1.
 - **JWKS cache:** `server.ts` starts it after DI registration (one background fetch, never awaited, + the 5-minute
   interval, `unref`'d) and stops it first on shutdown (clears the interval, aborts an in-flight fetch).

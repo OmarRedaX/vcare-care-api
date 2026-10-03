@@ -100,3 +100,8 @@ Appended, not rewritten (ADRs are append-only). Source: `docs/access/reviews/rev
   DDL failure as the fixed `app_login_ddl_failed` (SQLSTATE `code` only), so the password inside the DDL can never
   reach the `migration_failed` log line on a dropped connection.
 - **`worker --once audit-partitions` exits 1** unless that tick ensured the partitions (`worker_once_incomplete`).
+- **Re-review 2026-10-03 (round 2): `ensure-app-login` also refuses role membership.** An existing login that is a
+  direct member of any role other than `vcare_app` (the owner role, `pg_write_all_data`, …) gets
+  `app_login_role_privileged`, since `INHERIT` would pass those rights on; the role check is now wrapped like the DDL,
+  so any failure there is also rethrown as `app_login_ddl_failed`. The app login's rights therefore come only from
+  `vcare_app`, as Decision 1 states.
