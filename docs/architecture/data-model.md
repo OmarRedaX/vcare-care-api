@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 tags: [data-model, postgresql, schema, indexes, erd]
-related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
+related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
@@ -14,7 +14,8 @@ related: [scheduling-slots, clinical-records, integration, file-handling, access
 PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09-28) —
 `20260915000000_create_extension_btree_gist` (the extension only); access (2026-10-02) — `create_app_role` (the
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
-below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
+below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
+(see `specialties` below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
 modules will build. Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
@@ -60,22 +61,34 @@ same stable person id.
 ---
 
 ## `specialties`
+**Built by `specialties` (2026-10-04)** — migration `20261004120000_create_specialties`; the 20-row synthetic starter
+catalog is the separate data migration `20261004120100_seed_specialties_starter_catalog` (`ON CONFLICT DO NOTHING`;
+its `down` removes only unreferenced starter slugs). Detail: [specialties spec](../specialties/spec.md) §2.
 ```sql
 CREATE TABLE specialties (
     id           BIGSERIAL PRIMARY KEY,
     name         VARCHAR(100) NOT NULL,
     slug         VARCHAR(100) NOT NULL,
     description  TEXT,
-    is_active    BOOLEAN NOT NULL,
+    is_active    BOOLEAN NOT NULL,                     -- no default: the INSERT states it
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),   -- set by the UPDATE statement, no trigger
     CONSTRAINT uq_specialties_slug UNIQUE (slug),
-    CONSTRAINT uq_specialties_name UNIQUE (name),
-    CONSTRAINT chk_specialties_slug_format CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+    CONSTRAINT uq_specialties_name UNIQUE (name),      -- case-sensitive (database default collation)
+    CONSTRAINT chk_specialties_slug_format CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    CONSTRAINT chk_specialties_name_length CHECK (char_length(name) >= 2),
+    CONSTRAINT chk_specialties_description_length CHECK (description IS NULL OR char_length(description) <= 2000)
 );
 -- No soft delete: specialties are deactivated (is_active=false), never removed, because doctor links reference them.
+-- GET /api/specialties keyset page:
+--   SELECT … FROM specialties [WHERE is_active = true] [AND (name, id) > ($name, $id)] ORDER BY name ASC, id ASC LIMIT $n
+CREATE INDEX idx_specialties_name_id ON specialties (name, id);
 -- uq_specialties_slug also serves: search filter ?specialty=<slug> → SELECT id FROM specialties WHERE slug = $1
+GRANT SELECT, INSERT, UPDATE ON specialties TO vcare_app;   -- no DELETE, no TRUNCATE (never deleted)
+GRANT USAGE ON SEQUENCE specialties_id_seq TO vcare_app;
 ```
+The two length checks and `VARCHAR(100)` count characters (code points); the API DTOs count the same unit and reject
+control characters in `name` and NUL in `description`, so valid input never reaches a database error.
 
 ## `doctor_profiles`
 ```sql

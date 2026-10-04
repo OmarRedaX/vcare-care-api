@@ -339,7 +339,7 @@ describe("specialties (integration: real wiring, real Postgres as care_app, real
             },
         );
 
-        it.each([["limit=0"], ["limit=101"], ["limit=1e1"], ["limit=05"], ["sort=name"], [`cursor=${"a".repeat(513)}`]])(
+        it.each([["limit=0"], ["limit=101"], ["limit=1e1"], ["limit=05"], ["sort=name"], [`cursor=${"a".repeat(1025)}`]])(
             "should answer 400 for the query %s",
             async (query) => {
                 const res = await get(`${LIST}?${query}`, "patient");
@@ -375,6 +375,26 @@ describe("specialties (integration: real wiring, real Postgres as care_app, real
             for (const page of [first, second, third]) {
                 for (const item of page.body.data) expectSpecialty(item);
             }
+        });
+
+        it("should page across a 51-emoji name and return every row exactly once", async () => {
+            const emojiName = "😀".repeat(51);
+            const ids = await seed([
+                { name: "Alpha", slug: "alpha" },
+                { name: emojiName, slug: "emoji" },
+                { name: "😁 After", slug: "after" },
+            ]);
+            const seen: number[] = [];
+            let cursor: string | null = null;
+            for (let page = 0; page < 3; page += 1) {
+                const res = await get(`${LIST}?limit=1${cursor === null ? "" : `&cursor=${cursor}`}`, "patient");
+                expect(res.status).toBe(200);
+                seen.push(...(res.body.data as SpecialtyBody[]).map((row) => row.id));
+                cursor = res.body.meta.nextCursor as string | null;
+            }
+            expect([...seen].sort((a, b) => a - b)).toEqual([...ids].sort((a, b) => a - b));
+            expect(new Set(seen).size).toBe(3);
+            expect(cursor).toBeNull();
         });
 
         it("should report hasMore false with a null cursor when the rows exactly fill the limit", async () => {
@@ -425,11 +445,14 @@ describe("specialties (integration: real wiring, real Postgres as care_app, real
             ["a tampered cursor", "not-a-cursor!"],
             ["a numeric sortValue", encodeCursor(5, 1)],
             ["a 101-character name position", encodeCursor("x".repeat(101), 1)],
+            ["a NUL sort value", encodeCursor("a\u0000b", 1)],
         ])("should answer 400 on the cursor field for %s", async (_label, cursor) => {
             const res = await get(`${LIST}?cursor=${encodeURIComponent(cursor)}`, "patient");
             expect(res.status).toBe(400);
             expectErrorEnvelope(res.body, "ValidationFailed");
             expect(res.body.error.details).toEqual([{ field: "cursor", issue: "is invalid" }]);
+            expect(await dbRows()).toEqual([]);
+            expect(await auditRows()).toEqual([]);
         });
 
         it("should return an empty page with the contract meta when there are no rows", async () => {
@@ -503,6 +526,9 @@ describe("specialties (integration: real wiring, real Postgres as care_app, real
         it.each([
             ["a 1-character name", { name: "A", slug: "ok" }],
             ["a 101-character name", { name: "A".repeat(101), slug: "ok" }],
+            ["a 200-code-point name", { name: "a\uFE0F".repeat(100), slug: "ok" }],
+            ["a NUL name", { name: "a\u0000b", slug: "ok" }],
+            ["a control-character name", { name: "a\u0001b", slug: "ok" }],
             ["a missing name", { slug: "ok" }],
             ["a missing slug", { name: "Okay" }],
             ["an upper-case slug", { name: "Okay", slug: "Bad_Slug" }],
@@ -510,6 +536,8 @@ describe("specialties (integration: real wiring, real Postgres as care_app, real
             ["a slug with a double dash", { name: "Okay", slug: "a--b" }],
             ["a 101-character slug", { name: "Okay", slug: "a".repeat(101) }],
             ["a 2001-character description", { name: "Okay", slug: "ok", description: "d".repeat(2001) }],
+            ["a 4000-code-point description", { name: "Okay", slug: "ok", description: "a\uFE0F".repeat(2000) }],
+            ["a NUL description", { name: "Okay", slug: "ok", description: "a\u0000b" }],
             ["a null description", { name: "Okay", slug: "ok", description: null }],
             ["an isActive member", { name: "Okay", slug: "ok", isActive: false }],
             ["an id member", { name: "Okay", slug: "ok", id: 9 }],
@@ -704,11 +732,18 @@ describe("specialties (integration: real wiring, real Postgres as care_app, real
             ["a createdAt member", { createdAt: "2026-01-01T00:00:00Z" }],
             ["an invalid slug", { slug: "Bad Slug" }],
             ["a 1-character name", { name: "x" }],
+            ["a 200-code-point name", { name: "a\uFE0F".repeat(100) }],
+            ["a NUL name", { name: "a\u0000b" }],
+            ["a control-character name", { name: "a\u0001b" }],
+            ["a 4000-code-point description", { description: "a\uFE0F".repeat(2000) }],
+            ["a NUL description", { description: "a\u0000b" }],
         ])("should answer 400 ValidationFailed for %s (S-R12)", async (_label, body) => {
             const [id = 0] = await seed([{ name: "Synthetic Specialty 001", slug: "synthetic-specialty-001" }]);
+            const before = await dbRows();
             const res = await patch(id, body, "admin");
             expect(res.status).toBe(400);
             expectErrorEnvelope(res.body, "ValidationFailed");
+            expect(await dbRows()).toEqual(before);
             expect(await auditRows()).toEqual([]);
         });
 
@@ -862,6 +897,7 @@ describe("specialties (integration: real wiring, real Postgres as care_app, real
                 return JSON.stringify(result.rows[0]?.["QUERY PLAN"]);
             });
             expect(plan).toContain("idx_specialties_name_id");
+            expect(plan).toMatch(/"Index Cond":"\(ROW\(\(name\)::text, id\) > ROW\(/);
             expect(plan).not.toContain('"Node Type":"Sort"');
         });
     });

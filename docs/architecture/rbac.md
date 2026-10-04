@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # RBAC and Ownership
@@ -75,7 +75,7 @@ rateLimit(byUser)? → idempotency()? → handler`; every module `routes.ts` ret
 ## Account-state requirements
 | Route group | Requirement | Error |
 |---|---|---|
-| Doctor **onboarding**: `POST /doctors/apply`, `GET/PATCH /doctors/me`, `POST /doctors/me/documents`, `GET /doctors/me/application` | token `status ∈ {pending, active, rejected}`; `PATCH /doctors/me` also not locally suspended | 403 `Forbidden` |
+| Doctor **onboarding**: `POST /doctors/apply`, `GET/PATCH /doctors/me`, `POST /doctors/me/documents`, `GET /doctors/me/application`; and the read-only catalog `GET /specialties` (built 2026-10-04) | token `status ∈ {pending, active, rejected}`; `PATCH /doctors/me` also not locally suspended | 403 `Forbidden` |
 | Doctor **practising**: working hours, exceptions, consultation types, waiting room, calendar, join/start/complete/cancel/no-show, records | token `status=active` **and** `doctor_profiles.suspended_at IS NULL` (checked every request) | 403 `Forbidden` |
 | Patients (all routes) | token `status=active` | 403 `Forbidden` |
 | Any token with `status=suspended` | never admissible (no Care policy may list it) | 403 `Forbidden` (Care has no `AccountSuspended` code) |
@@ -90,7 +90,7 @@ not a policy check.
 ## Per-route policy table
 | Route | Roles | Ownership (`x-ownership`) | Audit |
 |---|---|---|---|
-| `GET /specialties` | patient, doctor, admin | none | — |
+| `GET /specialties` | patient (active), doctor (pending, active, or rejected — a doctor picks specialties while applying), admin (active) — contract `x-account-state` | none | — |
 | `POST /specialties`, `PATCH /specialties/:id` | admin | none | admin-action |
 | `POST /doctors/apply`, `GET/PATCH /doctors/me`, `POST /doctors/me/documents`, `GET /doctors/me/application` | doctor (pending, active, or rejected) | self — profile by `auth.userId` | — |
 | `GET /doctors`, `GET /doctors/:doctorUserId`, `GET /doctors/:doctorUserId/slots` | patient, admin | none (patients see bookable doctors only) | — |

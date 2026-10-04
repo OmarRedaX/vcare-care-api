@@ -22,6 +22,7 @@ info:
     **Vendor extensions on operations.**
     - `x-roles` — roles allowed by the route policy (`patient`, `doctor`, `admin`, or `service`). Admin never appears on record routes.
     - `x-ownership` — the ownership predicate resolved from the database (`none`, `self`, `participant`, `assigned-doctor`, `consulted-patient-or-self`, ...).
+    - `x-account-state` — token account states accepted when they differ from the default (`active`).
     - `x-audit` — audit class forced by the policy (`clinical-read`, `clinical-write`, `admin-action`).
     - `x-audit-actions` — the `audit_logs.action` values the operation writes (status changes are always audited).
     - `x-integration-case` / `x-failure-policy` — the platform integration case with identity-service and its failure policy
@@ -167,6 +168,7 @@ paths:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
       x-ownership: none
+      x-account-state: 'doctor status in (pending, active, rejected); patient and admin active'
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/Cursor'
@@ -2684,7 +2686,7 @@ components:
       description: Opaque keyset cursor from `meta.nextCursor` (encodes the sort value and id).
       schema:
         type: string
-        maxLength: 512
+        maxLength: 1024
     Limit:
       name: limit
       in: query
@@ -3663,6 +3665,7 @@ components:
           type: string
           minLength: 2
           maxLength: 100
+          description: Length is counted in Unicode code points. Control characters (U+0000-U+001F, U+007F-U+009F) are rejected with `400 ValidationFailed`.
         slug:
           type: string
           pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
@@ -3670,6 +3673,7 @@ components:
         description:
           type: string
           maxLength: 2000
+          description: Length is counted in Unicode code points. U+0000 is rejected with `400 ValidationFailed`.
     SpecialtyUpdate:
       type: object
       additionalProperties: false
@@ -3679,6 +3683,7 @@ components:
           type: string
           minLength: 2
           maxLength: 100
+          description: Length is counted in Unicode code points. Control characters (U+0000-U+001F, U+007F-U+009F) are rejected with `400 ValidationFailed`.
         slug:
           type: string
           pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
@@ -3686,6 +3691,7 @@ components:
         description:
           type: [string, 'null']
           maxLength: 2000
+          description: Length is counted in Unicode code points. U+0000 is rejected with `400 ValidationFailed`.
         isActive:
           type: boolean
 

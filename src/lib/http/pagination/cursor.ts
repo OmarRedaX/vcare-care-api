@@ -34,7 +34,7 @@ export function decodeTextCursor(cursor: string, maxLength: number): StringCurso
         throw INVALID_CURSOR;
     }
     const position = decodeCursor(cursor);
-    if (typeof position.sortValue !== "string" || position.sortValue.length > maxLength) {
+    if (typeof position.sortValue !== "string" || [...position.sortValue].length > maxLength || position.sortValue.includes("\u0000")) {
         throw INVALID_CURSOR;
     }
     return { sortValue: position.sortValue, id: position.id };

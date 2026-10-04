@@ -57,8 +57,8 @@ describe("specialties request DTOs", () => {
             expect(error.details).toEqual([{ field: "sort", issue: "is not allowed" }]);
         });
 
-        it("should reject a cursor longer than 512 characters", async () => {
-            const error = await failure(validateQuery(ListSpecialtiesQueryDto, { cursor: "a".repeat(513) }));
+        it("should reject a cursor longer than 1024 characters", async () => {
+            const error = await failure(validateQuery(ListSpecialtiesQueryDto, { cursor: "a".repeat(1025) }));
             expect(error.details.map((d) => d.field)).toContain("cursor");
         });
     });
@@ -77,6 +77,9 @@ describe("specialties request DTOs", () => {
         it.each([
             ["name of 1 character", { ...validCreate, name: "A" }, "name"],
             ["name of 101 characters", { ...validCreate, name: "A".repeat(101) }, "name"],
+            ["name of 200 code points", { ...validCreate, name: "a\uFE0F".repeat(100) }, "name"],
+            ["name with NUL", { ...validCreate, name: "a\u0000b" }, "name"],
+            ["name with control character", { ...validCreate, name: "a\u0001b" }, "name"],
             ["missing name", { slug: "x" }, "name"],
             ["slug with underscore and capital", { ...validCreate, slug: "Bad_Slug" }, "slug"],
             ["slug starting with a dash", { ...validCreate, slug: "-a" }, "slug"],
@@ -84,6 +87,8 @@ describe("specialties request DTOs", () => {
             ["slug ending with a dash", { ...validCreate, slug: "a-" }, "slug"],
             ["slug of 101 characters", { ...validCreate, slug: "a".repeat(101) }, "slug"],
             ["description of 2001 characters", { ...validCreate, description: "d".repeat(2001) }, "description"],
+            ["description of 4000 code points", { ...validCreate, description: "a\uFE0F".repeat(2000) }, "description"],
+            ["description with NUL", { ...validCreate, description: "a\u0000b" }, "description"],
             ["null description", { ...validCreate, description: null }, "description"],
             ["numeric name", { ...validCreate, name: 5 }, "name"],
             ["isActive member", { ...validCreate, isActive: true }, "isActive"],
@@ -99,6 +104,8 @@ describe("specialties request DTOs", () => {
                 validateBody(CreateSpecialtyDto, { name: "Ab", slug: "a".repeat(100), description: "d".repeat(2000) }),
             ).resolves.toBeDefined();
             await expect(validateBody(CreateSpecialtyDto, { name: "A".repeat(100), slug: "a" })).resolves.toBeDefined();
+            await expect(validateBody(CreateSpecialtyDto, { name: "a\uFE0F", slug: "a" })).resolves.toBeDefined();
+            await expect(validateBody(CreateSpecialtyDto, { name: "😀".repeat(100), slug: "a" })).resolves.toBeDefined();
         });
 
         it("should reject a non-object body", async () => {
@@ -129,6 +136,11 @@ describe("specialties request DTOs", () => {
             ["createdAt member", { createdAt: "2026-01-01T00:00:00Z" }, "createdAt"],
             ["bad slug", { slug: "Bad Slug" }, "slug"],
             ["1 char name", { name: "x" }, "name"],
+            ["200-code-point name", { name: "a\uFE0F".repeat(100) }, "name"],
+            ["name with NUL", { name: "a\u0000b" }, "name"],
+            ["name with control character", { name: "a\u0001b" }, "name"],
+            ["4000-code-point description", { description: "a\uFE0F".repeat(2000) }, "description"],
+            ["description with NUL", { description: "a\u0000b" }, "description"],
             ["numeric description", { description: 4 }, "description"],
         ])("should reject %s", async (_label, body, field) => {
             const error = await failure(validateBody(UpdateSpecialtyDto, body));
@@ -139,6 +151,11 @@ describe("specialties request DTOs", () => {
             const dto = await validateBody(UpdateSpecialtyDto, { description: null });
             expect(dto.isEmpty()).toBe(false);
             expect(dto.toChanges()).toEqual({ description: null });
+        });
+
+        it("should accept code-point boundary names", async () => {
+            await expect(validateBody(UpdateSpecialtyDto, { name: "a\uFE0F" })).resolves.toBeDefined();
+            await expect(validateBody(UpdateSpecialtyDto, { name: "😀".repeat(100) })).resolves.toBeDefined();
         });
 
         it("should omit absent members from toChanges and keep isActive false", async () => {

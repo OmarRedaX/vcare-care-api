@@ -3,12 +3,12 @@ title: specialties — Spec
 owner: care-team
 service: care-service
 module: specialties
-status: ready
-version: 1.0.0
+status: implemented
+version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 tags: [spec, specialties, catalog, pagination, keyset, validation, rate-limit, idempotency, audit, migration]
-related: [specialties-brainstorm, access-spec, foundation-spec, rbac, data-model, api, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [specialties-brainstorm, specialties-tasks, specialties-manual-qa, access-spec, foundation-spec, rbac, data-model, api, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -24,6 +24,11 @@ latent gaps its routes expose first: [#7](https://github.com/OmarRedaX/vcare-car
 Scope follows [brainstorm.md](./brainstorm.md) exactly, including decisions D1–D4, which this spec does not reopen.
 The three items the brainstorm left to the spec are decided in §13.1 (S1–S3). One further decision (S4, doctor
 account states on `GET /specialties`) and its contract description edit (C1) are in §13.
+
+> **As built (v1.1.0, 2026-10-04):** the module is implemented, tested, and manually QA'd; a fix-review pass changed
+> string-length counting, control-character handling, and the cursor cap. Sections that the code no longer matches
+> are corrected inline and marked "fix-review 2026-10-04"; [§16 As-built notes](#16-as-built-notes-2026-10-04) lists
+> every divergence from v1.0.0.
 
 Binding rules: CLAUDE.md → "Database rules", "API conventions", "Authentication and service-to-service auth",
 "Authorization — RBAC and ownership", "Security rules", "Privacy and logging", "Testing policy", "Build order for a new
@@ -43,7 +48,7 @@ earlier sections).
 | Routes | `GET /api/specialties` (patient, doctor, admin), `POST /api/specialties` (admin), `PATCH /api/specialties/{id}` (admin) |
 | Audit | `specialty.created`, `specialty.updated` (class `admin-action`), written in the write's transaction |
 | Foundation fixes | #7 full-precision timestamp cursor (D1), #8 strict query/param conversion, #9 server-generated rate-limit member (§12) |
-| Generic helpers (new, `lib/`) | `lib/http/pagination` text and timestamp cursor helpers, `lib/validation/transforms.ts` (`ToInt`, `ToBoolean`), `lib/knex/pg-errors.ts` (`uniqueViolationConstraint`), `lib/auth/require-auth.ts` (`requireAuth`) |
+| Generic helpers (new, `lib/`) | `lib/http/pagination` text and timestamp cursor helpers, `lib/validation/transforms.ts` (`ToInt`, `ToBoolean`), `lib/validation/string-decorators.ts` (`CodePointLength`, `NoControlCharacters` — fix-review 2026-10-04), `lib/knex/pg-errors.ts` (`uniqueViolationConstraint`), `lib/auth/require-auth.ts` (`requireAuth`) |
 
 ### 1.2 Principles
 - **The constraint is the guarantee.** Name and slug uniqueness live in `uq_specialties_name` / `uq_specialties_slug`;
@@ -53,7 +58,7 @@ earlier sections).
 - **Audit in the same transaction.** A write and its audit row commit or roll back together; a `409` leaves no audit row.
 - **A no-op is not a write** (S1): a `PATCH` whose values equal the stored ones answers `200` with the current row and
   writes neither the row nor an audit row.
-- **Contract-exact validation.** DTO rules equal the contract schemas and the database checks; unknown members are
+- **Contract-exact validation.** DTO rules equal the contract schemas (length, pattern, and the control-character rule stated in the member descriptions) and the database checks; unknown members are
   rejected; values are never transformed (no trimming, no lower-casing).
 - **Position, not grant.** A cursor is a keyset position; every page re-applies the caller's filters.
 
@@ -280,9 +285,11 @@ src/lib/knex/types.ts                   PgErrorLike (new type)
 src/lib/http/pagination/cursor.ts       decodeTextCursor, decodeTimestampCursor (#7, §12.1)
 src/lib/http/pagination/timestamp-cursor.ts  TIMESTAMP_CURSOR_PG_FORMAT, timestampCursorSelect (#7, new)
 src/lib/http/pagination/types.ts        StringCursorPosition (#7)
-src/lib/http/pagination/pagination.request.dto.ts  limit uses ToInt() (#8)
+src/lib/http/pagination/pagination.request.dto.ts  limit uses ToInt() (#8); cursor MaxLength(1024) (fix-review 2026-10-04; was 512)
 src/lib/validation/validate.ts          enableImplicitConversion: false for every source (#8)
 src/lib/validation/transforms.ts        ToInt(), ToBoolean() (#8, new)
+src/lib/validation/string-decorators.ts CodePointLength(min, max), NoControlCharacters("all" | "nul") (new, fix-review 2026-10-04)
+src/lib/validation/types.ts             ControlCharacterPolicy (fix-review 2026-10-04)
 src/lib/rate-limit/rate-limit.ts        member = `${now}-${randomUUID()}` (#9)
 src/migrations/<ts>_create_specialties.ts
 src/migrations/<ts>_seed_specialties_starter_catalog.ts
@@ -304,10 +311,14 @@ Plain class, no decorators, no DB knowledge.
 
 ### 3.5 Request DTOs (`dto/specialties.request.dto.ts`)
 Validated with `lib/validation` (`whitelist`, `forbidNonWhitelisted`, `forbidUnknownValues`; after #8 no implicit
-conversion anywhere). Messages are class-validator defaults; rejected values are never echoed.
+conversion anywhere). Messages are class-validator defaults, except the two `lib/validation/string-decorators.ts`
+validators ("must be between 2 and 100 code points", "must not contain control characters", "must not contain a NUL
+character"); rejected values are never echoed.
+
+As built after fix-review 2026-10-04 (v1.0.0 used `@Length`/`@MaxLength` on `name` and `description`, see §16):
 
 ```ts
-export class ListSpecialtiesQueryDto extends PaginationQueryDto {   // cursor?: IsOptional IsString MaxLength(512); limit?: ToInt IsInt Min(1) Max(100) = 20
+export class ListSpecialtiesQueryDto extends PaginationQueryDto {   // cursor?: IsOptional IsString MaxLength(1024); limit?: ToInt IsInt Min(1) Max(100) = 20
     @IsOptional()
     @ToBoolean()            // "true" → true, "false" → false; anything else left as is → IsBoolean fails → 400
     @IsBoolean()
@@ -315,14 +326,14 @@ export class ListSpecialtiesQueryDto extends PaginationQueryDto {   // cursor?: 
 }
 
 export class CreateSpecialtyDto {
-    @IsString() @Length(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH)
+    @IsString() @CodePointLength(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH) @NoControlCharacters("all")
     name!: string;
 
-    @IsString() @MaxLength(SPECIALTY_SLUG_MAX_LENGTH) @Matches(SLUG_PATTERN)
+    @IsString() @MaxLength(SPECIALTY_SLUG_MAX_LENGTH) @Matches(SLUG_PATTERN)   // ASCII by pattern, so UTF-16 units = code points
     slug!: string;
 
     @ValidateIf((_object, value) => value !== undefined)   // absent → skipped; null → IsString fails (contract: type string)
-    @IsString() @MaxLength(SPECIALTY_DESCRIPTION_MAX_LENGTH)
+    @IsString() @CodePointLength(0, SPECIALTY_DESCRIPTION_MAX_LENGTH) @NoControlCharacters("nul")
     description?: string;
 
     toInput(): SpecialtyCreateInput;   // { name, slug, description: description ?? null }
@@ -330,7 +341,7 @@ export class CreateSpecialtyDto {
 
 export class UpdateSpecialtyDto {
     @ValidateIf((_object, value) => value !== undefined)   // absent → skipped; null → fails
-    @IsString() @Length(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH)
+    @IsString() @CodePointLength(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH) @NoControlCharacters("all")
     name?: string;
 
     @ValidateIf((_object, value) => value !== undefined)
@@ -338,7 +349,7 @@ export class UpdateSpecialtyDto {
     slug?: string;
 
     @IsOptional()                                          // contract: [string, null]; null clears the description
-    @IsString() @MaxLength(SPECIALTY_DESCRIPTION_MAX_LENGTH)
+    @IsString() @CodePointLength(0, SPECIALTY_DESCRIPTION_MAX_LENGTH) @NoControlCharacters("nul")
     description?: string | null;
 
     @ValidateIf((_object, value) => value !== undefined)
@@ -354,9 +365,21 @@ export class UpdateSpecialtyDto {
 - `SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/` — identical to the contract and `chk_specialties_slug_format`.
 - `SpecialtyCreate` has no `isActive` and no `id`: either member in a create body → `400` `"is not allowed"`. A new
   specialty is always active.
-- `@Length`/`@MaxLength` count UTF-16 code units, the database counts characters; a value accepted by the DTO is never
-  rejected by the database (≤ 100 units ⇒ ≤ 100 characters). No trimming: `"  x"` is a valid 3-character name
-  (contract-exact; accepted trade-off like D3's case sensitivity).
+- **Length is counted in Unicode code points** (fix-review 2026-10-04), the unit of both the contract (JSON Schema
+  `minLength`/`maxLength`) and Postgres `char_length` / `VARCHAR(100)`: `CodePointLength(min, max)` checks
+  `[...value].length`. So the DTO, the contract, and `chk_specialties_name_length` /
+  `chk_specialties_description_length` / `VARCHAR(100)` accept exactly the same values: `"a️"` (2 code points) is a
+  valid name, 100 astral characters are a valid name, `"a️".repeat(100)` (200 code points) is `400`, never a
+  database `22001`/`23514` → `500`. *Corrected:* v1.0.0 said "`@Length`/`@MaxLength` count UTF-16 code units … a value
+  accepted by the DTO is never rejected by the database". That was false: the installed validator.js `isLength`
+  subtracts surrogate pairs **and** every character + U+FE0E/U+FE0F presentation sequence, so it under-counted
+  (500 from the database) and over-rejected (400 for a contract-valid 2-code-point name).
+- **Control characters** (fix-review 2026-10-04): `NoControlCharacters("all")` rejects every `\p{Cc}` character (C0,
+  DEL, C1) in `name`; `NoControlCharacters("nul")` rejects only `U+0000` in `description` (Postgres cannot store NUL in
+  `text`: SQLSTATE `22021` → was a `500`). Both are `400 ValidationFailed` with the member as `field`. Excluding control
+  characters from `name` also bounds the size of the cursor that encodes it (§12.1). Newlines and tabs remain valid in
+  `description`.
+- No trimming: `"  x"` is a valid 3-character name (contract-exact; accepted trade-off like D3's case sensitivity).
 - An empty `PATCH` body `{}` passes class-validator; the controller rejects it with `EmptySpecialtyUpdate` (§3.8).
 
 ### 3.6 Response DTO (`dto/specialties.response.dto.ts`)
@@ -448,7 +471,7 @@ export class SpecialtiesService {
 ```
 
 **`list`** (no transaction; one query):
-1. `limit = resolveLimit(query.limit)`; `after = query.cursor === undefined ? null : decodeTextCursor(query.cursor, SPECIALTY_NAME_MAX_LENGTH)` (`400` `cursor: is invalid` otherwise).
+1. `limit = resolveLimit(query.limit)`; `after = query.cursor === undefined ? null : decodeTextCursor(query.cursor, SPECIALTY_NAME_MAX_LENGTH)` (`400` `cursor: is invalid` otherwise — including a sort value over 100 code points or containing NUL, fix-review 2026-10-04).
 2. `includeInactive = viewer.role === "admin" && query.includeInactive === true` — honoured **only for admins**,
    silently ignored for other roles (contract text). Junk values were already rejected by the DTO for every role.
 3. `rows = await listSpecialties({ includeInactive, after, fetch: limit + 1 }, this.db)`.
@@ -559,7 +582,7 @@ Every constructor parameter uses `@inject(TOKENS.X)` (ADR 0016).
 | # | Rule (testable) | Enforced by |
 |---|---|---|
 | S-R1 | `name` and `slug` are each unique (case-sensitive, D3); a duplicate on create or update → `409 Conflict` with `details[0].field` = `name` or `slug`; nothing is written | `uq_specialties_name`, `uq_specialties_slug` + `toConflict` (23505 by constraint name) |
-| S-R2 | `slug` matches `^[a-z0-9]+(-[a-z0-9]+)*$` and is ≤ 100; `name` is 2–100; `description` is `null` or ≤ 2 000 | DTO (400) + `chk_specialties_*` |
+| S-R2 | `slug` matches `^[a-z0-9]+(-[a-z0-9]+)*$` and is ≤ 100; `name` is 2–100 code points with no control character; `description` is `null` or ≤ 2 000 code points with no NUL (fix-review 2026-10-04) | DTO (400) + `chk_specialties_*` + `VARCHAR(100)` |
 | S-R3 | A specialty is never deleted: there is no `DELETE` route and `vcare_app` has no `DELETE`/`TRUNCATE` (42501) | routes + grants (migration 1) |
 | S-R4 | A new specialty is always active; `isActive` cannot be sent on create | `insertSpecialty` (`is_active = true`) + `SpecialtyCreate` without `isActive` |
 | S-R5 | `is_active` moves freely true ↔ false via `PATCH`; there is no other state | service |
@@ -593,7 +616,7 @@ No new code; all are in the contract `ErrorCode` enum.
 
 | Code | HTTP | When (this module) | Emitted by |
 |---|---|---|---|
-| `ValidationFailed` | 400 | invalid query (`cursor` malformed or > 512 or an invalid position, `limit` not a canonical integer 1–100, `includeInactive` not `true`/`false`, unknown query member); invalid body (S-R2, unknown members, `null` where not allowed, non-object body); empty `PATCH` body; `Idempotency-Key` not a UUID; malformed percent-encoded path | `lib/validation`, controller, `idempotency`, `errorHandler` |
+| `ValidationFailed` | 400 | invalid query (`cursor` malformed or > 1024 characters (512 in v1.0.0) or an invalid position — sort value over 100 code points or containing NUL, `limit` not a canonical integer 1–100, `includeInactive` not `true`/`false`, unknown query member); invalid body (S-R2 incl. code-point lengths and control characters, unknown members, `null` where not allowed, non-object body); empty `PATCH` body; `Idempotency-Key` not a UUID; malformed percent-encoded path | `lib/validation`, controller, `idempotency`, `errorHandler` |
 | `Unauthorized` / `TokenExpired` | 401 | missing/invalid/expired bearer token | `userGuard` |
 | `Forbidden` | 403 | role not in policy (patient/doctor on `POST`/`PATCH`); account status not allowed (pending patient, pending admin, any suspended token) | `authorize` |
 | `NotFound` | 404 | `PATCH` on an unknown or non-canonical id | controller, service |
@@ -821,7 +844,7 @@ export const TIMESTAMP_CURSOR_PG_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
 export function timestampCursorSelect(conn: Knex, column: string, alias: string): Knex.Raw;
 
 // cursor.ts (added; encodeCursor/decodeCursor unchanged)
-/** A position whose sort value is a string of at most `maxLength` characters (e.g. a name). */
+/** A position whose sort value is a string of at most `maxLength` code points without NUL (e.g. a name). */
 export function decodeTextCursor(cursor: string, maxLength: number): StringCursorPosition;
 /** A position whose sort value is a µs ISO timestamp `YYYY-MM-DDTHH:MM:SS.ffffffZ` that denotes a real instant. */
 export function decodeTimestampCursor(cursor: string): StringCursorPosition;
@@ -830,9 +853,15 @@ export function decodeTimestampCursor(cursor: string): StringCursorPosition;
 - Keyset predicate on a timestamp sort: `(created_at, id) < (?::timestamptz, ?)` (DESC) or `>` (ASC) with
   `[position.sortValue, position.id]`; `positionOf(row) = [row.<alias>, row.id]`.
 - Both decoders throw the existing `ValidationFailed` `[{ field: "cursor", issue: "is invalid" }]` for anything else:
-  wrong type, longer than `maxLength`, a millisecond-only or offset (`+00:00`) timestamp, 5 or 7 fractional digits,
-  or a non-existent date (`2026-02-30…`, checked by round-tripping the millisecond prefix through `Date`). A bad
-  timestamp therefore never reaches a `::timestamptz` cast (which would be a 500).
+  wrong type, longer than `maxLength` **code points** (v1.0.0 compared UTF-16 units, so a 51-emoji name — valid
+  everywhere — produced a `nextCursor` the server then rejected; fix-review 2026-10-04), a sort value containing
+  `U+0000` (Postgres `22021` → was a 500; fix-review 2026-10-04), a millisecond-only or offset (`+00:00`) timestamp, 5
+  or 7 fractional digits, or a non-existent date (`2026-02-30…`, checked by round-tripping the millisecond prefix
+  through `Date`). A bad timestamp therefore never reaches a `::timestamptz` cast (which would be a 500).
+- **Cursor size cap** (fix-review 2026-10-04): `PaginationQueryDto.cursor` `MaxLength(1024)` and contract
+  `components.parameters.Cursor.maxLength: 1024` (both 512 in v1.0.0). The server must accept every `nextCursor` it
+  emits; the worst valid specialty name (100 astral code points, no control characters) encodes to 542–562 characters
+  (depending on the id), which exceeded 512.
 - Specialties sorts on `name` and uses `decodeTextCursor`; the timestamp path is proven on the canonical test router.
 
 **Changed helpers and tests:**
@@ -946,9 +975,11 @@ all three operations, `IdempotencyKeyOptional` on `POST` only.
   limits, idempotency) · `foundation/spec.md` §13.3 (#7 #8 #9 fixed by `specialties`) · `access/spec.md` §10 note (the
   three gaps it routed here are fixed) · **`docs/service-card.md`** (status line: first business module; endpoint
   family `/api/specialties` live) then the hub sync · this spec's as-built notes.
-- **CLAUDE.md (user approval needed, recommended, not blocking):** under "Authentication and service-to-service auth",
-  mention that `GET /specialties` also accepts doctor `pending`/`rejected` (S4); under "Module file conventions" item 2,
-  "non-string query/path fields carry `ToInt()`/`ToBoolean()`; implicit conversion is off" (#8).
+- **CLAUDE.md — done:** "Authentication and service-to-service auth" already says the read-only specialty catalog
+  (`GET /specialties`) accepts doctor `pending`/`active`/`rejected` (S4), and "Module file conventions" item 2 already
+  says implicit conversion is off and every non-string query/path field carries `ToInt()`/`ToBoolean()` (#8). Nothing
+  remains open here (verified 2026-10-04).
+- **Status (2026-10-04):** every item above is done — see §16.
 
 ---
 
@@ -980,3 +1011,42 @@ all three operations, `IdempotencyKeyOptional` on `POST` only.
 
 Steps 0a–0d come first because the module's DTOs, repository, and routes use them; each lib step lands with its
 regression tests and leaves typecheck, lint, unit, and integration green on the Docker test stack (5434/6381).
+
+---
+
+## 16. As-built notes (2026-10-04)
+
+Spec v1.0.0 was written before the build; v1.1.0 records the as-built state after `/develop`, `/write-tests`,
+`/manual-qa`, and one fix-review pass against [`reviews/review-20261004-2058.md`](./reviews/review-20261004-2058.md)
+(five code findings resolved; its three docs findings are what this `/update-docs` run addresses — the file is deleted
+only by a clean `/review-code` re-review). The sections above carry the changes inline, marked "fix-review
+2026-10-04". Divergences from the v1.0.0 text:
+
+- **Code-point lengths (§3.5, S-R2).** `name` and `description` use `CodePointLength` from the new
+  `lib/validation/string-decorators.ts` instead of class-validator `@Length`/`@MaxLength`; `slug` keeps `@MaxLength`
+  (ASCII by `Matches`). v1.0.0's claim that the DTO counted UTF-16 units and that "a value accepted by the DTO is never
+  rejected by the database" was wrong for the installed validator version (it under-counts presentation sequences);
+  DTO, contract, and database now count the same unit.
+- **Control characters (§3.5, S-R2).** The same file's `NoControlCharacters` rejects every `\p{Cc}` in `name`
+  (`"all"`) and only `U+0000` in `description` (`"nul"`) → `400 ValidationFailed`. New rule, not in v1.0.0; the
+  contract now states it in the `name`/`description` member descriptions (see "Contract" below).
+- **`decodeTextCursor` (§12.1).** Counts code points against `maxLength` and rejects a sort value containing NUL
+  (`400 cursor: is invalid`; it was a Postgres `22021` → `500` for any role).
+- **Cursor cap (§12.1, §6).** `PaginationQueryDto.cursor` `MaxLength(1024)` (was 512) — a generic `lib/http/pagination`
+  change that applies to every later paginated list.
+- **Keyset EXPLAIN test (§9.2).** Also asserts the plan's `Index Cond` holds the `ROW(name, id) > ROW(…)` comparison,
+  so a rewrite that turns the seek into a filtered full scan fails the test.
+- **Policy test (§9.1).** `specialties.policies.test.ts` reads `x-roles` and `x-account-state` from
+  `contracts/openapi.yaml` (`contractOperationBlock` in `tests/helpers/contract.ts`) instead of hard-coding them.
+- **Contract.** `components.parameters.Cursor.maxLength` 512 → 1024; `listSpecialties` gained
+  `x-account-state: 'doctor status in (pending, active, rejected); patient and admin active'` (the S4 rule, previously
+  in prose only), and `x-account-state` is listed among the vendor extensions in the `info` description. No route,
+  schema member, or status code changed. The control-character rule is stated in the `name`/`description` member descriptions of `SpecialtyCreate` / `SpecialtyUpdate` (prose only, not a machine-checked `pattern`).
+- **Docs reconciled (§14):** `architecture/{data-model,api,rbac,overview}.md`, `service-card.md`, `INDEX.md`,
+  `foundation/spec.md` §13.3 (#7 #8 #9 fixed), `access/spec.md` §10.
+- **Unchanged from v1.0.0:** schema and migrations (§2), routes and their composition (§3.2), policies (§3.10),
+  service transactions, audit, the no-op `PATCH` rule, rate limits, error codes.
+- **Manual QA** ([manual-qa.md](./manual-qa.md), 199 pass / 0 fail) ran **before** the fix-review; its cursor-length
+  case used the 512 cap. The fix-review behaviour is covered by unit and integration tests only.
+- **Test results (2026-10-04, after the fix-review):** unit 937 passed; integration 347 passed, 2 skipped (POSIX
+  SIGTERM tests on win32), on the Docker test stack (5434/6381).
