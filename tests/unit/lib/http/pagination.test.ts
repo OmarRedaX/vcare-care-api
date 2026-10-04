@@ -1,5 +1,5 @@
 import { AppError } from "../../../../src/lib/error/AppError";
-import { decodeCursor, encodeCursor } from "../../../../src/lib/http/pagination/cursor";
+import { decodeCursor, decodeTextCursor, decodeTimestampCursor, encodeCursor } from "../../../../src/lib/http/pagination/cursor";
 import { buildPage, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, resolveLimit } from "../../../../src/lib/http/pagination/page";
 import { PaginationQueryDto } from "../../../../src/lib/http/pagination/pagination.request.dto";
 import { validateQuery } from "../../../../src/lib/validation/validate";
@@ -16,6 +16,17 @@ function expectInvalidCursor(cursor: string): void {
     expect(appError.code).toBe("ValidationFailed");
     expect(appError.status).toBe(400);
     expect(appError.details).toEqual([{ field: "cursor", issue: "is invalid" }]);
+}
+
+function expectInvalidDecodedCursor(decode: () => unknown): void {
+    let thrown: unknown;
+    try {
+        decode();
+    } catch (error) {
+        thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AppError);
+    expect(thrown).toMatchObject({ code: "ValidationFailed", status: 400, details: [{ field: "cursor", issue: "is invalid" }] });
 }
 
 const b64 = (value: unknown): string => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
@@ -59,6 +70,44 @@ describe("lib/http/pagination cursor", () => {
     });
 });
 
+describe("lib/http/pagination string cursors", () => {
+    it.each(["", "Cardiology", "éclair"])("should decode text sort value %p when it fits the limit", (value) => {
+        expect(decodeTextCursor(encodeCursor(value, 3), value.length)).toEqual({ sortValue: value, id: 3 });
+    });
+
+    it.each([
+        ["number sort value", b64([123, 3]), 10],
+        ["overlong sort value", encodeCursor("abc", 3), 2],
+        ["invalid id", b64(["abc", 0]), 10],
+    ] as const)("should reject text cursor when it has %s", (_label, cursor, maxLength) => {
+        expectInvalidDecodedCursor(() => decodeTextCursor(cursor, maxLength));
+    });
+
+    it("should reject text and timestamp cursors when the encoded cursor has the wrong runtime type", () => {
+        expectInvalidDecodedCursor(() => decodeTextCursor(null as unknown as string, 10));
+        expectInvalidDecodedCursor(() => decodeTimestampCursor(123 as unknown as string));
+    });
+
+    it.each(["2026-01-01T00:00:00.000000Z", "2024-02-29T23:59:59.123456Z"])(
+        "should decode timestamp %p when it has six fractional digits and a real date",
+        (value) => {
+            expect(decodeTimestampCursor(encodeCursor(value, 3))).toEqual({ sortValue: value, id: 3 });
+        },
+    );
+
+    it.each([
+        ["number sort value", b64([123, 3])],
+        ["milliseconds only", encodeCursor("2026-01-01T00:00:00.000Z", 3)],
+        ["offset suffix", encodeCursor("2026-01-01T00:00:00.000000+00:00", 3)],
+        ["five digits", encodeCursor("2026-01-01T00:00:00.00000Z", 3)],
+        ["seven digits", encodeCursor("2026-01-01T00:00:00.0000000Z", 3)],
+        ["nonexistent date", encodeCursor("2026-02-30T00:00:00.000000Z", 3)],
+        ["invalid hour", encodeCursor("2026-01-01T24:00:00.000000Z", 3)],
+    ] as const)("should reject timestamp cursor when it has %s", (_label, cursor) => {
+        expectInvalidDecodedCursor(() => decodeTimestampCursor(cursor));
+    });
+});
+
 describe("lib/http/pagination buildPage", () => {
     const rows = (count: number) => Array.from({ length: count }, (_value, index) => ({ id: index + 1, at: `t${index + 1}` }));
     const position = (row: { id: number; at: string }): [string, number] => [row.at, row.id];
@@ -96,7 +145,7 @@ describe("lib/http/pagination PaginationQueryDto", () => {
         });
     });
 
-    it.each(["0", "101", "1.5", "abc"])("should reject limit %p when it is outside 1..100 or not an integer", async (limit) => {
+    it.each(["0", "101", "1.5", "1e1", "05", " 5", "abc"])("should reject limit %p when it is outside 1..100 or not an integer", async (limit) => {
         await expect(validateQuery(PaginationQueryDto, { limit })).rejects.toMatchObject({
             code: "ValidationFailed",
             details: [expect.objectContaining({ field: "limit" })],

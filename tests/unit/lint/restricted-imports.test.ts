@@ -97,6 +97,21 @@ const SNIPPETS: Array<{ id: string; filePath: string; code: string }> = [
         filePath: "tests/__lint_probe__.ts",
         code: 'import { SignJWT } from "jose";\nexport const probe = [SignJWT, fetch];\n',
     },
+    {
+        id: "implicit-conversion-in-src",
+        filePath: "src/lib/validation/__lint_probe__.ts",
+        code: "export const probe = { enableImplicitConversion: true };\n",
+    },
+    {
+        id: "primitive-type-transform-in-src",
+        filePath: "src/lib/validation/__lint_probe__.ts",
+        code: 'import { Type } from "class-transformer";\nexport class Probe { @Type(() => Number) value!: number; }\n',
+    },
+    {
+        id: "explicit-int-transform-in-src",
+        filePath: "src/lib/validation/__lint_probe__.ts",
+        code: 'import { ToInt } from "./transforms";\nexport class Probe { @ToInt() value!: number; }\n',
+    },
 ];
 
 const RUNNER = `
@@ -135,6 +150,7 @@ describe("eslint.config.mjs restricted imports (F23)", () => {
     }, 90_000);
 
     const restricted = (id: string) => (results[id] ?? []).filter((message) => message.ruleId === "no-restricted-imports");
+    const restrictedSyntax = (id: string) => (results[id] ?? []).filter((message) => message.ruleId === "no-restricted-syntax");
 
     it("should report an error when src/pkg imports lib", () => {
         expect(restricted("pkg-imports-lib")).toEqual([
@@ -202,5 +218,21 @@ describe("eslint.config.mjs restricted imports (F23)", () => {
     it("should report nothing when pkg imports a sibling and app imports lib", () => {
         expect(results["clean-pkg"]).toEqual([]);
         expect(results["clean-app-imports-lib"]).toEqual([]);
+    });
+
+    it("should report an error when implicit conversion is enabled in src", () => {
+        expect(restrictedSyntax("implicit-conversion-in-src")).toEqual([
+            expect.objectContaining({ message: expect.stringContaining("implicit conversion is off (#8)") as string }),
+        ]);
+    });
+
+    it("should report an error when Type converts a primitive in src", () => {
+        expect(restrictedSyntax("primitive-type-transform-in-src")).toEqual([
+            expect.objectContaining({ message: expect.stringContaining("use ToInt()/ToBoolean() for query/param fields (#8)") as string }),
+        ]);
+    });
+
+    it("should report no syntax error when ToInt transforms a field in src", () => {
+        expect(restrictedSyntax("explicit-int-transform-in-src")).toEqual([]);
     });
 });

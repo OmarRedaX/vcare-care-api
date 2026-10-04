@@ -41,7 +41,7 @@ async function validateInput<T extends object>(
     }
 
     const instance = plainToInstance(dto, input ?? {}, {
-        enableImplicitConversion: source !== "body",
+        enableImplicitConversion: false,
         exposeDefaultValues: true,
     });
 

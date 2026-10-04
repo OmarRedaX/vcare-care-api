@@ -1,5 +1,5 @@
-import { Type } from "class-transformer";
 import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
+import { ToInt } from "../../validation/transforms";
 import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from "./page";
 
 /** Query DTO every cursor-paginated list extends or composes. */
@@ -10,7 +10,7 @@ export class PaginationQueryDto {
     cursor?: string;
 
     @IsOptional()
-    @Type(() => Number)
+    @ToInt()
     @IsInt()
     @Min(1)
     @Max(MAX_PAGE_LIMIT)

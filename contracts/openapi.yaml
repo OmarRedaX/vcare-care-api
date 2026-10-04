@@ -159,7 +159,10 @@ paths:
       operationId: listSpecialties
       tags: [specialties]
       summary: List specialties
-      description: Non-admins see active specialties only; admins may pass `includeInactive=true`.
+      description: >-
+        Non-admins see active specialties only; admins may pass `includeInactive=true` (ignored for other roles).
+        Accepts a doctor token with status `pending`, `active`, or `rejected` (a doctor picks specialties while
+        applying, before approval); patients and admins must be `active`.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]

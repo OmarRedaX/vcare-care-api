@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RequestHandler } from "express";
 import type Redis from "ioredis";
 import { getEnv } from "../config/env";
@@ -110,7 +111,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
                         String(now),
                         String(options.windowMs),
                         String(options.limit),
-                        `${now}-${req.requestId}`,
+                        `${now}-${randomUUID()}`,
                     ),
                 );
             } catch {

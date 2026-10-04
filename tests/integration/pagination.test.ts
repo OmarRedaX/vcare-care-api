@@ -1,5 +1,6 @@
 import request from "supertest";
-import { encodeCursor } from "../../src/lib/http/pagination/cursor";
+import { decodeTimestampCursor, encodeCursor } from "../../src/lib/http/pagination/cursor";
+import { db } from "../../src/lib/knex/knex";
 import { buildTestApps } from "../helpers/app";
 import { expectErrorEnvelope, expectPaginationMeta, expectSuccessEnvelope } from "../helpers/contract";
 import { closeDb } from "../helpers/db";
@@ -10,8 +11,8 @@ import { buildPaginationRouter } from "../helpers/test-routers";
  * Keyset pagination helpers against a real Postgres query (no business table exists yet, so rows come from
  * generate_series with duplicate sort values to exercise the (sortValue, id) tiebreak).
  */
-function appWith(total: number) {
-    return buildTestApps({ publicRouters: [{ path: "/api", router: buildPaginationRouter(total) }] }).publicApp;
+function appWith(total: number, options?: { order?: "asc" | "desc"; step?: "minute" | "microsecond" }) {
+    return buildTestApps({ publicRouters: [{ path: "/api", router: buildPaginationRouter(total, options) }] }).publicApp;
 }
 
 type PageBody = { data: Array<{ id: number }>; meta: unknown };
@@ -73,9 +74,35 @@ describe("cursor pagination helpers (integration: real Postgres)", () => {
         expect(await page(app)).toEqual({ data: [], meta: { nextCursor: null, hasMore: false, count: 0 } });
     });
 
+    it.each(["desc", "asc"] as const)("should page through rows within one millisecond without skips or repeats when order is %s", async (order) => {
+        const app = appWith(30, { order, step: "microsecond" });
+        const ids: number[] = [];
+        let cursor: string | null = null;
+        do {
+            const result = await page(app, `?limit=7${cursor === null ? "" : `&cursor=${cursor}`}`);
+            ids.push(...result.data.map((row) => row.id));
+            cursor = result.meta.nextCursor;
+        } while (cursor !== null);
+        expect(ids).toEqual(Array.from({ length: 30 }, (_value, index) => order === "desc" ? 30 - index : index + 1));
+    });
+
+    it("should carry the stored six-digit timestamp of the last row when building nextCursor", async () => {
+        const first = await page(appWith(30, { step: "microsecond" }), "?limit=7");
+        const position = decodeTimestampCursor(first.meta.nextCursor ?? "");
+        const lastId = first.data[6]?.id;
+        expect(lastId).toBe(position.id);
+        const result = await db.raw<{ rows: Array<{ stored: string }> }>(
+            `SELECT to_char((TIMESTAMPTZ '2026-01-01T00:00:00Z' + (?::integer / 2) * INTERVAL '1 microsecond') AT TIME ZONE 'UTC',
+                    'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS stored`,
+            [position.id],
+        );
+        expect(position.sortValue).toMatch(/^2026-01-01T00:00:00\.\d{6}Z$/);
+        expect(position.sortValue).toBe(result.rows[0]?.stored);
+    });
+
     it("should return 400 ValidationFailed with field cursor when the cursor is tampered", async () => {
         const app = appWith(5);
-        for (const cursor of ["garbage!!", encodeCursor("2026-01-01T00:00:00.000Z", 1).slice(0, -3), Buffer.from("[1,-1]").toString("base64url")]) {
+        for (const cursor of ["garbage!!", encodeCursor("2026-01-01T00:00:00.000Z", 1).slice(0, -3), encodeCursor("2026-01-01T00:00:00.000Z", 1), Buffer.from("[1,-1]").toString("base64url")]) {
             const res = await request(app).get(`/api/__test/page?cursor=${cursor}`);
             expect(res.status).toBe(400);
             expectErrorEnvelope(res.body, "ValidationFailed");

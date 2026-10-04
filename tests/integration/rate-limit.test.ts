@@ -72,6 +72,31 @@ describe("rate limiter (integration: real Redis, limit 3 / 1000 ms, subject byIp
         expect(ttl).toBeLessThanOrEqual(1_000);
     });
 
+    it("should admit exactly the limit when 10 concurrent requests share one X-Request-Id and one fixed now", async () => {
+        const name = limiterName();
+        const app = buildTestApps({
+            publicRouters: [{ path: "/api", router: buildRateLimitRouter(name, 3, 60_000, () => 42_000) }],
+        }).publicApp;
+        const requestId = "b2d8a93f-4e12-4c8e-9d35-7b89a0621dca";
+        const responses = await Promise.all(
+            Array.from({ length: 10 }, () => hit(app).set("X-Request-Id", requestId)),
+        );
+
+        expect(responses.filter((response) => response.status === 200)).toHaveLength(3);
+        expect(responses.filter((response) => response.status === 429)).toHaveLength(7);
+        expect(responses.every((response) => response.headers["x-request-id"] === requestId)).toBe(true);
+
+        const keys: string[] = [];
+        let cursor = "0";
+        do {
+            const [next, batch] = await redis.scan(cursor, "MATCH", `rl:${name}:*`, "COUNT", 100);
+            cursor = next;
+            keys.push(...batch);
+        } while (cursor !== "0");
+        expect(keys).toHaveLength(1);
+        expect(await redis.zcard(keys[0] ?? "")).toBe(3);
+    });
+
     it("should admit again when the window has slid (F17)", async () => {
         const app = appWith(limiterName());
         for (let index = 0; index < 3; index += 1) {

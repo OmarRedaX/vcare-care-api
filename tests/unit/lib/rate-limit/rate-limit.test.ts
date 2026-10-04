@@ -154,7 +154,7 @@ describe("lib/rate-limit/rateLimit", () => {
         expect(warn.mock.calls.filter(([message]) => message === "rate_limiter_degraded")).toHaveLength(3);
     });
 
-    it("should call the Lua script with key rl:<name>:<subject>, now, window, limit, and a unique member", async () => {
+    it("should call the Lua script with key rl:<name>:<subject>, now, window, limit, and a unique member when Redis is ready", async () => {
         const name = uniqueName();
         const slidingWindowHit = jest.fn().mockResolvedValue([1, 0]);
         const defineCommand = jest.fn();
@@ -162,18 +162,22 @@ describe("lib/rate-limit/rateLimit", () => {
         const { app } = harness({ name, limit: 5, windowMs: 1_000, redis, now: () => 42_000 });
 
         const res = await request(app).get("/api/limited");
-        await request(app).get("/api/limited");
+        const second = await request(app).get("/api/limited");
 
         expect(res.status).toBe(200);
         expect(defineCommand).toHaveBeenCalledTimes(1);
         expect(defineCommand).toHaveBeenCalledWith("slidingWindowHit", expect.objectContaining({ numberOfKeys: 1 }));
-        expect(slidingWindowHit).toHaveBeenCalledWith(
-            `rl:${name}:${SUBJECT}`,
-            "42000",
-            "1000",
-            "5",
-            `42000-${String(res.headers["x-request-id"])}`,
-        );
+        expect(second.status).toBe(200);
+        expect(slidingWindowHit).toHaveBeenCalledTimes(2);
+        const members = slidingWindowHit.mock.calls.map((call: unknown[]) => {
+            expect(call.slice(0, 4)).toEqual([`rl:${name}:${SUBJECT}`, "42000", "1000", "5"]);
+            return call[4] as string;
+        });
+        expect(members[0]).toMatch(/^42000-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+        expect(members[1]).toMatch(/^42000-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+        expect(members[0]).not.toBe(members[1]);
+        expect(members[0]).not.toContain(res.headers["x-request-id"]);
+        expect(members[1]).not.toContain(second.headers["x-request-id"]);
     });
 
     it("should set Retry-After to at least 1 when denied (F17)", async () => {

@@ -3,9 +3,10 @@ import { IsInt, IsString, Max, MaxLength, Min, ValidateNested } from "class-vali
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { ValidationFailed } from "../../src/lib/error/errors";
-import { decodeCursor } from "../../src/lib/http/pagination/cursor";
+import { decodeTimestampCursor } from "../../src/lib/http/pagination/cursor";
 import { buildPage, resolveLimit } from "../../src/lib/http/pagination/page";
 import { PaginationQueryDto } from "../../src/lib/http/pagination/pagination.request.dto";
+import { timestampCursorSelect } from "../../src/lib/http/pagination/timestamp-cursor";
 import { sendNoContent, sendSuccess } from "../../src/lib/http/response";
 import { idempotency } from "../../src/lib/idempotency/idempotency";
 import { db } from "../../src/lib/knex/knex";
@@ -150,9 +151,9 @@ export function buildIdempotencyRouter(): Router {
 }
 
 /** Rate-limited route: `limit` requests per `windowMs` per client IP. Mount at `/api`. */
-export function buildRateLimitRouter(name: string, limit = 3, windowMs = 1_000): Router {
+export function buildRateLimitRouter(name: string, limit = 3, windowMs = 1_000, now?: () => number): Router {
     const router = Router();
-    router.get("/__test/limited", rateLimit({ name, limit, windowMs, subject: byIp }), (_req, res) => {
+    router.get("/__test/limited", rateLimit({ name, limit, windowMs, subject: byIp, now }), (_req, res) => {
         sendSuccess(res, { ok: true });
     });
     return router;
@@ -162,34 +163,38 @@ export function buildRateLimitRouter(name: string, limit = 3, windowMs = 1_000):
  * A real keyset-paginated query against Postgres (`generate_series`, no table needed), sorted by the default
  * sort `(created_at DESC, id DESC)` — the shape every list endpoint uses. Mount at `/api`.
  */
-export function buildPaginationRouter(total: number): Router {
+export function buildPaginationRouter(total: number, options?: { order?: "asc" | "desc"; step?: "minute" | "microsecond" }): Router {
+    const order = options?.order ?? "desc";
+    const interval = options?.step === "microsecond" ? "1 microsecond" : "1 minute";
+    const divisor = options?.step === "microsecond" ? 2 : 3;
+    const predicate = order === "desc" ? "<" : ">";
     const router = Router();
     router.get("/__test/page", async (req: Request, res: Response) => {
         const query = await validateQuery(PaginationQueryDto, req.query);
         const limit = resolveLimit(query.limit);
-        const position = query.cursor === undefined ? null : decodeCursor(query.cursor);
+        const position = query.cursor === undefined ? null : decodeTimestampCursor(query.cursor);
 
-        const rows: Array<{ id: number; created_at: Date }> = await db
-            .select("id", "created_at")
+        const rows: Array<{ id: number; created_at_cursor: string }> = await db
+            .select("id", timestampCursorSelect(db, "created_at", "created_at_cursor"))
             .from(
                 db.raw(
-                    `(SELECT g AS id, TIMESTAMPTZ '2026-01-01T00:00:00Z' + (g / 3) * INTERVAL '1 minute' AS created_at
+                    `(SELECT g AS id, TIMESTAMPTZ '2026-01-01T00:00:00Z' + (g / ?) * ?::interval AS created_at
                       FROM generate_series(1, ?) AS g) AS seeded`,
-                    [total],
+                    [divisor, interval, total],
                 ),
             )
             .modify((builder) => {
                 if (position !== null) {
-                    builder.whereRaw("(created_at, id) < (?::timestamptz, ?)", [String(position.sortValue), position.id]);
+                    builder.whereRaw(`(created_at, id) ${predicate} (?::timestamptz, ?)`, [position.sortValue, position.id]);
                 }
             })
             .orderBy([
-                { column: "created_at", order: "desc" },
-                { column: "id", order: "desc" },
+                { column: "created_at", order },
+                { column: "id", order },
             ])
             .limit(limit + 1);
 
-        const page = buildPage(rows, limit, (row) => [row.created_at.toISOString(), row.id]);
+        const page = buildPage(rows, limit, (row) => [row.created_at_cursor, row.id]);
         sendSuccess(
             res,
             page.items.map((row) => ({ id: row.id })),
