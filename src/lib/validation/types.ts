@@ -10,3 +10,5 @@ export type UnknownMembersPolicy = "reject" | "strip";
 export interface ValidateOptions {
     unknownMembers?: UnknownMembersPolicy;
 }
+
+export type ControlCharacterPolicy = "all" | "nul";

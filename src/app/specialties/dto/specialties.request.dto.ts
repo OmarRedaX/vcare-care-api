@@ -1,5 +1,6 @@
-import { IsBoolean, IsOptional, IsString, Length, Matches, MaxLength, ValidateIf } from "class-validator";
+import { IsBoolean, IsOptional, IsString, Matches, MaxLength, ValidateIf } from "class-validator";
 import { PaginationQueryDto } from "../../../lib/http/pagination/pagination.request.dto";
+import { CodePointLength, NoControlCharacters } from "../../../lib/validation/string-decorators";
 import { ToBoolean } from "../../../lib/validation/transforms";
 import {
     SLUG_PATTERN,
@@ -19,7 +20,8 @@ export class ListSpecialtiesQueryDto extends PaginationQueryDto {
 
 export class CreateSpecialtyDto {
     @IsString()
-    @Length(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH)
+    @CodePointLength(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH)
+    @NoControlCharacters("all")
     name!: string;
 
     @IsString()
@@ -29,7 +31,8 @@ export class CreateSpecialtyDto {
 
     @ValidateIf((_object, value) => value !== undefined)
     @IsString()
-    @MaxLength(SPECIALTY_DESCRIPTION_MAX_LENGTH)
+    @CodePointLength(0, SPECIALTY_DESCRIPTION_MAX_LENGTH)
+    @NoControlCharacters("nul")
     description?: string;
 
     toInput(): SpecialtyCreateInput {
@@ -40,7 +43,8 @@ export class CreateSpecialtyDto {
 export class UpdateSpecialtyDto {
     @ValidateIf((_object, value) => value !== undefined)
     @IsString()
-    @Length(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH)
+    @CodePointLength(SPECIALTY_NAME_MIN_LENGTH, SPECIALTY_NAME_MAX_LENGTH)
+    @NoControlCharacters("all")
     name?: string;
 
     @ValidateIf((_object, value) => value !== undefined)
@@ -51,7 +55,8 @@ export class UpdateSpecialtyDto {
 
     @IsOptional()
     @IsString()
-    @MaxLength(SPECIALTY_DESCRIPTION_MAX_LENGTH)
+    @CodePointLength(0, SPECIALTY_DESCRIPTION_MAX_LENGTH)
+    @NoControlCharacters("nul")
     description?: string | null;
 
     @ValidateIf((_object, value) => value !== undefined)

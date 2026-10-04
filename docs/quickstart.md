@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-10-02
+last_verified: 2026-10-04
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -13,9 +13,11 @@ related: [infrastructure, api, integration, scheduling-slots, foundation-spec, a
 
 From zero to a running service on your machine, then (once the modules exist) to a booked consultation.
 
-> **Built today (foundation 2026-09-28, access 2026-10-02):** both listeners, the four health probes, migrations
-> (incl. `audit_logs` and the app database role), user-token verification against Identity's JWKS, and the worker
-> with its `audit-partitions` loop. Steps 1–3 work now. Steps 4–9 are marked `(planned)`: they show the intended shape once the business
+> **Built today (foundation 2026-09-28, access 2026-10-02, specialties 2026-10-04):** both listeners, the four health
+> probes, migrations (incl. `audit_logs`, the app database role, and the `specialties` table with its 20-row synthetic
+> starter catalog), user-token verification against Identity's JWKS, the worker with its `audit-partitions` loop, and
+> the specialty catalog routes `GET/POST /api/specialties`, `PATCH /api/specialties/{id}` (they need a user token from
+> a running Identity — see `scripts/curl-test-specialties.sh` for a full example). Steps 1–3 work now. Steps 4–9 are marked `(planned)`: they show the intended shape once the business
 > modules are built through the workflow. All ids and text below are synthetic.
 
 ## 1. Prerequisites

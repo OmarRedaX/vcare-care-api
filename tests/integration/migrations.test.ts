@@ -3,7 +3,8 @@ import { InvalidEnvError, parseEnv } from "../../src/lib/config/env";
 import { ensureAppLogin } from "../../src/lib/knex/app-login";
 import { createKnex, db, probeDb } from "../../src/lib/knex/knex";
 import { migrationConfig } from "../../src/lib/knex/knexfile";
-import { closeDb } from "../helpers/db";
+import * as seedMigration from "../../src/migrations/20261004120100_seed_specialties_starter_catalog";
+import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
     const result = await conn.raw<{ rows: Array<{ count: number }> }>(
@@ -190,6 +191,63 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
                 await migrator.raw(`REVOKE CONNECT ON DATABASE ${other} FROM vcare_app`);
                 await migrator.raw(`DROP DATABASE IF EXISTS ${other}`);
             }
+        });
+    });
+
+    describe("specialties seed migration (spec 9.3; suites TRUNCATE, so the migration module is run directly)", () => {
+        const count = async (): Promise<number> => {
+            const result = await ownerDb.raw<{ rows: Array<{ count: number }> }>("SELECT count(*)::int AS count FROM specialties");
+            return result.rows[0]?.count ?? -1;
+        };
+
+        beforeEach(async () => {
+            await truncateAll();
+        });
+
+        afterAll(async () => {
+            await truncateAll();
+        });
+
+        it("should seed exactly the 20 synthetic active starter rows when up runs twice on an empty table (S-R16)", async () => {
+            await seedMigration.up(ownerDb);
+            await seedMigration.up(ownerDb);
+            const result = await ownerDb.raw<{ rows: Array<{ name: string; slug: string; description: string; is_active: boolean }> }>(
+                "SELECT name, slug, description, is_active FROM specialties ORDER BY name",
+            );
+            expect(result.rows).toHaveLength(20);
+            expect(result.rows.every((row) => row.is_active)).toBe(true);
+            expect(result.rows.every((row) => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(row.slug))).toBe(true);
+            expect(result.rows.every((row) => row.description.length > 0 && row.description.length < 2000)).toBe(true);
+            expect(result.rows.map((row) => row.slug)).toEqual(expect.arrayContaining(["cardiology", "general-practice", "urology"]));
+        });
+
+        it("should write no audit row because a migration has no actor", async () => {
+            await seedMigration.up(ownerDb);
+            const audit = await ownerDb.raw<{ rows: Array<{ count: number }> }>("SELECT count(*)::int AS count FROM audit_logs");
+            expect(audit.rows[0]?.count).toBe(0);
+        });
+
+        it("should skip a starter row whose name already exists under another slug instead of failing", async () => {
+            await ownerDb.raw("INSERT INTO specialties (name, slug, is_active) VALUES ('Cardiology', 'custom-cardiology', true)");
+            await expect(seedMigration.up(ownerDb)).resolves.toBeUndefined();
+            expect(await count()).toBe(20);
+            const slugs = await ownerDb.raw<{ rows: Array<{ slug: string }> }>("SELECT slug FROM specialties WHERE name = 'Cardiology'");
+            expect(slugs.rows).toEqual([{ slug: "custom-cardiology" }]);
+        });
+
+        it("should skip a starter row whose slug already exists under another name", async () => {
+            await ownerDb.raw("INSERT INTO specialties (name, slug, is_active) VALUES ('Heart Care', 'cardiology', true)");
+            await expect(seedMigration.up(ownerDb)).resolves.toBeUndefined();
+            expect(await count()).toBe(20);
+        });
+
+        it("should delete only starter slugs on down and keep an API-created row (S-R16)", async () => {
+            await ownerDb.raw("INSERT INTO specialties (name, slug, is_active) VALUES ('Synthetic Custom', 'synthetic-custom', true)");
+            await seedMigration.up(ownerDb);
+            expect(await count()).toBe(21);
+            await seedMigration.down(ownerDb);
+            const remaining = await ownerDb.raw<{ rows: Array<{ slug: string }> }>("SELECT slug FROM specialties");
+            expect(remaining.rows).toEqual([{ slug: "synthetic-custom" }]);
         });
     });
 

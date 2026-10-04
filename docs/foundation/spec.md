@@ -6,7 +6,7 @@ module: foundation
 status: implemented
 version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-02
+last_verified: 2026-10-04
 tags: [spec, foundation, bootstrap, infrastructure, health, idempotency, rate-limit, logging, testing, ci, docker]
 related: [foundation-brainstorm, foundation-tasks, foundation-manual-qa, infrastructure, deployment, overview, quickstart, resilience, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
@@ -1099,6 +1099,11 @@ Round 2 (one re-opened and one new finding):
 ### 13.3 Known latent gaps (deferred, not fixed)
 **Fixed by `access` (2026-10-02):** #5, #6, #10, #11 — see [access spec](../access/spec.md) §12; their rows below are
 kept as history and marked fixed.
+**Fixed by `specialties` (2026-10-04):** #7, #8, #9 — see [specialties spec](../specialties/spec.md) §12 and §16; rows
+kept as history and marked fixed. Related changes to §3.4.6 / §3.4.7: `decodeCursor` is now joined by
+`decodeTextCursor` (code points, no NUL) and `decodeTimestampCursor` (6-digit µs); `PaginationQueryDto.cursor` is
+`MaxLength(1024)` (contract `Cursor.maxLength` 1024; was 512) and `limit` uses `@ToInt()`; `validate.ts` runs with
+`enableImplicitConversion: false` for every source.
 
 Deferred by the user on 2026-09-26 (each was a `DISPUTED — deferred` finding). Where it differs, the text above
 describes the intended behaviour; this table describes the current behaviour. Each must be fixed before the trigger
@@ -1108,9 +1113,9 @@ in the last column.
 |---|---|---|---|
 | [#5](https://github.com/OmarRedaX/vcare-care-api/issues/5) (**fixed by access**) | §3.4.3 | a malformed percent-encoded path parameter (router `URIError`, or any non-`AppError` with a 4xx `status`) is treated as unknown: `500 InternalError` and an `unhandled_error` log line with the raw value | the first `:param` route |
 | [#6](https://github.com/OmarRedaX/vcare-care-api/issues/6) (**fixed by access**) | §3.4.4 | when a handler throws inside a nested router, `request_completed.route` loses the mount prefix (`/boom/:id`), corrupting route-keyed metrics | the first module that mounts routes |
-| [#7](https://github.com/OmarRedaX/vcare-care-api/issues/7) | §3.4.6 | keyset cursors encode `TIMESTAMPTZ` as `Date.toISOString()` (milliseconds) while Postgres stores microseconds, so rows in the same millisecond are skipped (DESC) or repeated (ASC) at page boundaries | the first paginated list |
-| [#8](https://github.com/OmarRedaX/vcare-care-api/issues/8) | §3.4.7 | `enableImplicitConversion: true` for query/params turns `"false"` into `true` for a boolean field under `tsc` (not under `tsx`, so dev and prod differ) | the first non-string query/param DTO field |
-| [#9](https://github.com/OmarRedaX/vcare-care-api/issues/9) | §3.4.11 | the sliding-window member is `"<now>-<requestId>"` and the request id can be caller-supplied, so a same-millisecond burst with one `X-Request-Id` under-counts | the first rate-limited route |
+| [#7](https://github.com/OmarRedaX/vcare-care-api/issues/7) (**fixed by specialties**) | §3.4.6 | keyset cursors encode `TIMESTAMPTZ` as `Date.toISOString()` (milliseconds) while Postgres stores microseconds, so rows in the same millisecond are skipped (DESC) or repeated (ASC) at page boundaries | the first paginated list |
+| [#8](https://github.com/OmarRedaX/vcare-care-api/issues/8) (**fixed by specialties**) | §3.4.7 | `enableImplicitConversion: true` for query/params turns `"false"` into `true` for a boolean field under `tsc` (not under `tsx`, so dev and prod differ) | the first non-string query/param DTO field |
+| [#9](https://github.com/OmarRedaX/vcare-care-api/issues/9) (**fixed by specialties**) | §3.4.11 | the sliding-window member is `"<now>-<requestId>"` and the request id can be caller-supplied, so a same-millisecond burst with one `X-Request-Id` under-counts | the first rate-limited route |
 | [#10](https://github.com/OmarRedaX/vcare-care-api/issues/10) (**fixed by access**) | §3.4.9, §8 | a Redis that stalls while connected keeps `status === "ready"`, so every command waits the full 500 ms `commandTimeout` (no breaker); §8's "at most one failed command's latency" holds only for a hard disconnect | the first route using rate-limit or idempotency |
 | [#11](https://github.com/OmarRedaX/vcare-care-api/issues/11) (**fixed by access**) | §3.4.10 | a stored `done` record without a numeric `status` makes `replay()` throw inside an unguarded async block → `unhandledRejection` → shutdown with exit 1 (same pattern in the rate-limit middleware) | the first route using idempotency |
 | [#12](https://github.com/OmarRedaX/vcare-care-api/issues/12) | §3.4.12 | the in-flight counter decrements on `close` of an aborted request while its handler may still run, so shutdown can destroy the pools and quit Redis under it | the first multi-step write flow (e.g. Case 3) |

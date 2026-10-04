@@ -3,15 +3,15 @@ title: specialties — Tasks
 owner: care-team
 service: care-service
 module: specialties
-status: in-progress
+status: done
 last_verified: 2026-10-04
 tags: [tasks, specialties, catalog, pagination, keyset, validation, rate-limit, audit, migration]
-related: [specialties-spec, specialties-brainstorm, access-tasks, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [specialties-spec, specialties-brainstorm, specialties-manual-qa, access-tasks, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # specialties — Tasks
 
-Source of truth: [spec.md](./spec.md) (v1.0.0, status `ready`). Tags follow CLAUDE.md → "Build order for a new module"
+Source of truth: [spec.md](./spec.md) (v1.1.0, status `implemented`; built from v1.0.0 — §16 lists the as-built divergences). Tags follow CLAUDE.md → "Build order for a new module"
 and spec §15. **Who:** `Codex-code` = implemented by Codex (src, migrations, test code); `Opus-docs` = Opus /
 orchestrator. A task is `[x]` only after typecheck, lint, unit, and integration (Docker test stack 5434/6381) are green.
 
@@ -44,8 +44,23 @@ orchestrator. A task is `[x]` only after typecheck, lint, unit, and integration 
 - [x] (controller) `Codex-code` `controller/specialties.controller.ts` + DI registration (spec §3.8, §3.11)
 - [x] (routes) `Codex-code` `routes.ts` (spec §3.2)
 - [x] (mount) `Codex-code` mount in `src/routes.ts`
-- [ ] (tests) `Codex-code` tests of spec §9 — unit, integration, RBAC, contract, concurrency, EXPLAIN, grants (**belongs to `/write-tests`; not run in this `/develop`**)
+- [x] (tests) `/write-tests` tests of spec §9 — unit (5 suites, 82 tests), integration `specialties.test.ts` (133), seed-migration cases in `migrations.test.ts`, `boot.test.ts` 401 test; RBAC, contract, idempotency, concurrency, rate limit, EXPLAIN, grants, logs. Green on the Docker test stack (unit 916, integration 335 pass / 2 pre-existing skips)
 
 ### After `/develop` (not started here)
-- [ ] (qa) `Opus-docs` `/manual-qa specialties`, incl. compiled-build #8 check (spec §9.5)
-- [ ] (docs) `Opus-docs` `/update-docs specialties` — spec §14 list, hub roll-up
+- [x] (qa) `Opus-docs` `/manual-qa specialties`, incl. compiled-build #8 check (spec §9.5) — 199 pass / 0 fail on real Identity tokens; [manual-qa.md](./manual-qa.md), `scripts/curl-test-specialties.sh`
+- [x] (docs) `Opus-docs` `/update-docs specialties` (2026-10-04) — spec §14 list and v1.1.0 §16 As-built notes; `architecture/{data-model,api,rbac,overview}.md`, `service-card.md`, `INDEX.md` (tasks row), `foundation/spec.md` §13.3 (#7 #8 #9 fixed), `access/spec.md` §10. Hub card re-sync and hub catalog row are the orchestrator's (outside this repo)
+
+### Fix-review — `reviews/review-20261004-2058.md` (2026-10-04)
+- [x] (request-dto) M1 code-point lengths: `lib/validation/string-decorators.ts` `CodePointLength` on `name`/`description` in both DTOs (was `@Length`/`@MaxLength`, which under-counted presentation sequences → DB 500); spec §3.5 corrected
+- [x] (service) M2 `decodeTextCursor` counts code points; `PaginationQueryDto.cursor` `MaxLength(1024)` after contract `Cursor.maxLength` 512 → 1024 (a 51-emoji name made paging stick; 100-emoji names emitted > 512-char cursors)
+- [x] (request-dto) M3 NUL / control characters: `NoControlCharacters("all")` on `name`, `("nul")` on `description`; `decodeTextCursor` rejects a NUL sort value (was Postgres `22021` → 500)
+- [x] (tests) L1 keyset EXPLAIN asserts `Index Cond` holds the `ROW(name, id) > ROW(…)` comparison
+- [x] (contract) L2 `listSpecialties` `x-account-state`; `x-account-state` listed in the `info` vendor extensions; policy test parses `x-roles`/`x-account-state` from the contract (`contractOperationBlock`)
+- [x] (tests) regression tests for M1–M3: DTO unit tables (200-code-point name, 4 000-code-point description, NUL, `\u0001`; `"a️"` and 100 astral chars accepted), `string-decorators.test.ts`, cursor unit cases (60 emoji, NUL, ≤ 1024 for the worst name), integration 400 + no row + no audit row for each bad body on `POST`/`PATCH`, NUL cursor 400, paging across a 51-emoji name returns every row once. Green on the Docker test stack: unit 937 passed; integration 347 passed / 2 skipped (verified by the orchestrator, 2026-10-04)
+- [x] (docs) D1–D3 `docs/INDEX.md` tasks row; `service-card.md` status and endpoint families; `architecture/{rbac,api,data-model}.md` and spec §14 CLAUDE.md note — this `/update-docs` run
+- [x] (review) `/review-code specialties` re-review: verify the fixes and the docs findings, then delete the review file (no review file = clean module)
+
+## Notes
+- **Manual QA predates the fix-review:** [manual-qa.md](./manual-qa.md) (199 pass) ran with the 512-character cursor cap
+  and the old length validators; the fix-review behaviour is covered by unit and integration tests. Re-run
+  `scripts/curl-test-specialties.sh` if a QA record of the new limits is wanted.

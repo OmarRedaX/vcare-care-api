@@ -109,7 +109,7 @@ export function contractErrorCodes(): string[] {
 }
 
 /** The response status codes (`'200'`, `'503'`, …) declared for `<method> <path>`. */
-export function contractResponseCodes(apiPath: string, method: "get" | "post" | "patch" | "put" | "delete"): string[] {
+export function contractOperationBlock(apiPath: string, method: "get" | "post" | "patch" | "put" | "delete"): string {
     const pathBlock = blockAfter(`  ${apiPath}:`, 2);
     const lines = pathBlock.split(/\r?\n/);
     const start = lines.findIndex((line) => line === `    ${method}:`);
@@ -123,7 +123,11 @@ export function contractResponseCodes(apiPath: string, method: "get" | "post" | 
         }
         operation.push(line);
     }
-    return [...operation.join("\n").matchAll(/^ {8}'(\d{3})':/gm)].map((match) => match[1] ?? "");
+    return operation.join("\n");
+}
+
+export function contractResponseCodes(apiPath: string, method: "get" | "post" | "patch" | "put" | "delete"): string[] {
+    return [...contractOperationBlock(apiPath, method).matchAll(/^ {8}'(\d{3})':/gm)].map((match) => match[1] ?? "");
 }
 
 /** Asserts the one error envelope (CLAUDE.md → API conventions) against `ErrorEnvelope` + `ErrorCode`. */

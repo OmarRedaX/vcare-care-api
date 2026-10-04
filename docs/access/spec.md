@@ -6,7 +6,7 @@ module: access
 status: implemented
 version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 tags: [spec, access, auth, jwks, jose, rbac, authorize, audit, audit-logs, partitions, postgres-roles, worker, redis-breaker]
 related: [access-brainstorm, foundation-spec, rbac, data-model, infrastructure, resilience, integration, deployment, runbook, quickstart, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0009-audit-logs-monthly-partitions, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
@@ -916,7 +916,8 @@ run `scripts/access-qa-server.ts`; CURL `GET /api/__test/access/any` with each t
 - `GET /audit-logs`, the audit read model, and its three read indexes (decision D1, §14.1) — `audit` module.
 - Any business table or public route, including specialties.
 - Foundation gaps routed elsewhere: #7 cursor µs, #8 implicit boolean conversion, #9 rate-limit member →
-  `specialties`; #12–#17 at their own triggers (#15 is adjacent to #6 and stays open).
+  `specialties` (all three fixed there, 2026-10-04 — [specialties spec](../specialties/spec.md) §12); #12–#17 at their
+  own triggers (#15 is adjacent to #6 and stays open).
 - Archiving or detaching partitions older than 6 years (ops procedure, ADR 0009).
 - An "audit row was written" runtime check for `audit: "clinical-*"` policies (the class stays declarative; per-route
   integration tests prove the row).

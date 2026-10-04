@@ -37,3 +37,13 @@ No `gh` CLI on this machine: use the GitHub MCP tools (owner OmarRedaX; repos `v
 
 ## ▶ NEXT STEP (2026-10-04)
 /develop specialties COMPLETE; final report given to user. STOP: do NOT run /write-tests, /manual-qa, /review-code, /update-docs unless the user asks. Nothing committed (care: many modified files + docs/specialties + new src/app/specialties + 2 migrations; hub branch docs/care-specialties-deltas has uncommitted card+contract sync). Ask user before any commit/push/PR. Never commit .codex/ or AGENTS.md. Next phase when asked: /write-tests specialties (spec §9; boot.test.ts header + 401 test, migrations seed tests, etc).
+
+- 2026-10-04 later: /write-tests DONE (unit 916, integration 335 pass/2 skip) + /manual-qa DONE (199/0 on real Identity; docs/specialties/manual-qa.md, scripts/curl-test-specialties.sh). Care committed + pushed on feature/specialties (a9041b5 + test commit). Hub re-synced identity card/contract, committed + pushed on docs/care-specialties-deltas. Local stack still UP: care :3001, identity :3020/:3120 + worker, native PG :5432, Redis :6379, test stack 5434/6381.
+
+## ▶ NEXT STEP (supersedes the earlier one)
+/review-code specialties -> (/develop specialties --fix-review if findings) -> /update-docs specialties -> open PRs (care: feature/specialties -> main, Closes #20 and #7 #8 #9; hub: docs/care-specialties-deltas -> main). Ask before any commit/push/PR. Never commit .codex/ or AGENTS.md. No PRs open yet.
+
+- 2026-10-04 /review-code (5 dimension reviewers + verifier) -> 3 Medium/2 Low/3 docs; fix-review done (code-point length + control-char validators, cursor 1024, contract x-account-state, tests); /update-docs done; hub re-synced (card, contract, service-catalog row); re-review clean, review file deleted. Unit 937, integration 347 pass/2 skip. UNCOMMITTED: care working tree (src/lib/validation, cursor, DTOs, tests, contract, docs, checkpoint) + hub (card, contract, service-catalog).
+
+## ▶ NEXT STEP (supersedes earlier)
+Ask user, then commit care (feature/specialties) + hub (docs/care-specialties-deltas), push, open PRs: care -> main (Closes #20, #7, #8, #9) and hub -> main. Never commit .codex/ or AGENTS.md. Manual QA predates fix-review (optionally re-run scripts/curl-test-specialties.sh). Hub identity row in service-catalog still says "design — no code yet" (unchecked).

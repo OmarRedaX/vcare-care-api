@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 tags: [architecture, overview, modules, layering]
-related: [system-design, data-model, api, integration, infrastructure, foundation-spec, adr-0017-generic-helpers-and-transaction-scoping]
+related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
 
 # Architecture Overview — care-service
@@ -104,6 +104,9 @@ src/lib/            built (foundation): config, di, error, logger, request-id, h
                     built (access, 2026-10-02): auth (JWKS cache, verifier, userGuard), rbac (authorize,
                       boot route assertion, markers), audit (AuditRecorder, audit-partitions loop),
                       knex/app-login, redis/breaker
+                    built (specialties, 2026-10-04): auth/require-auth, knex/pg-errors (23505 → constraint),
+                      http/pagination text + µs timestamp cursors, validation/transforms (ToInt, ToBoolean),
+                      validation/string-decorators (CodePointLength, NoControlCharacters)
                     planned: identity-client, storage (S3 presign/verify), video, email
                     may import pkg/; never app/<module>
 src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, utils/uuid.ts, utils/id.ts (built);
@@ -160,7 +163,7 @@ authorize → controller. It makes no outbound calls on its request path.
 drain) → request logger → `helmet()`; the public listener adds the dev-only CORS allowlist; then any `OPTIONS` not
 answered as an allowed preflight → `404 NotFound`; `express.json` (100 kB); the health router and the module routers;
 `notFound`; `errorHandler`. Rate-limit, guard, `authorize`, and idempotency are mounted **per router** by each module
-(step order above), not globally. Only the health routes exist today
+(step order above), not globally. At the foundation only the health routes existed
 ([infrastructure.md](./infrastructure.md) → HTTP hardening, Health).
 
 **As built by `access` (2026-10-02).** After mounting health and the module routers, both apps call
@@ -170,3 +173,9 @@ boot (health is exempt by marker; test-only routers are mounted after the check)
 (`care-worker`, 2 connections, as `care_app`) and runs the `audit-partitions` loop. `care-api` and `care-worker` log in
 as `care_app` (member of `vcare_app`); only `care-migrate` holds the owner credential
 ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)).
+
+**As built by `specialties` (2026-10-04).** The first business router: `src/routes.ts` mounts
+`buildSpecialtiesRouter()` on the public listener with the full step order — `GET /api/specialties` runs
+rate-limit (per IP) → user-guard → authorize → rate-limit (per user) → controller; `POST` adds optional idempotency;
+`PATCH /api/specialties/:id` is guard → authorize → controller. No call to Identity, storage, or the worker
+([specialties spec](../specialties/spec.md)).

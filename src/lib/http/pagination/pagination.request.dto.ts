@@ -6,7 +6,7 @@ import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from "./page";
 export class PaginationQueryDto {
     @IsOptional()
     @IsString()
-    @MaxLength(512)
+    @MaxLength(1024)
     cursor?: string;
 
     @IsOptional()

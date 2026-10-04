@@ -59,6 +59,7 @@ async function main(): Promise<void> {
         "doctor-suspended": () => signUserToken(primary(), { sub: "204", role: "doctor", status: "suspended" }),
         "admin-1": () => signUserToken(primary(), { sub: "1", role: "admin" }),
         "admin-9001": () => signUserToken(primary(), { sub: "9001", role: "admin" }),
+        "admin-suspended": () => signUserToken(primary(), { sub: "3", role: "admin", status: "suspended" }),
         "admin-pending": () => signUserToken(primary(), { sub: "2", role: "admin", status: "pending" }),
         // time
         expired: () => signExpiredUserToken(primary()),

@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 tags: [api, reference, routes, rbac]
-related: [rbac, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
+related: [rbac, specialties-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
 
 # API — care-service (human view)
@@ -19,7 +19,8 @@ Success `{ success: true, data, meta? }`; errors use the shared envelope
 `{ success: false, error: { code, message, details, requestId } }` (`details` is always present, `[]` when empty).
 Every response echoes `X-Request-Id`: a valid incoming UUID is adopted **lower-cased**, anything else is replaced by a
 generated one.
-Lists are cursor-paginated (`cursor`, `limit` 1–100 default 20, `meta: { nextCursor, hasMore, count }`).
+Lists are cursor-paginated (`cursor` opaque, ≤ 1024 characters; `limit` 1–100 default 20, canonical integers only;
+`meta: { nextCursor, hasMore, count }`).
 Ids are int64 numbers; datetimes ISO-8601 with offset. Every route may also return `401`, `429`, and `500`.
 
 Legend — **Idem**: `req` = `Idempotency-Key` required, `opt` = optional. **Case**: identity-service integration
@@ -40,9 +41,16 @@ prefix: `/internal/*` on the public listener and `/api/*` on the internal listen
 ## specialties
 | Method | Path | Roles | Ownership | Audit | Errors |
 |---|---|---|---|---|---|
-| GET | `/api/specialties` | patient, doctor, admin | none | — | 400 |
-| POST | `/api/specialties` | admin | none | admin-action | 400, 403, 409 `Conflict`, 422 (Idem opt) |
-| PATCH | `/api/specialties/{id}` | admin | none | admin-action | 400, 403, 404, 409 |
+| GET | `/api/specialties` | patient (active), doctor (pending, active, or rejected), admin (active) | none | — | 400, 401, 403, 429 (60/min per IP + 120/min per user) |
+| POST | `/api/specialties` | admin | none | admin-action (`specialty.created`) | 400, 401, 403, 409 `Conflict`, 422 `IdempotencyConflict` (Idem opt), 429 |
+| PATCH | `/api/specialties/{id}` | admin | none | admin-action (`specialty.updated`) | 400, 401, 403, 404, 409 `Conflict`, 429 |
+
+Implemented by the `specialties` module (2026-10-04; [spec](../specialties/spec.md)). `GET` is keyset-paginated by
+`(name, id)`; non-admins see active rows only and `includeInactive=true|false` is honoured for admins only (any other
+value is `400`). `POST`/`PATCH` validate lengths in Unicode code points (contract = database); `name` rejects control
+characters and `description` rejects NUL (`400`). A `PATCH` that changes nothing answers `200` without an audit row;
+`{}` is `400`; an unknown or non-canonical id is `404`. `409 Conflict` carries `details[0].field` `name` or `slug`.
+`POST`/`PATCH` declare `429` but mount no limiter. Rows are never deleted (no `DELETE` route).
 
 ## doctors-onboarding (account `status` pending, active, or rejected)
 | Method | Path | Roles | Ownership | Audit / Case | Errors |

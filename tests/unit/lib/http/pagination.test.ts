@@ -78,9 +78,21 @@ describe("lib/http/pagination string cursors", () => {
     it.each([
         ["number sort value", b64([123, 3]), 10],
         ["overlong sort value", encodeCursor("abc", 3), 2],
+        ["NUL sort value", encodeCursor("a\u0000b", 3), 10],
         ["invalid id", b64(["abc", 0]), 10],
     ] as const)("should reject text cursor when it has %s", (_label, cursor, maxLength) => {
         expectInvalidDecodedCursor(() => decodeTextCursor(cursor, maxLength));
+    });
+
+    it("should count code points in a text cursor", () => {
+        const value = "😀".repeat(60);
+        expect(decodeTextCursor(encodeCursor(value, 1), 100)).toEqual({ sortValue: value, id: 1 });
+    });
+
+    it("should emit a cursor within the 1024-character DTO cap for a valid 100-code-point name", async () => {
+        const cursor = encodeCursor("😀".repeat(100), Number.MAX_SAFE_INTEGER);
+        expect(cursor.length).toBeLessThanOrEqual(1024);
+        await expect(validateQuery(PaginationQueryDto, { cursor })).resolves.toBeDefined();
     });
 
     it("should reject text and timestamp cursors when the encoded cursor has the wrong runtime type", () => {
@@ -152,8 +164,8 @@ describe("lib/http/pagination PaginationQueryDto", () => {
         });
     });
 
-    it("should reject a cursor longer than 512 characters", async () => {
-        await expect(validateQuery(PaginationQueryDto, { cursor: "a".repeat(513) })).rejects.toMatchObject({
+    it("should reject a cursor longer than 1024 characters", async () => {
+        await expect(validateQuery(PaginationQueryDto, { cursor: "a".repeat(1025) })).rejects.toMatchObject({
             details: [expect.objectContaining({ field: "cursor" })],
         });
     });
