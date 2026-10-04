@@ -3,6 +3,11 @@ export interface CursorPosition {
     id: number;
 }
 
+export interface StringCursorPosition {
+    sortValue: string;
+    id: number;
+}
+
 export interface PageMeta {
     nextCursor: string | null;
     hasMore: boolean;

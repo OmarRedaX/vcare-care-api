@@ -154,6 +154,14 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
                 return result.rows[0];
             };
             try {
+                const accessMigration = "20261003120100_audit_logs_partitions_attach";
+                const [completed] = (await migrator.migrate.list(migrationConfig)) as [Array<{ name: string }>, unknown[]];
+                expect(completed.map(({ name }) => name)).toContain(accessMigration);
+                // Step past any newer migrations so the next down targets the access migration.
+                const newerCount = completed.filter(({ name }) => name > accessMigration).length;
+                for (let index = 0; index < newerCount; index += 1) {
+                    await migrator.migrate.down(migrationConfig);
+                }
                 await migrator.migrate.down(migrationConfig); // 20261003120100: ATTACH → PARTITION OF, 2 s
                 expect((await state())?.config).toContain("lock_timeout=2s");
                 expect((await state())?.tbl_ins).toBe(false);

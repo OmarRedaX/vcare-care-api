@@ -209,6 +209,14 @@ export default tseslint.config(
                 "error",
                 { selector: "TSInterfaceDeclaration", message: "declare types only in types.ts" },
                 { selector: "TSTypeAliasDeclaration", message: "declare types only in types.ts" },
+                {
+                    selector: "Property[key.name='enableImplicitConversion'][value.value=true]",
+                    message: "implicit conversion is off (#8); use ToInt()/ToBoolean()",
+                },
+                {
+                    selector: "Decorator CallExpression[callee.name='Type'] > ArrowFunctionExpression[body.name=/^(Number|Boolean|String|Date)$/]",
+                    message: "use ToInt()/ToBoolean() for query/param fields (#8)",
+                },
             ],
         },
     },

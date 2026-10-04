@@ -1,5 +1,11 @@
 export type ApplicationName = "care-api" | "care-api-probe" | "care-worker" | "care-migrate" | "care-test";
 
+/** Fields used to recognize a pg unique-violation error. */
+export interface PgErrorLike {
+    code?: unknown;
+    constraint?: unknown;
+}
+
 export interface KnexOptions {
     url: string;
     poolMax: number;

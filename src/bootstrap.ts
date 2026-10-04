@@ -1,5 +1,7 @@
 import { HealthController } from "./app/health/controller/health.controller";
 import { HealthService } from "./app/health/service/health.service";
+import { SpecialtiesController } from "./app/specialties/controller/specialties.controller";
+import { SpecialtiesService } from "./app/specialties/service/specialties.service";
 import type { Env } from "./lib/config/types";
 import { container } from "./lib/di/container";
 import { registerCore } from "./lib/di/register-core";
@@ -14,4 +16,6 @@ export function registerDependencies(env: Env): void {
 
     container.registerSingleton(TOKENS.HealthService, HealthService);
     container.registerSingleton(TOKENS.HealthController, HealthController);
+    container.registerSingleton(TOKENS.SpecialtiesService, SpecialtiesService);
+    container.registerSingleton(TOKENS.SpecialtiesController, SpecialtiesController);
 }

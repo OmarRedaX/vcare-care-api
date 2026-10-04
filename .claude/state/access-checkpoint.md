@@ -159,5 +159,9 @@ once the brief fixes scope (user workflow: issue → branch → PR).
 
 - /update-docs access DONE + VERIFIED by orchestrator 2026-10-03: spec implemented v1.1.0 (§15 as-built), tasks done, INDEX, ADR 0018 note, last_verified bumps; no contract/card change. Re-review 2 CLEAN (review file deleted; typecheck+lint clean; unit 48/767; integration 18/192+2 skipped on 5434/6381). UNCOMMITTED: those docs + review deletion + checkpoint.
 
+- 2026-10-03 COMMITTED ac4b943 docs(access); PUSHED feature/access (no fallback needed); PR #23 opened to main (Closes #19 #5 #6 #10 #11).
+
+- 2026-10-03 hub 902eb91 pushed (docs/care-access-deltas) + hub PR #5 opened; identity b57e941 pushed (feature/auth, no PR). Care PR #23 open.
+
 ## ▶ NEXT STEP
-Ask user: commit docs(access) (final) → push feature/access (git -c http.curloptResolve=github.com:443:140.82.121.4 push if timeout) → open PR to main "Closes #19 #5 #6 #10 #11" + Claude Code attribution → raise hub (docs/care-access-deltas) + identity (feature/auth) uncommitted changes.
+Wait for review/merge: care #23, hub #5 (merge hub after/with care). Then start `specialties` (/brainstorm already scoped; issue #20). Checkpoint edit here is uncommitted (trivial; fold into next commit).

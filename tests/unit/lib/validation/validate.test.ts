@@ -1,6 +1,7 @@
 import { Type } from "class-transformer";
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from "class-validator";
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from "class-validator";
 import type { AppError } from "../../../../src/lib/error/AppError";
+import { ToInt } from "../../../../src/lib/validation/transforms";
 import { validateBody, validateParams, validateQuery } from "../../../../src/lib/validation/validate";
 
 class AddressDto {
@@ -26,7 +27,7 @@ class PersonDto {
 
 class QueryDto {
     @IsOptional()
-    @Type(() => Number)
+    @ToInt()
     @IsInt()
     @Min(1)
     page?: number;
@@ -37,10 +38,15 @@ class QueryDto {
 }
 
 class ParamsDto {
-    @Type(() => Number)
+    @ToInt()
     @IsInt()
     @Min(1)
     id!: number;
+}
+
+class BooleanQueryDto {
+    @IsBoolean()
+    flag!: boolean;
 }
 
 const valid = { name: "synthetic", count: 3, address: { city: "Oslo" } };
@@ -109,6 +115,20 @@ describe("lib/validation/validate", () => {
         await expect(validateParams(ParamsDto, { id: "42" })).resolves.toMatchObject({ id: 42 });
         const error = await failure(validateParams(ParamsDto, { id: "abc" }));
         expect(error.details.map((detail) => detail.field)).toEqual(["id"]);
+    });
+
+    it("should not convert a query string when Boolean design metadata exists without a transform", async () => {
+        expect(Reflect.getMetadata("design:type", BooleanQueryDto.prototype, "flag")).toBe(Boolean);
+        const error = await failure(validateQuery(BooleanQueryDto, { flag: "false" }));
+        expect(error.code).toBe("ValidationFailed");
+        expect(error.details.map((detail) => detail.field)).toEqual(["flag"]);
+    });
+
+    it("should not convert a query string when Boolean design metadata is removed", async () => {
+        expect(Reflect.deleteMetadata("design:type", BooleanQueryDto.prototype, "flag")).toBe(true);
+        const error = await failure(validateQuery(BooleanQueryDto, { flag: "false" }));
+        expect(error.code).toBe("ValidationFailed");
+        expect(error.details.map((detail) => detail.field)).toEqual(["flag"]);
     });
 
     it.each([

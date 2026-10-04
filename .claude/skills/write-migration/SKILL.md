@@ -227,6 +227,7 @@ CREATE TRIGGER trg_medical_records_forbid_update_after_lock
 - **Composite order:** equality columns first, then the range/sort column (`(patient_user_id, starts_at DESC)`).
 - **Partial indexes** for live data (`WHERE deleted_at IS NULL`) and hot subsets (`WHERE status IN ('booked','waiting')`).
 - Keyset pagination needs an index on `(filter cols…, sort col, id)`.
+- Keyset cursors on a `TIMESTAMPTZ` sort select the value with `timestampCursorSelect` (6-digit µs ISO) and compare with `?::timestamptz`; never encode a JS `Date`.
 - Batch lookups use `WHERE id = ANY($1)` — the PK index serves them.
 
 ## ALTER migrations
