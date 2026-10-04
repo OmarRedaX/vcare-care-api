@@ -44,8 +44,8 @@ orchestrator. A task is `[x]` only after typecheck, lint, unit, and integration 
 - [x] (controller) `Codex-code` `controller/specialties.controller.ts` + DI registration (spec §3.8, §3.11)
 - [x] (routes) `Codex-code` `routes.ts` (spec §3.2)
 - [x] (mount) `Codex-code` mount in `src/routes.ts`
-- [ ] (tests) `Codex-code` tests of spec §9 — unit, integration, RBAC, contract, concurrency, EXPLAIN, grants (**belongs to `/write-tests`; not run in this `/develop`**)
+- [x] (tests) `/write-tests` tests of spec §9 — unit (5 suites, 82 tests), integration `specialties.test.ts` (133), seed-migration cases in `migrations.test.ts`, `boot.test.ts` 401 test; RBAC, contract, idempotency, concurrency, rate limit, EXPLAIN, grants, logs. Green on the Docker test stack (unit 916, integration 335 pass / 2 pre-existing skips)
 
 ### After `/develop` (not started here)
-- [ ] (qa) `Opus-docs` `/manual-qa specialties`, incl. compiled-build #8 check (spec §9.5)
+- [x] (qa) `Opus-docs` `/manual-qa specialties`, incl. compiled-build #8 check (spec §9.5) — 199 pass / 0 fail on real Identity tokens; [manual-qa.md](./manual-qa.md), `scripts/curl-test-specialties.sh`
 - [ ] (docs) `Opus-docs` `/update-docs specialties` — spec §14 list, hub roll-up

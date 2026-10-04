@@ -3,7 +3,7 @@ title: Care Service — Docs Index
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -76,6 +76,7 @@ spec, tasks, manual-qa; `reviews/` exists only while a review has open findings)
 | [access/manual-qa.md](./access/manual-qa.md) | see the CURL QA of the access base against real local Identity tokens and minted edge tokens (user guard, RBAC matrix, audit row + partition, #5 #6 #10 #11, idempotency, JWKS outage/recovery, log hygiene) and re-run it with `scripts/curl-test-access.sh` | how-to |
 | [specialties/brainstorm.md](./specialties/brainstorm.md) | see the agreed scope of the admin-managed specialty catalog (`GET/POST /specialties`, `PATCH /specialties/:id`, starter-catalog data migration) and the foundation fixes it carries (#7 full-precision cursor, #8 strict query booleans, #9 unique rate-limit member) before writing its spec | explanation |
 | [specialties/spec.md](./specialties/spec.md) | build or change the specialty catalog: `specialties` table + starter-catalog data migration, the three routes (roles, ownership `none`, doctor `pending`/`rejected` may list), DTOs, repository keyset SQL `(name, id)`, service transactions with `audit.record`, 23505 → `Conflict` by constraint name, the no-op `PATCH` rule, rate limits, the #7 µs cursor / #8 strict `ToInt`/`ToBoolean` / #9 rate-limit member fixes, the test plan, contract edit C1, and the Codex/docs task order | reference |
+| [specialties/manual-qa.md](./specialties/manual-qa.md) | see the CURL QA of the specialties catalog on real Identity tokens (RBAC matrix incl. doctor pending/rejected, paging, includeInactive, idempotency, no-op PATCH, 429, audit rows) and the compiled-build #8 check, or re-run `scripts/curl-test-specialties.sh` | how-to |
 | [access/spec.md](./access/spec.md) | build or use the access base: JWKS cache and `userGuard()`, the `Policy` shape and `authorize` step order, the boot route assertion, `AuditRecorder.record(trx, entry)`, the `audit_logs` migrations, DB roles (`care` / `vcare_app` / `care_app`, `ensure-app-login`), the worker `audit-partitions` loop, `checks.identityJwks`, env additions, the fixes for #5 #6 #10 #11, the test plan, the decided contract edits C1/C2, the `audit` module hand-off (read indexes deferred), and §15 As-built notes (stricter boot assertion, column-level `INSERT`, `ensure-app-login` refusals, Redis socket timeout, final test counts) | reference |
 
 ## Contract (source of truth — prose above derives from it)

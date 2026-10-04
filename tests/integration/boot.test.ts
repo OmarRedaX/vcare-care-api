@@ -10,15 +10,16 @@ import type * as InternalRoutesModule from "../../src/internal-routes";
 import { buildPublicRoutes } from "../../src/routes";
 import type * as RoutesModule from "../../src/routes";
 import { buildTestApps } from "../helpers/app";
-import { expectHealthLiveBody } from "../helpers/contract";
+import { expectErrorEnvelope, expectHealthLiveBody } from "../helpers/contract";
 import { closeDb, truncateAll } from "../helpers/db";
 import { closeRedis, ensureRedisReady } from "../helpers/redis";
 import { buildEnvelopeRouter } from "../helpers/test-routers";
 
 /**
- * The module routers are the one thing replaced here (spec §9.4 "module mock"): no business module exists yet, so an
- * unpoliced route can only reach the real createPublicApp/createInternalApp through src/routes.ts. Everything else —
- * health, middleware, the boot assertion — is the real wiring.
+ * `buildPublicRoutes`/`buildInternalRoutes` are wrapped in jest.fn that delegate to the REAL routers by default (the
+ * specialties module is mounted by the real src/routes.ts); a test replaces them once (`mockReturnValueOnce`) to prove
+ * an unpoliced route can never reach the real createPublicApp/createInternalApp. Everything else — health, middleware,
+ * the boot assertion — is the real wiring.
  */
 jest.mock("../../src/routes", () => {
     const actual = jest.requireActual<typeof RoutesModule>("../../src/routes");
@@ -99,6 +100,17 @@ describe("boot-time route authorization (integration: real app factories)", () =
 
     it("should boot with the real module routers (every production route guarded and authorized)", () => {
         expect(() => buildTestApps()).not.toThrow();
+    });
+
+    it("should boot with the real buildPublicRoutes and answer GET /api/specialties without a token with 401 (route mounted and guarded)", async () => {
+        const { publicApp } = buildTestApps();
+        const res = await request(publicApp).get("/api/specialties");
+        expect(res.status).toBe(401);
+        expectErrorEnvelope(res.body, "Unauthorized");
+        for (const [method, path] of [["post", "/api/specialties"], ["patch", "/api/specialties/1"]] as const) {
+            const denied = await request(publicApp)[method](path).send({ name: "Synthetic Name" });
+            expect(denied.status).toBe(401);
+        }
     });
 
     it("should start with test routers that lack authorize because extraRouters are mounted after the check (A8)", async () => {
