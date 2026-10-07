@@ -165,7 +165,7 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
     it.each(["submitted", "approved"])("should return 409 when application is %s", async (status) => {
         await apply();
         await ownerDb("doctor_profiles").where("user_id", 202).update({ verification_status: status, decided_at: new Date() });
-        const res = await apply(); expect(res.status).toBe(409); expectErrorEnvelope(res.body, "Conflict");
+        const res = await apply(); expect(res.status).toBe(409); expectErrorEnvelope(res.body, status === "submitted" ? "ApplicationNotEditable" : "Conflict");
         expect(await audits()).toHaveLength(1);
     });
 
@@ -357,9 +357,11 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
         expect(await audits()).toHaveLength(1);
     });
 
-    it.each(["submitted", "approved"])("should allow PATCH when application status is %s", async (status) => {
+    it.each(["submitted", "approved"])("should enforce PATCH edit policy when application status is %s", async (status) => {
         await apply(); await ownerDb("doctor_profiles").where("user_id", 202).update({ verification_status: status, decided_at: new Date() });
-        expect((await patch({ headline: "Synthetic revised headline" })).status).toBe(200);
+        const res = await patch({ headline: "Synthetic revised headline" });
+        expect(res.status).toBe(status === "submitted" ? 409 : 200);
+        if (status === "submitted") expectErrorEnvelope(res.body, "ApplicationNotEditable");
     });
 
     it("should deny PATCH but allow reads when locally suspended", async () => {

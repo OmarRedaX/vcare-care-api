@@ -12,6 +12,7 @@ import type { SpecialtiesService } from "../../../../src/app/specialties/service
 import type { AuditRecorder } from "../../../../src/lib/audit/audit";
 import type { Env } from "../../../../src/lib/config/types";
 import type { AuthContext } from "../../../../src/lib/types/types";
+import type { VerificationService } from "../../../../src/app/verification/service/verification.service";
 
 const actor: AuthContext = { userId: 202, role: "doctor", status: "pending", emailVerified: true };
 const input: DoctorProfileInput = { headline: "Synthetic doctor headline", bio: "Synthetic bio", yearsExperience: 5,
@@ -35,7 +36,9 @@ function setup() {
     const record = jest.fn().mockResolvedValue(undefined);
     const audit = { record } as unknown as AuditRecorder;
     const findByIds = jest.fn().mockResolvedValue(specialties());
-    const service = new DoctorsService(db, audit, { ALLOWED_CURRENCIES: ["EGP"] } as unknown as Env, { findByIds } as unknown as SpecialtiesService);
+    const verification = { submitInTransaction: jest.fn().mockResolvedValue({ jobId: null }), finishSubmit: jest.fn(), getOwnApplication: jest.fn() };
+    const service = new DoctorsService(db, audit, { ALLOWED_CURRENCIES: ["EGP"] } as unknown as Env, { findByIds } as unknown as SpecialtiesService,
+        verification as unknown as VerificationService);
     const mocks = {
         find: jest.spyOn(profileRepo, "findProfileByUserId").mockResolvedValue(profile()),
         locked: jest.spyOn(profileRepo, "findProfileByUserIdForUpdate").mockResolvedValue(undefined),
@@ -51,7 +54,7 @@ function setup() {
         clearPrimary: jest.spyOn(linkRepo, "clearPrimaryExcept").mockResolvedValue(),
         markPrimary: jest.spyOn(linkRepo, "markPrimary").mockResolvedValue(),
     };
-    return { service, trx, db, transaction, record, findByIds, mocks };
+    return { service, trx, db, transaction, record, findByIds, mocks, verification };
 }
 
 afterEach(() => jest.restoreAllMocks());
@@ -72,7 +75,7 @@ describe("DoctorsService", () => {
     it.each([VerificationStatus.Submitted, VerificationStatus.Approved])("should reject apply when status is %s", async (status) => {
         const { service, record, mocks } = setup();
         mocks.locked.mockResolvedValue(profile({ verificationStatus: status }));
-        await expect(service.apply(actor, input)).rejects.toMatchObject({ code: "Conflict", status: 409 });
+        await expect(service.apply(actor, input)).rejects.toMatchObject({ code: status === VerificationStatus.Submitted ? "ApplicationNotEditable" : "Conflict", status: 409 });
         expect(mocks.update).not.toHaveBeenCalled(); expect(record).not.toHaveBeenCalled();
     });
 
@@ -98,11 +101,11 @@ describe("DoctorsService", () => {
         expect(mocks.update).not.toHaveBeenCalled(); expect(record).not.toHaveBeenCalled();
     });
 
-    it.each([false, true])("should reject submit when an existing profile is %s", async (existing) => {
-        const { service, record, mocks } = setup();
+    it.each([false, true])("should delegate submit inside the transaction when an existing profile is %s", async (existing) => {
+        const { service, mocks, verification, trx } = setup();
         if (existing) mocks.locked.mockResolvedValue(profile());
-        await expect(service.apply(actor, { ...input, submit: true })).rejects.toMatchObject({ code: "ValidationFailed" });
-        expect(mocks.insert).not.toHaveBeenCalled(); expect(mocks.update).not.toHaveBeenCalled(); expect(record).not.toHaveBeenCalled();
+        await service.apply(actor, { ...input, submit: true });
+        expect(verification.submitInTransaction).toHaveBeenCalledWith(actor, expect.any(DoctorProfile), trx);
     });
 
     it("should retry once as an update when first insert races on the live-user constraint", async () => {

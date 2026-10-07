@@ -1,12 +1,10 @@
 import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import type { S3Client } from "@aws-sdk/client-s3";
-import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { S3Adapter } from "../../../../src/lib/storage/s3.adapter";
 import { StorageError } from "../../../../src/lib/storage/storage-error";
 
-jest.mock("@aws-sdk/s3-presigned-post", () => ({ createPresignedPost: jest.fn() }));
-jest.mock("@aws-sdk/s3-request-presigner", () => ({ getSignedUrl: jest.fn() }));
+const createPresignedPost = jest.fn();
+const getSignedUrl = jest.fn();
 
 const config = {
     bucket: "private-bucket",
@@ -19,7 +17,7 @@ const config = {
 
 function makeAdapter() {
     const send = jest.fn();
-    const adapter = new S3Adapter(config, { client: { send } as unknown as S3Client, now: () => new Date("2026-01-01T00:00:00.000Z") });
+    const adapter = new S3Adapter(config, { client: { send } as unknown as S3Client, now: () => new Date("2026-01-01T00:00:00.000Z"), presignPost: createPresignedPost as never, presignGet: getSignedUrl as never });
     return { adapter, send };
 }
 
@@ -28,9 +26,9 @@ describe("S3Adapter", () => {
 
     it("signs an exact-key encrypted POST with the size range", async () => {
         const { adapter } = makeAdapter();
-        jest.mocked(createPresignedPost).mockResolvedValue({ url: "https://storage.test", fields: { key: "q/a" } });
+        createPresignedPost.mockResolvedValue({ url: "https://storage.test", fields: { key: "q/a" } });
         await expect(adapter.createUploadPolicy("q/a", 10, 300)).resolves.toEqual({ url: "https://storage.test", fields: { key: "q/a" } });
-        expect(jest.mocked(createPresignedPost).mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+        expect(createPresignedPost.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
             Bucket: config.bucket,
             Key: "q/a",
             Expires: 300,
@@ -77,13 +75,13 @@ describe("S3Adapter", () => {
     it("deletes idempotently and signs an attachment download", async () => {
         const { adapter, send } = makeAdapter();
         send.mockResolvedValue({});
-        jest.mocked(getSignedUrl).mockResolvedValue("https://storage.test/download");
+        getSignedUrl.mockResolvedValue("https://storage.test/download");
         await adapter.delete("missing");
         expect(send.mock.calls[0]?.[0]).toBeInstanceOf(DeleteObjectCommand);
         await expect(adapter.presignDownload("final/x", "image/png", 60)).resolves.toEqual({
             url: "https://storage.test/download", expiresAt: "2026-01-01T00:01:00.000Z",
         });
-        expect(jest.mocked(getSignedUrl).mock.calls[0]?.[1].input).toEqual(expect.objectContaining({
+        expect(getSignedUrl.mock.calls[0]?.[1].input).toEqual(expect.objectContaining({
             ResponseContentDisposition: "attachment", ResponseContentType: "image/png",
         }));
     });
