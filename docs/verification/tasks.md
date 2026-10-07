@@ -33,10 +33,10 @@ related: [verification-spec, verification-brainstorm]
 - [x] (step 2 · schema) Execute migrate/rollback/migrate and EXPLAIN against real Postgres.
 - [x] (step 3 · lib) Build storage port/S3 adapter and MinIO adapter suite.
 - [x] (step 3 · lib) Build Identity token, status, batch hydration client and DTOs.
-- [ ] (step 4 · module) Add verification enums, errors, types, entities, DTOs, repositories and policies.
-- [ ] (step 4 · module) Implement verification service transitions and doctors submit/read/edit collaboration.
-- [ ] (step 5 · runtime) Add worker loops, DI registration, routes and mounts.
-- [ ] (step 5 · runtime) Wire request id, rate limit, idempotency and audit behavior.
+- [x] (step 4 · module) Add verification enums, errors, types, entities, DTOs, repositories and policies.
+- [x] (step 4 · module) Implement verification service transitions and doctors submit/read/edit collaboration.
+- [~] (step 5 · runtime) Add worker loops, DI registration, routes and mounts. API wiring is done; worker loops remain for the separate task.
+- [x] (step 5 · runtime) Wire request id, rate limit, idempotency and audit behavior for the API routes.
 - [~] (step 6 · test) Add unit, integration, concurrency, RBAC, contract and MinIO suites.
 - [ ] (step 7 · qa/docs) Run CURL manual QA and update as-built module and service docs/card.
 - [ ] (step 7 · qa/docs) Hand off hub documentation and sync deltas.

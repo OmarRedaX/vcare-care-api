@@ -1,5 +1,7 @@
 import type { Env } from "../config/types";
 import type { S3Client } from "@aws-sdk/client-s3";
+import type { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import type { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export interface UploadPolicy {
     url: string;
@@ -37,4 +39,7 @@ export interface StorageConfig {
 export interface S3AdapterOptions {
     client?: S3Client;
     now?: () => Date;
+    /** Test seam: the SDK presigners need a fully configured client, so unit tests inject doubles. */
+    presignPost?: typeof createPresignedPost;
+    presignGet?: typeof getSignedUrl;
 }

@@ -4,6 +4,7 @@ import { container } from "../../lib/di/container";
 import { TOKENS } from "../../lib/di/tokens";
 import { sealRouter } from "../../lib/http/route-pattern";
 import { idempotency } from "../../lib/idempotency/idempotency";
+import { noStore } from "../../lib/http/no-store";
 import { rateLimit } from "../../lib/rate-limit/rate-limit";
 import { byUser } from "../../lib/rate-limit/subjects";
 import { authorize } from "../../lib/rbac/authorize";
@@ -19,6 +20,8 @@ export function buildDoctorsRouter(): Router {
     const p = buildDoctorsPolicies(service);
     const writeLimit = () => rateLimit({ name: "doctors-write-user", limit: DOCTORS_WRITE_USER_LIMIT, windowMs: DOCTORS_RATE_WINDOW_MS, subject: byUser });
     const readLimit = () => rateLimit({ name: "doctors-read-user", limit: DOCTORS_READ_USER_LIMIT, windowMs: DOCTORS_RATE_WINDOW_MS, subject: byUser });
+    router.use("/doctors/apply", noStore());
+    router.use("/doctors/me", noStore());
     router.post("/doctors/apply", userGuard(), authorize(p.apply), writeLimit(), idempotency({ required: false }), controller.apply);
     router.get("/doctors/me", userGuard(), authorize(p.getMe), readLimit(), controller.getMe);
     router.patch("/doctors/me", userGuard(), authorize(p.updateMe), writeLimit(), controller.updateMe);

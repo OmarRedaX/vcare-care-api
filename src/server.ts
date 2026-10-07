@@ -14,6 +14,7 @@ import { runMain } from "./lib/lifecycle/run-main";
 import type { ShutdownState } from "./lib/lifecycle/shutdown-state";
 import { logger } from "./lib/logger/logger";
 import { closeRedis, redis } from "./lib/redis/redis";
+import type { IdentityClient } from "./lib/identity-client/identity-client";
 
 const KEEP_ALIVE_TIMEOUT_MS = 65_000;
 const HEADERS_TIMEOUT_MS = 66_000;
@@ -60,6 +61,7 @@ function main(): void {
             () => db.destroy(),
             () => probeDb.destroy(),
             () => closeRedis(redis),
+            () => container.resolve<IdentityClient>(TOKENS.IDENTITY_CLIENT).close(),
         ],
         logger,
         exit: (code: number) => process.exit(code),

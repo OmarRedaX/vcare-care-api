@@ -37,6 +37,10 @@ export const REDACTED_KEYS: readonly string[] = [
     "headline",
     "bio",
     "reviewNote",
+    "quarantineKey",
+    "fields",
+    "url",
+    "avatarUrl",
     // access: database URLs carry credentials (ensure-app-login, pool configs).
     "connectionString",
     "databaseUrl",

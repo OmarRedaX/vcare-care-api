@@ -22,4 +22,6 @@ export const TOKENS = {
     SpecialtiesController: Symbol.for("SpecialtiesController"),
     DoctorsService: Symbol.for("DoctorsService"),
     DoctorsController: Symbol.for("DoctorsController"),
+    VerificationService: Symbol.for("VerificationService"),
+    VerificationController: Symbol.for("VerificationController"),
 } as const;

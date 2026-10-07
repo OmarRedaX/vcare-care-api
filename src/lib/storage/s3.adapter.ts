@@ -26,6 +26,8 @@ function isMissing(error: unknown): boolean {
 export class S3Adapter implements ObjectStorage {
     private readonly client: S3Client;
     private readonly now: () => Date;
+    private readonly presignPost: typeof createPresignedPost;
+    private readonly presignGet: typeof getSignedUrl;
 
     constructor(private readonly config: StorageConfig, options: S3AdapterOptions = {}) {
         this.client = options.client ?? new S3Client({
@@ -38,12 +40,14 @@ export class S3Adapter implements ObjectStorage {
             maxAttempts: 2,
         });
         this.now = options.now ?? (() => new Date());
+        this.presignPost = options.presignPost ?? createPresignedPost;
+        this.presignGet = options.presignGet ?? getSignedUrl;
     }
 
     async createUploadPolicy(key: string, maxBytes: number, ttlSeconds: number): Promise<UploadPolicy> {
         try {
             const result = await this.withTimeout(
-                createPresignedPost(this.client, {
+                this.presignPost(this.client, {
                     Bucket: this.config.bucket,
                     Key: key,
                     Expires: ttlSeconds,
@@ -134,7 +138,7 @@ export class S3Adapter implements ObjectStorage {
     async presignDownload(key: string, contentType: string, ttlSeconds: number): Promise<DownloadUrl> {
         try {
             const url = await this.withTimeout(
-                getSignedUrl(this.client, new GetObjectCommand({
+                this.presignGet(this.client, new GetObjectCommand({
                     Bucket: this.config.bucket,
                     Key: key,
                     ResponseContentDisposition: "attachment",

@@ -30,6 +30,6 @@ export interface DoctorSpecialtyLinkRow { specialty_id: number; is_primary: bool
 export interface SpecialtyRef { id: number; slug: string; name: string; isPrimary: boolean }
 export interface DoctorProfileView { profile: DoctorProfile; languages: string[]; specialties: SpecialtyRef[] }
 export interface DoctorProfileDiff { fields: DoctorProfileField[]; columns: DoctorProfileColumnChanges; languages?: string[]; specialtyIds?: number[]; primarySpecialtyId?: number }
-export interface ApplyResult { view: DoctorProfileView; created: boolean }
+export interface ApplyResult { view: DoctorProfileView; created: boolean; status?: 200 | 201 | 202; identitySync?: "pending" | "failed" }
 export type DoctorsRoute = "apply" | "getMe" | "updateMe" | "getApplication";
 export type DoctorsPolicies = Readonly<Record<DoctorsRoute, UserPolicy>>;
