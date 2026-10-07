@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getEnv } from "../../src/lib/config/env";
 import { S3Adapter } from "../../src/lib/storage/s3.adapter";
+import { StorageError } from "../../src/lib/storage/storage-error";
 
 const env = getEnv();
 const storage = new S3Adapter({
@@ -49,11 +50,12 @@ describe("S3Adapter against real MinIO", () => {
 
         const uploaded = await postFile(policy.url, policy.fields, pdfBytes);
         expect(uploaded.status).toBe(204);
-        expect(await storage.headObject(source)).toEqual({ sizeBytes: pdfBytes.length });
+        const head = await storage.headObject(source);
+        expect(head).toEqual({ sizeBytes: pdfBytes.length, etag: expect.stringMatching(/^"?[0-9a-f-]+"?$/) });
         expect(await storage.readHead(source, 16)).toEqual(pdfBytes.slice(0, 16));
 
-        await storage.promote(source, final);
-        expect(await storage.headObject(final)).toEqual({ sizeBytes: pdfBytes.length });
+        await storage.promote(source, final, { etag: head!.etag, contentType: "application/pdf" });
+        expect(await storage.headObject(final)).toEqual({ sizeBytes: pdfBytes.length, etag: expect.any(String) });
         expect(await storage.headObject(source)).not.toBeNull();
         await storage.delete(source);
         await storage.delete(source);
@@ -68,6 +70,19 @@ describe("S3Adapter against real MinIO", () => {
         expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(pdfBytes);
         await new Promise((resolve) => setTimeout(resolve, 2_200));
         expect((await fetch(download.url)).status).toBe(403);
+    });
+
+    it("refuses to promote when the quarantine object was replaced after it was inspected", async () => {
+        const source = uniqueKey();
+        const final = uniqueKey("verification-documents");
+        const first = await storage.createUploadPolicy(source, 1_024, 300);
+        expect((await postFile(first.url, first.fields, pdfBytes)).status).toBe(204);
+        const inspected = await storage.headObject(source);
+        // Same key, same still-valid policy, different content: what a doctor could do between the checks and the copy.
+        const other = Uint8Array.from(Buffer.from("%PDF-1.4\nreplaced after inspection\n"));
+        expect((await postFile(first.url, first.fields, other)).status).toBe(204);
+        await expect(storage.promote(source, final, { etag: inspected!.etag, contentType: "application/pdf" })).rejects.toBeInstanceOf(StorageError);
+        expect(await storage.headObject(final)).toBeNull();
     });
 
     it("rejects an expired POST policy", async () => {

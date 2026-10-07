@@ -162,6 +162,7 @@ export interface FakeStorage extends ObjectStorage {
     seed(key: string, bytes: Uint8Array): void;
     has(key: string): boolean;
     failNextCopy(): void;
+    replaceAfterNextHead(key: string, bytes: Uint8Array): void;
     setHeadSize(key: string, sizeBytes: number): void;
     clear(): void;
 }

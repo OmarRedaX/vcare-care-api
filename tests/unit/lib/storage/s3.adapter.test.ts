@@ -6,6 +6,8 @@ import { StorageError } from "../../../../src/lib/storage/storage-error";
 const createPresignedPost = jest.fn();
 const getSignedUrl = jest.fn();
 
+const expected = { etag: '"etag-1"', contentType: "application/pdf" };
+
 const config = {
     bucket: "private-bucket",
     region: "us-east-1",
@@ -46,8 +48,8 @@ describe("S3Adapter", () => {
 
     it("uses bounded HEAD and range calls, returning the range bytes", async () => {
         const { adapter, send } = makeAdapter();
-        send.mockResolvedValueOnce({ ContentLength: 12 }).mockResolvedValueOnce({ Body: { transformToByteArray: () => Promise.resolve(Uint8Array.from([1, 2])) } });
-        await expect(adapter.headObject("q/a")).resolves.toEqual({ sizeBytes: 12 });
+        send.mockResolvedValueOnce({ ContentLength: 12, ETag: '"etag-1"' }).mockResolvedValueOnce({ Body: { transformToByteArray: () => Promise.resolve(Uint8Array.from([1, 2])) } });
+        await expect(adapter.headObject("q/a")).resolves.toEqual({ sizeBytes: 12, etag: '"etag-1"' });
         await expect(adapter.readHead("q/a", 16)).resolves.toEqual(Uint8Array.from([1, 2]));
         expect(send.mock.calls[0]?.[0]).toBeInstanceOf(HeadObjectCommand);
         expect(send.mock.calls[0]?.[1].abortSignal).toBeInstanceOf(AbortSignal);
@@ -56,20 +58,34 @@ describe("S3Adapter", () => {
         expect(send.mock.calls[1]?.[1].abortSignal).toBeInstanceOf(AbortSignal);
     });
 
-    it("copies with an encoded source and encryption, leaving source deletion to the caller", async () => {
+    it("copies bound to the verified ETag with an encoded source and encryption, leaving source deletion to the caller", async () => {
         const { adapter, send } = makeAdapter();
-        send.mockResolvedValueOnce({ Body: { transformToByteArray: () => Promise.resolve(Uint8Array.from(Buffer.from("%PDF-1.7"))) } }).mockResolvedValueOnce({});
-        await adapter.promote("quarantine/a b+#?%.pdf", "final/x");
-        expect(send).toHaveBeenCalledTimes(2);
-        expect(send.mock.calls[1]?.[0]).toBeInstanceOf(CopyObjectCommand);
-        expect(send.mock.calls[1]?.[0].input).toEqual(expect.objectContaining({
+        send.mockResolvedValueOnce({});
+        await adapter.promote("quarantine/a b+#?%.pdf", "final/x", expected);
+        expect(send).toHaveBeenCalledTimes(1);
+        expect(send.mock.calls[0]?.[0]).toBeInstanceOf(CopyObjectCommand);
+        expect(send.mock.calls[0]?.[0].input).toEqual(expect.objectContaining({
             CopySource: "private-bucket/quarantine/a%20b%2B%23%3F%25.pdf",
+            CopySourceIfMatch: '"etag-1"',
             ServerSideEncryption: "AES256",
             MetadataDirective: "REPLACE",
             ContentType: "application/pdf",
             Key: "final/x",
         }));
-        expect(send.mock.calls[1]?.[1].abortSignal).toBeInstanceOf(AbortSignal);
+        expect(send.mock.calls[0]?.[1].abortSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("fails the copy when the quarantine object changed after it was verified", async () => {
+        const { adapter, send } = makeAdapter();
+        send.mockRejectedValueOnce({ name: "PreconditionFailed", $metadata: { httpStatusCode: 412 } });
+        await expect(adapter.promote("quarantine/a", "final/x", expected)).rejects.toBeInstanceOf(StorageError);
+        expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats a HEAD response without an ETag as a storage failure", async () => {
+        const { adapter, send } = makeAdapter();
+        send.mockResolvedValueOnce({ ContentLength: 12 });
+        await expect(adapter.headObject("q/a")).rejects.toBeInstanceOf(StorageError);
     });
 
     it("deletes idempotently and signs an attachment download", async () => {
@@ -93,33 +109,22 @@ describe("S3Adapter", () => {
 
         const timeout = jest.spyOn(AbortSignal, "timeout");
         const { adapter, send } = makeAdapter();
-        send.mockResolvedValueOnce({ ContentLength: 1 })
-            .mockResolvedValueOnce({ Body: { transformToByteArray: () => Promise.resolve(Uint8Array.from(Buffer.from("%PDF-1.7"))) } })
-            .mockResolvedValueOnce({});
+        send.mockResolvedValueOnce({ ContentLength: 1, ETag: '"etag-1"' }).mockResolvedValueOnce({});
         try {
             await adapter.headObject("q/a");
-            await adapter.promote("q/a", "final/a");
+            await adapter.promote("q/a", "final/a", expected);
             expect(timeout).toHaveBeenNthCalledWith(1, 2_000);
-            expect(timeout).toHaveBeenNthCalledWith(2, 2_000);
-            expect(timeout).toHaveBeenNthCalledWith(3, 10_000);
+            expect(timeout).toHaveBeenNthCalledWith(2, 10_000);
         } finally {
             timeout.mockRestore();
             client.destroy();
         }
     });
 
-    it("refuses to copy unrecognized source bytes", async () => {
-        const { adapter, send } = makeAdapter();
-        send.mockResolvedValue({ Body: { transformToByteArray: () => Promise.resolve(Uint8Array.from([1, 2, 3])) } });
-        await expect(adapter.promote("quarantine/bad", "final/bad")).rejects.toBeInstanceOf(StorageError);
-        expect(send).toHaveBeenCalledTimes(1);
-        expect(send.mock.calls[0]?.[0]).toBeInstanceOf(GetObjectCommand);
-    });
-
     it("wraps SDK failures without keys, bucket, URL, or credentials", async () => {
         const { adapter, send } = makeAdapter();
         send.mockRejectedValue(new Error("secret= sensitive-secret key=q/sensitive bucket=private-bucket http://localhost:9003"));
-        for (const action of [() => adapter.headObject("q/sensitive"), () => adapter.readHead("q/sensitive", 16), () => adapter.promote("q/sensitive", "x"), () => adapter.delete("q/sensitive")]) {
+        for (const action of [() => adapter.headObject("q/sensitive"), () => adapter.readHead("q/sensitive", 16), () => adapter.promote("q/sensitive", "x", expected), () => adapter.delete("q/sensitive")]) {
             await expect(action()).rejects.toBeInstanceOf(StorageError);
             await expect(action()).rejects.toThrow(/^Object storage [a-z ]+ failed$/);
         }

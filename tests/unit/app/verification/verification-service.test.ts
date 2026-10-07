@@ -14,6 +14,7 @@ import type { IdentityClient } from "../../../../src/lib/identity-client/identit
 import { getEnv } from "../../../../src/lib/config/env";
 import { isBookable } from "../../../../src/app/doctors/service/doctors.service";
 import { buildVerificationPolicies } from "../../../../src/app/verification/policies";
+import { logger } from "../../../../src/lib/logger/logger";
 
 const actor = { userId: 202, role: "doctor", status: "active", emailVerified: true } as AuthContext;
 const admin = { userId: 303, role: "admin", status: "active", emailVerified: true } as AuthContext;
@@ -120,7 +121,7 @@ describe("verification service rules", () => {
         jest.spyOn(repo, "findIntent").mockResolvedValue({ id: 3, kind: "verification_document", owner_user_id: 202, target_id: 1, result_id: null, consumed_at: null,
             expires_at: new Date(Date.now() + 60_000), quarantine_key: "quarantine/synthetic", max_bytes: 10_485_760 } as Awaited<ReturnType<typeof repo.findIntent>>);
         jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Draft));
-        jest.mocked(storage.headObject).mockResolvedValue({ sizeBytes: 18 });
+        jest.mocked(storage.headObject).mockResolvedValue({ sizeBytes: 18, etag: '"etag-1"' });
         jest.mocked(storage.readHead).mockResolvedValue(Buffer.from("synthetic false PDF"));
         jest.spyOn(repo, "closeIntent").mockResolvedValue(undefined);
         const insert = jest.spyOn(repo, "insertDocument");
@@ -135,7 +136,7 @@ describe("verification service rules", () => {
         ["transient", "pending", "pending"],
     ] as const)("identityFailurePolicyDistinguishes409: should record %s outcome as %s", async (outcome, jobStatus, profileStatus) => {
         const job = { id: 9, doctor_profile_id: 1, doctor_user_id: 202, kind: "verification", status: "pending", target_status: "active", reason: "synthetic reason",
-            actor_user_id: 303, request_id: "synthetic-request", attempts: 0, consecutive_failures: 0, created_at: new Date(), updated_at: new Date() } as Awaited<ReturnType<typeof repo.findSyncJob>>;
+            actor_user_id: 303, request_id: "synthetic-request", attempts: 0, consecutive_failures: 0, next_attempt_at: new Date(Date.now() - 1000), created_at: new Date(), updated_at: new Date() } as Awaited<ReturnType<typeof repo.findSyncJob>>;
         jest.spyOn(locks, "withSessionAdvisoryLock").mockImplementation(async (_db, _namespace, _id, work) => work());
         jest.spyOn(repo, "findSyncJob").mockResolvedValue(job);
         jest.spyOn(repo, "findPendingSyncJob").mockResolvedValue(job);
@@ -198,5 +199,120 @@ describe("verification service rules", () => {
         jest.spyOn(repo, "findSyncJob").mockResolvedValue({ id: 1, kind: "verification", status: "superseded" } as Awaited<ReturnType<typeof repo.findSyncJob>>);
         await service.processDueSyncJob(1);
         expect(identity.setUserStatus).not.toHaveBeenCalled();
+    });
+
+    const syncJob = (changes: Partial<NonNullable<Awaited<ReturnType<typeof repo.findSyncJob>>>> = {}) => ({ id: 9, doctor_profile_id: 1, doctor_user_id: 202, kind: "verification", status: "pending", target_status: "active", reason: "synthetic reason",
+        actor_user_id: 303, request_id: "synthetic-request", attempts: 0, consecutive_failures: 0, next_attempt_at: new Date(Date.now() - 1000), created_at: new Date(), updated_at: new Date(), ...changes }) as NonNullable<Awaited<ReturnType<typeof repo.findSyncJob>>>;
+    const lockPassesThrough = () => jest.spyOn(locks, "withSessionAdvisoryLock").mockImplementation(async (_db, _namespace, _id, work) => work());
+
+    it.each(["approve", "reject"] as const)("decisionWaitsForPendingSync: should refuse %s with Conflict and Retry-After while the previous status change has not reached Identity", async (action) => {
+        jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Submitted, { identitySyncStatus: IdentitySyncStatus.Pending }));
+        const supersede = jest.spyOn(repo, "supersedePendingSyncJob").mockResolvedValue(undefined);
+        const insert = jest.spyOn(repo, "insertSyncJob");
+        await expect(service.decide(admin, 1, action, "synthetic reason")).rejects.toMatchObject({ code: "Conflict", status: 409, extra: { retryAfter: 5 } });
+        expect(supersede).not.toHaveBeenCalled();
+        expect(insert).not.toHaveBeenCalled();
+        expect(identity.setUserStatus).not.toHaveBeenCalled();
+    });
+
+    it.each([IdentitySyncStatus.Synced, IdentitySyncStatus.NotRequired])("decisionWaitsForPendingSync: should accept approve when the account sync is %s", async (syncStatus) => {
+        jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Submitted, { identitySyncStatus: syncStatus }));
+        jest.spyOn(repo, "listDocuments").mockResolvedValue([document(VerificationDocumentType.License), document(VerificationDocumentType.Id)]);
+        jest.spyOn(repo, "supersedePendingSyncJob").mockResolvedValue(undefined);
+        jest.spyOn(repo, "applyProfileDecision").mockResolvedValue(undefined);
+        const insert = jest.spyOn(repo, "insertSyncJob").mockResolvedValue({ id: 9 } as Awaited<ReturnType<typeof repo.insertSyncJob>>);
+        jest.spyOn(repo, "findSyncJob").mockResolvedValue(undefined);
+        await expect(service.decide(admin, 1, "approve", undefined)).rejects.toMatchObject({ code: "NotFound" });
+        expect(insert).toHaveBeenCalledWith(expect.objectContaining({ target_status: "active" }), expect.anything());
+    });
+
+    it("decisionWaitsForPendingSync: should still allow reopening a rejected application whose rejection is unsynced", async () => {
+        jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Rejected, { identitySyncStatus: IdentitySyncStatus.Pending }));
+        jest.spyOn(repo, "supersedePendingSyncJob").mockResolvedValue(undefined);
+        jest.spyOn(repo, "applyProfileDecision").mockResolvedValue(undefined);
+        const insert = jest.spyOn(repo, "insertSyncJob").mockResolvedValue({ id: 9 } as Awaited<ReturnType<typeof repo.insertSyncJob>>);
+        jest.spyOn(repo, "findSyncJob").mockResolvedValue(undefined);
+        await expect(service.decide(admin, 1, "reopen", "synthetic reason")).rejects.toMatchObject({ code: "NotFound" });
+        expect(insert).toHaveBeenCalledWith(expect.objectContaining({ target_status: "pending" }), expect.anything());
+    });
+
+    it("twoWorkersHonourBackoff: should not call Identity for a job whose next attempt is still in the future", async () => {
+        lockPassesThrough();
+        const job = syncJob({ next_attempt_at: new Date(Date.now() + 30_000), attempts: 1 });
+        jest.spyOn(repo, "findSyncJob").mockResolvedValue(job);
+        jest.spyOn(repo, "findPendingSyncJob").mockResolvedValue(job);
+        await service.processDueSyncJob(9);
+        expect(identity.setUserStatus).not.toHaveBeenCalled();
+    });
+
+    it("finishSubmitBuildsNoView: should report the sync outcome without any Identity hydration call", async () => {
+        lockPassesThrough();
+        const job = syncJob({ target_status: "pending" });
+        jest.spyOn(repo, "findSyncJob").mockResolvedValue(job);
+        jest.spyOn(repo, "findPendingSyncJob").mockResolvedValue(job);
+        jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Submitted, { identitySyncStatus: IdentitySyncStatus.Pending }));
+        jest.spyOn(repo, "updateSyncJob").mockResolvedValue(undefined);
+        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+        await expect(service.finishSubmit(actor, { jobId: 9 })).resolves.toEqual({ status: 202, identitySync: "pending" });
+        expect(identity.getUsersBatch).not.toHaveBeenCalled();
+        await expect(service.finishSubmit(actor, { jobId: null })).resolves.toBeNull();
+    });
+
+    it("alertLogsCarryIds: should log job and profile ids with the transition-rejected alert", async () => {
+        lockPassesThrough();
+        const job = syncJob();
+        jest.spyOn(repo, "findSyncJob").mockResolvedValue(job);
+        jest.spyOn(repo, "findPendingSyncJob").mockResolvedValue(job);
+        jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Approved, { identitySyncStatus: IdentitySyncStatus.Pending }));
+        jest.spyOn(repo, "updateSyncJob").mockResolvedValue(undefined);
+        const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
+        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "rejected-transition" });
+        await service.processDueSyncJob(9);
+        expect(error).toHaveBeenCalledWith("IdentitySyncTransitionRejected", { code: "InvalidStatusTransition", jobId: 9, profileId: 1 });
+    });
+
+    it("alertLogsCarryIds: should log job and profile ids with the unsynced-too-long alert", async () => {
+        lockPassesThrough();
+        const old = new Date(Date.now() - 3_600_000);
+        const job = syncJob({ created_at: old, updated_at: old });
+        jest.spyOn(repo, "findSyncJob").mockResolvedValue(job);
+        jest.spyOn(repo, "findPendingSyncJob").mockResolvedValue(job);
+        jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Approved, { identitySyncStatus: IdentitySyncStatus.Pending }));
+        jest.spyOn(repo, "updateSyncJob").mockResolvedValue(undefined);
+        const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
+        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+        await service.processDueSyncJob(9);
+        expect(error).toHaveBeenCalledWith("IdentityApprovalSyncPending", { jobId: 9, profileId: 1 });
+    });
+
+    describe("complete binds promotion to the verified object", () => {
+        const openIntent = () => ({ id: 3, kind: "verification_document", owner_user_id: 202, target_id: 1, result_id: null, consumed_at: null, document_type: "license",
+            expires_at: new Date(Date.now() + 60_000), quarantine_key: "quarantine/synthetic", max_bytes: 10_485_760 }) as Awaited<ReturnType<typeof repo.findIntent>>;
+        beforeEach(() => {
+            lockPassesThrough();
+            jest.spyOn(repo, "findIntent").mockResolvedValue(openIntent());
+            jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Draft));
+            jest.mocked(storage.headObject).mockResolvedValue({ sizeBytes: 12, etag: "\"etag-1\"" });
+            jest.mocked(storage.readHead).mockResolvedValue(Buffer.from("%PDF-1.7 synthetic"));
+        });
+
+        it("should pass the inspected ETag and detected type to promote", async () => {
+            jest.mocked(storage.promote).mockResolvedValue(undefined);
+            jest.spyOn(repo, "findIntentForUpdate").mockResolvedValue(openIntent());
+            jest.spyOn(repo, "insertDocument").mockResolvedValue(document(VerificationDocumentType.License));
+            jest.spyOn(repo, "closeIntent").mockResolvedValue(undefined);
+            await service.complete(actor, 3);
+            expect(storage.promote).toHaveBeenCalledWith("quarantine/synthetic", expect.stringMatching(/^verification-documents\//), { etag: "\"etag-1\"", contentType: "application/pdf" });
+            expect(storage.readHead).toHaveBeenCalledTimes(1);
+        });
+
+        it("should create no document and keep the intent open when the quarantine object changed before the copy", async () => {
+            jest.mocked(storage.promote).mockRejectedValue(new Error("synthetic precondition failure"));
+            const insert = jest.spyOn(repo, "insertDocument");
+            const close = jest.spyOn(repo, "closeIntent");
+            await expect(service.complete(actor, 3)).rejects.toThrow("synthetic precondition failure");
+            expect(insert).not.toHaveBeenCalled();
+            expect(close).not.toHaveBeenCalled();
+        });
     });
 });
