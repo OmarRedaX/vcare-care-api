@@ -70,3 +70,17 @@ export function validateQuery<T extends object>(dto: ClassConstructor<T>, input:
 export function validateParams<T extends object>(dto: ClassConstructor<T>, input: unknown): Promise<T> {
     return validateInput(dto, input, "params");
 }
+
+/** For routes that take no body: `{}` / absent passes, any member is rejected. A property-less DTO cannot do this (class-validator rejects it as an unknown value). */
+export function assertEmptyBody(input: unknown): void {
+    if (input === undefined || input === null) {
+        return;
+    }
+    if (typeof input !== "object" || Array.isArray(input)) {
+        throw ValidationFailed.withDetails([{ field: "body", issue: "must be a JSON object" }]);
+    }
+    const details = Object.keys(input).sort().map((field) => ({ field, issue: "is not allowed" }));
+    if (details.length > 0) {
+        throw ValidationFailed.withDetails(details);
+    }
+}

@@ -6,7 +6,6 @@ import { VerificationStatus } from "../../doctors/enums";
 import { VerificationDocumentType } from "../enums";
 
 export class UploadVerificationIntentRequestDto { @IsEnum(VerificationDocumentType) type!: VerificationDocumentType; }
-export class EmptyVerificationBodyDto {}
 export class DocumentIdParamsDto { @ToInt() @IsInt() @Min(1) documentId!: number; }
 export class UploadIdParamsDto { @ToInt() @IsInt() @Min(1) uploadId!: number; }
 export class ApplicationIdParamsDto { @ToInt() @IsInt() @Min(1) id!: number; }
