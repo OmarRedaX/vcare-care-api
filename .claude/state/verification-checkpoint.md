@@ -8,5 +8,8 @@ Defaults: lock profile edits while submitted; add DELETE own document; no Identi
 - brainstorm written: docs/verification/brainstorm.md (+INDEX row)
 - brainstorm a25b779; spec committed (Codex wrote, I reviewed + fixed pins to 3.1147.0, hub-direct-edit wording, advisory-lock pool note)
 - phase A (contract C1-C6, env, compose, 4 migrations) verified by me: typecheck, unit 1071, migrations up/down/up, grants, integration 434 (fixed doctors EXPLAIN test). BLOCKER: minio/minio + minio/mc images no longer pullable (Docker Hub denied, quay 401); SeaweedFS POST-policy spike inconclusive (403). Needs user decision.
+- phase A committed; local S3 resolved: bitnamilegacy/minio digest-pinned (ADR 0020), spike passed.
+- hub contract synced on branch docs/sync-care-verification-contract (worktree in scratchpad/hub-verification, hub PR #10 open). ../vcare-hub checkout is on identity branch docs/sync-identity-auth-race-fixes with someone else's uncommitted changes: DO NOT touch it. Re-sync again after /update-docs.
+- phase B dispatched to 2 Codex agents (lib/storage, lib/identity-client) in parallel.
 ## ▶ NEXT STEP
 /develop verification via Codex: spec §15 tasks 0-7. Docker Desktop + npm run test:infra:up needed first.
