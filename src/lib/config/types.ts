@@ -21,6 +21,7 @@ export interface Env {
     RATE_LIMIT_FALLBACK_DIVISOR: number;
     SHUTDOWN_TIMEOUT_MS: number;
     WORKER_POLL_INTERVAL_MS: number;
+    ALLOWED_CURRENCIES: readonly string[];
 }
 
 /** The environment of `care-migrate`: the owner URL is required. */

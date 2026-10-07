@@ -13,7 +13,7 @@ import type { ListSpecialtiesQueryDto } from "../dto/specialties.request.dto";
 import { SpecialtyAuditAction, SpecialtyField } from "../enums";
 import type { Specialty } from "../entity/specialties.entity";
 import { SpecialtyNameTaken, SpecialtySlugTaken } from "../errors";
-import { findSpecialtyByIdForUpdate, insertSpecialty, listSpecialties, updateSpecialty } from "../repository/specialties.repo";
+import { findSpecialtiesByIds, findSpecialtyByIdForUpdate, insertSpecialty, listSpecialties, updateSpecialty } from "../repository/specialties.repo";
 import type { SpecialtyChanges, SpecialtyCreateInput, SpecialtyDiff } from "../types";
 
 @injectable()
@@ -22,6 +22,10 @@ export class SpecialtiesService {
         @inject(TOKENS.Db) private readonly db: Knex,
         @inject(TOKENS.AuditRecorder) private readonly audit: AuditRecorder,
     ) {}
+
+    async findByIds(ids: number[], conn: Knex = this.db): Promise<Specialty[]> {
+        return findSpecialtiesByIds(ids, conn);
+    }
 
     async list(viewer: AuthContext, query: ListSpecialtiesQueryDto): Promise<Page<Specialty>> {
         const limit = resolveLimit(query.limit);

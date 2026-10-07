@@ -1,4 +1,6 @@
 import { HealthController } from "./app/health/controller/health.controller";
+import { DoctorsController } from "./app/doctors/controller/doctors.controller";
+import { DoctorsService } from "./app/doctors/service/doctors.service";
 import { HealthService } from "./app/health/service/health.service";
 import { SpecialtiesController } from "./app/specialties/controller/specialties.controller";
 import { SpecialtiesService } from "./app/specialties/service/specialties.service";
@@ -18,4 +20,6 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.HealthController, HealthController);
     container.registerSingleton(TOKENS.SpecialtiesService, SpecialtiesService);
     container.registerSingleton(TOKENS.SpecialtiesController, SpecialtiesController);
+    container.registerSingleton(TOKENS.DoctorsService, DoctorsService);
+    container.registerSingleton(TOKENS.DoctorsController, DoctorsController);
 }
