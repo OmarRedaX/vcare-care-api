@@ -24,3 +24,7 @@ Env gotchas: Git Bash needs MSYS_NO_PATHCONV=1 for docker -v/-dir paths; docker 
 ## UPDATE 2026-10-07 (night)
 Module verified (typecheck, unit 1099, integration 22 suites green) and committed: 24fb03d (code, incl. S3Adapter presign test seam), c5ef1c7 (tests). Worker phase done: identity-sync + upload-intent-purge loops in src/app/verification/worker/, wired in worker-loops.ts/worker.ts (pool 4, closes identity+db), --once covered in worker-partitions test. NEXT: /write-tests (verification unit+integration+RBAC+contract+concurrency+worker behaviour) -> /manual-qa -> /review-code -> /update-docs -> hub sync -> ask user before push/PR. Orphaned final objects rely on bucket lifecycle (spec allows).
 Flaky: integration globalSetup occasionally 'Timeout acquiring a connection' - just rerun.
+
+## UPDATE 2026-10-07 (late night 2)
+/write-tests done and committed (629b288): unit + tests/integration/verification.test.ts (38). Tests found REAL bug (fixed 044debc): empty DTO rejected by class-validator -> complete/download/delete always 400; added lib/validation assertEmptyBody. Lint script fix 154f5b1. Hub PR #10 already merged by user. Unit 1131 green, integration 23 suites green on fresh DB (migrations test can time out under load and leaves DB dirty: npm run test:infra:down && up).
+NEXT: /manual-qa (real Identity + MinIO) -> /review-code -> /update-docs -> hub sync on new branch off origin/main (do NOT touch ../vcare-hub checkout) -> ask user before push/PR.
