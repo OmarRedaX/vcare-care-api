@@ -28,3 +28,6 @@ Flaky: integration globalSetup occasionally 'Timeout acquiring a connection' - j
 ## UPDATE 2026-10-07 (late night 2)
 /write-tests done and committed (629b288): unit + tests/integration/verification.test.ts (38). Tests found REAL bug (fixed 044debc): empty DTO rejected by class-validator -> complete/download/delete always 400; added lib/validation assertEmptyBody. Lint script fix 154f5b1. Hub PR #10 already merged by user. Unit 1131 green, integration 23 suites green on fresh DB (migrations test can time out under load and leaves DB dirty: npm run test:infra:down && up).
 NEXT: /manual-qa (real Identity + MinIO) -> /review-code -> /update-docs -> hub sync on new branch off origin/main (do NOT touch ../vcare-hub checkout) -> ask user before push/PR.
+
+## UPDATE 2026-10-08 (done, awaiting user for push)
+All steps done on feature/verification (HEAD 5de84c0+): module, worker, tests (unit 1154, integration 489), manual QA 274/0, review resolved+file deleted, docs updated. Hub: branch docs/sync-care-verification-asbuilt (worktree in scratchpad/hub-asbuilt, 1 commit off origin/main, NOT pushed). Remaining: ask user before pushing care branch + hub branch and opening care PR (Closes #27). Open decisions for user: suspended-doctor apply submit=false (403?), Identity internal-users module blocker note in PR.
