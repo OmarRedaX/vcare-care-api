@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [api, reference, routes, rbac]
 related: [rbac, specialties-spec, doctors-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
@@ -54,22 +54,26 @@ characters and `description` rejects NUL (`400`). A `PATCH` that changes nothing
 
 ## doctors-onboarding (account `status` pending, active, or rejected)
 
-The four self-owned profile routes below are live. Their `POST /apply` submission path is dormant until verification
-documents exist (`submit=true` returns `400 ValidationFailed` on `documents`); Case 1, document upload, and the
-contract's `202` response land with verification. The profile write audit actions are live and a no-op update is
-not audited. `POST /apply` takes an optional `Idempotency-Key`. Its write rate limit and the `PATCH /me` limit are
-20/min per user; the two reads are 120/min per user.
+The self-owned onboarding routes and the verification document routes below are live (verification module, 2026-10-08).
+`POST /apply` with `submit=true` is the submission path: a draft submit is local (no Identity call, 200 or 201); a
+rejected resubmit uses Case 1 (200 synced, 202 `identitySync: pending|failed`). A submitted application locks
+profile and document edits with `409 ApplicationNotEditable`; `submit=true` without a live license and id document
+is `400 ValidationFailed` on `documents`. `POST /apply` takes an optional `Idempotency-Key`. Its write rate limit and the
+`PATCH /me` limit are 20/min per user; the two reads are 120/min per user. Document intent creation is 20/h per user;
+`complete` and `DELETE` use 20/min with an optional `Idempotency-Key`; document `download-url` is 120/min. Intent
+creation and both `download-url` routes mount no idempotency middleware (signed POST policies and URLs are never
+stored in Redis, and each issued URL gets its own audit row). All responses are `no-store`.
 
 | Method | Path | Roles | Ownership | Audit / Case | Errors |
 |---|---|---|---|---|---|
-| POST | `/api/doctors/apply` | doctor | self | `doctor.profile_created` / `doctor.profile_updated` (live); Case 1 on later resubmission | 200, 201 (live); 202 `identitySync` (planned); 400 (missing documents), 403, 409 `Conflict` |
+| POST | `/api/doctors/apply` | doctor | self | `doctor.profile_created` / `doctor.profile_updated`; `verification.submitted` on submit; Case 1 on rejected resubmit | 200, 201; 202 `identitySync`; 400 (missing documents), 403, 409 `ApplicationNotEditable`/`Conflict`, 422 |
 | GET | `/api/doctors/me` | doctor | self | — | 404 until applied |
-| PATCH | `/api/doctors/me` | doctor | self (not locally suspended) | `doctor.profile_updated` on a real change | 400, 403, 404 |
-| POST | `/api/doctors/me/documents` | doctor | self | — (multipart, 20/h) — **to be replaced**, ADR 0013 | 400 (MIME/size), 403, 404, 409 |
-| POST | `/api/doctors/me/documents/uploads` (planned, ADR 0013) | doctor | self; application `draft`/`rejected` | — (20/h) | 201 intent, 400, 403, 404, 409 |
-| POST | `/api/doctors/me/documents/uploads/{uploadId}/complete` (planned) | doctor | self (intent owner) | `verification.document_uploaded` | 201, 200 replay, 400 bad bytes, 404, 409, 410 `UploadIntentExpired` |
-| POST | `/api/doctors/me/documents/{documentId}/download-url` (planned, ADR 0014) | doctor | self | `verification.document_url_issued` | 200 `{ url, expiresAt }` (60 s), 404 |
-| GET | `/api/doctors/me/application` | doctor | self | — | 404; live response has empty `documents` and degraded Identity name/avatar fields |
+| PATCH | `/api/doctors/me` | doctor | self (not locally suspended) | `doctor.profile_updated` on a real change | 400, 403, 404, 409 `ApplicationNotEditable` |
+| POST | `/api/doctors/me/documents/uploads` | doctor | self; application `draft`/`rejected` | — (20/h) | 201 `UploadIntent`, 400, 403, 404, 409 `ApplicationNotEditable`/`Conflict` |
+| POST | `/api/doctors/me/documents/uploads/{uploadId}/complete` | doctor | self (intent owner) | `verification.document_uploaded` once | 201, 200 replay, 400 bad bytes (`field: file`), 404, 409, 410 `UploadIntentExpired`, 422 |
+| POST | `/api/doctors/me/documents/{documentId}/download-url` | doctor | self | `verification.document_url_issued` per issue | 200 `{ url, expiresAt }` (60 s), 404 |
+| DELETE | `/api/doctors/me/documents/{documentId}` | doctor | self; application `draft`/`rejected` | `verification.document_deleted` | 204, 404, 409 `ApplicationNotEditable`, 422 |
+| GET | `/api/doctors/me/application` | doctor | self | — | 404; documents are metadata only; Identity name/avatar fields degrade to null |
 
 ## doctors-discovery
 | Method | Path | Roles | Ownership | Case | Notes |
@@ -90,15 +94,17 @@ not audited. `POST /apply` takes an optional `Idempotency-Key`. Its write rate l
 | POST | `/api/doctors/me/consultation-types` | doctor | self | — | 400, 409, 422 (Idem opt) |
 | PATCH | `/api/doctors/me/consultation-types/{id}` | doctor | self (`:id` in own profile, else 404) | — | 400, 404, 409 |
 
-## admin-verification
+## admin-verification (live, verification module, 2026-10-08)
+All admin routes: admin, token status `active`, 120/min per user, `no-store`. `approve`/`reject`/`reopen` take an optional `Idempotency-Key`.
+
 | Method | Path | Roles | Ownership | Audit | Case | Responses |
 |---|---|---|---|---|---|---|
-| GET | `/api/admin/applications` | admin | none | — | 2 degrade | `status` filter, oldest first |
-| GET | `/api/admin/applications/{id}` | admin | none | admin-action (document metadata; URLs on demand once ADR 0014 ships) | 2 degrade | 404 |
-| POST | `/api/admin/applications/{id}/documents/{documentId}/download-url` (planned, ADR 0014) | admin | none | admin-action `verification.document_url_issued` | — | 200 `{ url, expiresAt }` (60 s), 404 |
-| PATCH | `/api/admin/applications/{id}/approve` | admin | none | admin-action | **1 retry-report-pending** | 200 synced · 202 `identitySync: pending\|failed` · 409 `ApplicationNotReviewable` |
-| PATCH | `/api/admin/applications/{id}/reject` | admin | none | admin-action | **1** | same; `reason` required |
-| PATCH | `/api/admin/applications/{id}/reopen` | admin | none | admin-action | **1** (Identity `pending`) | 200 · 202 · 409 `ApplicationNotReviewable` |
+| GET | `/api/admin/applications` | admin | none | — | 2 degrade | `status` filter (default `submitted`), oldest `(submittedAt, id)` first, signed keyset cursor; doctor block degrades to nulls; 400 bad filter/cursor |
+| GET | `/api/admin/applications/{id}` | admin | none | `verification.documents_viewed` (metadata only) | 2 degrade | 200 with document metadata, no URL; 404 |
+| POST | `/api/admin/applications/{id}/documents/{documentId}/download-url` | admin | none; document must belong to the application | `verification.document_url_issued` per issue | — | 200 `{ url, expiresAt }` (60 s), 404 |
+| PATCH | `/api/admin/applications/{id}/approve` | admin | none | `verification.approved`, `identity_sync.*` | **1 retry-report-pending** | 200 synced · 202 `identitySync: pending\|failed` · 409 `ApplicationNotReviewable`, or `Conflict` + `Retry-After: 5` while `identity_sync_status='pending'` · 422 |
+| PATCH | `/api/admin/applications/{id}/reject` | admin | none | `verification.rejected`, `identity_sync.*` | **1** | same; `reason` required |
+| PATCH | `/api/admin/applications/{id}/reopen` | admin | none | `verification.reopened`, `identity_sync.*` | **1** (Identity `pending`) | 200 · 202 · 409 `ApplicationNotReviewable` · 422; `reason` required |
 
 `{id}` is the application id = doctor profile id.
 

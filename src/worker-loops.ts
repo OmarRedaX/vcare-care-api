@@ -18,6 +18,6 @@ export function buildWorkerLoops(deps: WorkerLoopDeps): WorkerLoop[] {
             monthsAhead: deps.env.AUDIT_PARTITION_MONTHS_AHEAD,
         }),
         buildIdentitySyncLoop({ service: verification, logger: deps.logger, pollSeconds: deps.env.IDENTITY_SYNC_POLL_SECONDS }),
-        buildUploadIntentPurgeLoop({ service: verification, db: deps.db, logger: deps.logger }),
+        buildUploadIntentPurgeLoop({ service: verification, db: deps.db, logger: deps.logger, intervalSeconds: deps.env.UPLOAD_INTENT_PURGE_SECONDS }),
     ];
 }

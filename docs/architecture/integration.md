@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-03
+last_verified: 2026-10-08
 tags: [integration, identity, service-token, case-1, case-2, case-3, case-4, notifications]
 related: [resilience, rbac, runbook, adr-0004-cross-service-failure-policies, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, future, hub-adr-0006-doctor-account-status-via-care-only, hub-adr-0009-doctor-reinstatement-via-care, hub-adr-0010-notification-contact-lookup]
 ---
@@ -66,7 +66,7 @@ sequenceDiagram
     participant DB as Care DB
     participant ID as Identity
     A->>C: PATCH /admin/applications/12/approve
-    C->>DB: BEGIN; verification_status='approved', reviewed_by, review_note, decided_at,<br/>identity_sync_status='pending'; audit verification.approved; COMMIT
+    C->>DB: BEGIN; verification_status='approved', reviewed_by, review_note, decided_at,<br/>identity_sync_status='pending';<br/>INSERT identity_sync_jobs (kind=verification, status=pending); audit verification.approved; COMMIT
     loop up to 3 attempts, 2 s timeout, backoff 200 ms·2^n ±20%
         C->>ID: PATCH /internal/users/204/status {status: active, reason, actorUserId}
     end
@@ -74,7 +74,7 @@ sequenceDiagram
         C->>DB: identity_sync_status='synced'
         C-->>A: 200 application
     else transient failures exhausted
-        C->>DB: INSERT identity_sync_jobs (kind=verification, status=pending, next_attempt_at)
+        C->>DB: job stays pending; next_attempt_at = now + backoff
         C-->>A: 202 { identitySync: "pending" }
         Note over C: background retrier continues; alert IdentityApprovalSyncPending after 15 min
     else 409 InvalidStatusTransition (non-retryable)
@@ -86,6 +86,8 @@ sequenceDiagram
 - The decision is **kept** in every branch; Identity owns the account state, Care owns the medical judgment.
 - The doctor is **not bookable** until `verification_status='approved'` **and** `identity_sync_status='synced'`.
 - Identity's status PATCH is idempotent, so blind retries are safe.
+- **As built (verification, 2026-10-08):** the `identity_sync_jobs` row is inserted in the decision transaction, so there is no crash window and no sweeper for Case 1. One open job per doctor (a newer decision supersedes it). Inline and worker attempts for one doctor serialize on a session-scoped per-doctor advisory lock and re-check that the job is still the current pending one; a stale job is marked `superseded` and never sent. The worker (`identity-sync` loop, `--once identity-sync`) reads due jobs without `SKIP LOCKED` and makes one attempt per job per tick, honouring `next_attempt_at` inside the lock. Approve/reject answer `409 Conflict` + `Retry-After: 5` while `identity_sync_status='pending'` (an unapplied resubmit/reopen), because superseding that job would send Identity `rejected -> active`, which it refuses. Worker retries build no response view, so they make no Case-2 call.
+- **Known environment dependency:** real Identity does not yet serve `GET /internal/users` or `PATCH /internal/users/{id}/status` (its internal-users module is pending). Until it lands, Case 1 against real Identity keeps the decision, answers `202 identitySync: pending`, and the worker retries on `404`; Case 2 degrades to `profileHydrated: false`. Care needs no change when it lands.
 
 ## Case 2 — Batch profile hydration (degrade, never fail)
 Used by search, doctor profile, consultation lists, waiting room, calendar, the admin application queue.

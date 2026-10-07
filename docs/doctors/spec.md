@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 module: doctors
 status: implemented
-version: 1.1.0
+version: 1.2.0
 diataxis: reference
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [spec, doctors, onboarding, profile, specialties, validation, rate-limit, idempotency, audit, migration]
 related: [doctors-brainstorm, specialties-spec, access-spec, foundation-spec, rbac, data-model, api, integration, adr-0004-cross-service-failure-policies, adr-0012-doctor-reinstatement, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 contracts: [contracts/openapi.yaml]
@@ -765,3 +765,4 @@ Applied in `/develop` step 0 (descriptions, extensions, and one `maximum`; no op
 - `DOCTOR_PROFILE_COLUMNS` also selects `suspended_by` and `suspension_reason` beyond the list in §3.7. They stay on the entity and do not appear in either response. The timezone validator and `canonicalIanaTimezone` live together in `lib/validation/timezone-decorator.ts`; ICU canonicalization accepts case variants and may preserve aliases. ADR 0019 records the installed `luxon` dependency, superseding §1's statement that no new ADR was needed.
 - `GET /me/application` returns the contract's degraded `doctor` fields (`displayName` and `avatarUrl` null, `profileHydrated: false`), an empty `documents` array, and missing license/id requirements while the application is draft or rejected. `isBookable` uses the Domain-rule-6 function with the active-consultation-type term set to false until schedules exist.
 - The code review found no findings. The doctors unit/integration tests were green and the 2026-10-07 CURL QA recorded 37 HTTP cases plus one replay-data comparison, all passing (38 checks). No contract correction was needed for this built slice beyond C1–C3 already made in step 0.
+- **Superseded by verification (2026-10-08).** The dormant `submit` rule (D1, §3.7, `SubmitRequiresDocuments`) and the O4 allowance to edit a `submitted` profile are replaced: `submit=true` is now live and delegates to the verification service (draft submit is local; a rejected resubmit uses Case 1 and may answer `202 identitySync`), a submitted application locks profile edits with `409 ApplicationNotEditable`, and `GET /me/application` returns metadata-only documents with Identity name and avatar hydrated (null on degrade). The `SubmitRequiresDocuments` constant no longer exists; a missing license or id is a `400 ValidationFailed` with field `documents` raised by the verification service. See [verification spec](../verification/spec.md) §6 and §16.

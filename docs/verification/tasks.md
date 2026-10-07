@@ -3,7 +3,7 @@ title: verification — Tasks
 owner: care-team
 service: care-service
 module: verification
-status: in-progress
+status: implemented
 diataxis: how-to
 last_verified: 2026-10-08
 tags: [tasks, verification]
@@ -35,9 +35,9 @@ related: [verification-spec, verification-brainstorm]
 - [x] (step 3 · lib) Build Identity token, status, batch hydration client and DTOs.
 - [x] (step 4 · module) Add verification enums, errors, types, entities, DTOs, repositories and policies.
 - [x] (step 4 · module) Implement verification service transitions and doctors submit/read/edit collaboration.
-- [~] (step 5 · runtime) Add worker loops, DI registration, routes and mounts. API wiring is done; worker loops remain for the separate task.
+- [x] (step 5 · runtime) Add worker loops (`identity-sync`, `upload-intent-purge`), DI registration, routes and mounts; worker deps, `--once` mode and pool close path done.
 - [x] (step 5 · runtime) Wire request id, rate limit, idempotency and audit behavior for the API routes.
-- [~] (step 6 · test) Add unit, integration, concurrency, RBAC, contract and MinIO suites.
-- [~] (step 7 · qa/docs) CURL manual QA done 2026-10-08 (274 pass / 0 fail, see manual-qa.md; one low-severity worker finding open); as-built module and service docs/card still pending `/update-docs`.
-- [ ] (step 7 · qa/docs) Hand off hub documentation and sync deltas.
+- [x] (step 6 · test) Add unit, integration, concurrency, RBAC, contract and MinIO suites (final: unit 1154, integration 489 green on 2026-10-08).
+- [x] (step 7 · qa/docs) CURL manual QA done 2026-10-08 (274 pass / 0 fail, see manual-qa.md); the low-severity worker-hydration finding was fixed in `fac9c08`. As-built notes, service card, INDEX and architecture shards reconciled by `/update-docs` on 2026-10-08.
+- [~] (step 7 · qa/docs) Hub documentation deltas handed to the lead as a precise list (landscape, deployment, capacity, glossary) and the Identity internal-users dependency; hub branch edits and `../vcare-hub/scripts/sync-from-spoke.sh` remain open until the lead applies them.
 - [x] (step 6 · test) Fix review 20261008-1500: pending-sync guard, ETag-bound promote, no idempotency on URL routes, session-lock and rate-limit tests, keyset index use, worker backoff re-check, layering and logging items (typecheck, lint, unit and full integration suites green).

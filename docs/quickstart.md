@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-10-04
+last_verified: 2026-10-08
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -13,16 +13,15 @@ related: [infrastructure, api, integration, scheduling-slots, foundation-spec, a
 
 From zero to a running service on your machine, then (once the modules exist) to a booked consultation.
 
-> **Built today (foundation 2026-09-28, access 2026-10-02, specialties 2026-10-04):** both listeners, the four health
+> **Built today (foundation 2026-09-28, access 2026-10-02, specialties 2026-10-04, doctors 2026-10-05, verification 2026-10-08):** both listeners, the four health
 > probes, migrations (incl. `audit_logs`, the app database role, and the `specialties` table with its 20-row synthetic
 > starter catalog), user-token verification against Identity's JWKS, the worker with its `audit-partitions` loop, and
-> the specialty catalog routes `GET/POST /api/specialties`, `PATCH /api/specialties/{id}` (they need a user token from
-> a running Identity — see `scripts/curl-test-specialties.sh` for a full example). Steps 1–3 work now. Steps 4–9 are marked `(planned)`: they show the intended shape once the business
+> the specialty catalog routes, doctor onboarding, and verification (verified document upload, submission, admin queue and decision, the `identity-sync` and `upload-intent-purge` worker loops). They need a user token from a running Identity — see `scripts/curl-test-specialties.sh` and `scripts/curl-test-verification.sh` for full examples. Case 1 additionally needs an Identity that serves `/internal/users` and `/internal/users/{id}/status`; real Identity does not yet (its internal-users module is pending), so use a contract-compliant shim, or accept `202 identitySync: pending`. Steps 1–3 work now. Steps 4–9 are marked `(planned)`: they show the intended shape once the business
 > modules are built through the workflow. All ids and text below are synthetic.
 
 ## 1. Prerequisites
 - Node.js 24 LTS (`engines` is `>=24 <25`, enforced by `engine-strict`)
-- Docker with Compose — the local stack runs PostgreSQL 17 (with `btree_gist`) and Redis 7
+- Docker with Compose — the local stack runs PostgreSQL 17 (with `btree_gist`), Redis 7, and MinIO (S3 for verification uploads; a digest-pinned community build, [ADR 0020](./adr/0020-local-s3-emulator-image.md))
 - For steps 4–9 only `(planned)`: a running identity-service on `3000` (public, JWKS) and `3100` (internal), or a
   local fake built from `../vcare-hub/contracts/identity-service.openapi.yaml` that serves JWKS,
   `/internal/auth/token`, `/internal/users`, and `/internal/users/:id/status`, plus a service client registered in
@@ -43,6 +42,15 @@ MIGRATION_DATABASE_URL=postgres://care:care@localhost:5433/care      # OWNER: on
 DATABASE_URL=postgres://care_app:care_app@localhost:5433/care         # APP login (care_app): care-api, care-worker
 REDIS_URL=redis://localhost:6380
 IDENTITY_JWKS_URL=http://localhost:3000/.well-known/jwks.json         # wherever your local identity public listener runs
+IDENTITY_INTERNAL_URL=http://localhost:3100                           # Identity internal listener (service token, users, status)
+SERVICE_CLIENT_ID=care-local-synthetic                                # synthetic; register the same client in Identity
+SERVICE_CLIENT_SECRET=synthetic-local-service-secret
+STORAGE_BUCKET=care-private                                           # MinIO from compose; private bucket
+STORAGE_REGION=us-east-1
+STORAGE_ENDPOINT=http://localhost:9002
+STORAGE_ACCESS_KEY_ID=care-local
+STORAGE_SECRET_ACCESS_KEY=synthetic-minio-secret
+STORAGE_FORCE_PATH_STYLE=true
 AUDIT_PARTITION_MONTHS_AHEAD=2
 CORS_ORIGINS=http://localhost:5173                       # honoured only in development
 ```
@@ -51,8 +59,7 @@ The two database URLs must name **different** roles: migrations run as the owner
 ([ADR 0018](./adr/0018-db-role-split-explicit-grants-partition-function.md)). Neither URL may carry `options`,
 `statement_timeout`, `query_timeout`, or `application_name` in its query string. `IDENTITY_JWKS_URL` has no default:
 Care boots without Identity (readiness shows `identityJwks: "down"`), but every authenticated request answers `401`
-until the JWKS can be fetched. The remaining Identity variables (`IDENTITY_INTERNAL_URL`, `SERVICE_CLIENT_ID`,
-`SERVICE_CLIENT_SECRET`, …) arrive with the modules that use them `(planned)`. If a value is invalid, the process
+until the JWKS can be fetched. `IDENTITY_INTERNAL_URL`, `SERVICE_CLIENT_ID`, `SERVICE_CLIENT_SECRET` and the `STORAGE_*` variables are required (verification, 2026-10-08); the TTL and worker-interval variables have defaults (see the full list in the infrastructure shard). If a value is invalid, the process
 exits at once with one `invalid_environment` line naming the key (see [runbook.md](./runbook.md) → Boot and
 shutdown log lines).
 
@@ -61,16 +68,17 @@ shutdown log lines).
 ### Option A — app on the host (hot reload)
 ```bash
 npm install
-docker compose up -d postgres redis   # Postgres 127.0.0.1:5433, Redis 127.0.0.1:6380 (host loopback only)
+docker compose up -d postgres redis minio minio-setup   # Postgres 127.0.0.1:5433, Redis 127.0.0.1:6380, MinIO 127.0.0.1:9002 (host loopback only); Git Bash: prefix with MSYS_NO_PATHCONV=1
 npm run migrate                       # as the owner: btree_gist, the vcare_app role, audit_logs + partitions
 npm run migrate:ensure-app-login      # creates/updates the care_app login from DATABASE_URL
 npm run dev                           # public listener :3001, internal listener 127.0.0.1:3101
-npm run dev:worker                    # care-worker: the audit-partitions loop (daily; first tick at start)
+npm run dev:worker                    # care-worker: audit-partitions (daily), identity-sync (10 s), upload-intent-purge (5 min)
+# one tick of a loop: npm run build && node dist/worker.js --once identity-sync   (or upload-intent-purge)
 ```
 
 ### Option B — everything in containers
 ```bash
-docker compose up -d --build          # postgres, redis, migrate (one-off: latest + ensure-app-login), care-api, care-worker
+docker compose up -d --build          # postgres, redis, minio (+ minio-setup), migrate (one-off: latest + ensure-app-login), care-api, care-worker
 ```
 The containers reach a host-run Identity at `host.docker.internal:3000`; override with `IDENTITY_JWKS_URL=… docker
 compose up -d`.
@@ -128,7 +136,7 @@ ADMIN=$(curl -s -X POST http://localhost:3000/api/auth/login \
 ```
 The patient must have a verified email (`ev=true`) to book.
 
-## 5. Admin approves a doctor (Integration Case 1) (planned)
+## 5. Admin approves a doctor (Integration Case 1)
 A seeded doctor (user id `204`) has submitted an application (profile id `12`):
 ```bash
 curl -s -X PATCH http://localhost:3001/api/admin/applications/12/approve \
@@ -138,7 +146,8 @@ curl -s -X PATCH http://localhost:3001/api/admin/applications/12/approve \
 ```
 - `200` → Identity confirmed the account is `active`; the doctor becomes bookable once they have hours and a type.
 - `202` with `identitySync: "pending"` → Identity was unreachable; the decision is kept and a retry job runs.
-  The doctor stays **unbookable** until synced. Stop your Identity fake to see this path.
+  The doctor stays **unbookable** until synced. Stop your Identity fake to see this path; `node dist/worker.js --once identity-sync` retries once. Against real Identity today this is always the outcome (its internal status route is not deployed yet).
+- `409` with `Retry-After: 5` → the account is still `pending` from a resubmit/reopen that has not reached Identity; retry after the sync.
 
 ## 6. Search doctors (planned)
 ```bash

@@ -33,7 +33,7 @@ describe("verification worker loops", () => {
             purgeExpiredIntent: jest.fn().mockImplementation((id: number) => id === 2 ? Promise.reject(new Error("synthetic storage failure")) : Promise.resolve()),
             deleteIntentsOlderThan: jest.fn().mockResolvedValue(3) } as unknown as VerificationService;
         const db = { client: { config: { pool: { max: 2 } }, acquireConnection: jest.fn().mockResolvedValue({}), releaseConnection: jest.fn() }, raw: jest.fn().mockReturnValue({ connection: jest.fn().mockResolvedValue({ rows: [{ acquired: true }] }) }) } as unknown as Knex;
-        const loop = buildUploadIntentPurgeLoop({ service, db, logger, now: () => new Date("2026-10-07T00:00:00Z") });
+        const loop = buildUploadIntentPurgeLoop({ service, db, logger, intervalSeconds: 300, now: () => new Date("2026-10-07T00:00:00Z") });
         await expect(loop.tick(signal())).resolves.toBe("incomplete");
         expect(service.purgeExpiredIntent).toHaveBeenCalledTimes(2);
         expect(service.deleteIntentsOlderThan).toHaveBeenCalledWith(new Date("2026-09-30T00:00:00Z"), 500);

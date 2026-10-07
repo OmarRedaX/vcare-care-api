@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-03
+last_verified: 2026-10-08
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
 related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement]
 ---
@@ -76,15 +76,18 @@ sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises
 - Hydration never runs on the booking path.
 
 ## Cases 1 and 3 — durable retry jobs (`identity_sync_jobs`)
-- The job row is inserted when inline attempts are exhausted, in its own transaction after the decision commit.
-  A crash between the decision commit and the job insert is covered by a sweeper: profiles with
-  `identity_sync_status='pending'` and no open job older than 60 s get a job.
-- The retrier loop runs in `care-worker` ([ADR 0008](../adr/0008-care-worker-component.md)) and polls `status='pending' AND next_attempt_at <= now()` with
-  `FOR UPDATE SKIP LOCKED`, so multiple instances never double-send (and double-send would be harmless anyway).
+- **Case 1 (built, verification 2026-10-08):** the job row is inserted in the decision transaction itself (including
+  when the inline attempt then succeeds), so there is no crash window and no sweeper. **Case 3/4 (planned):** the job
+  is inserted when inline attempts are exhausted; a sweeper covers the crash window (profiles with
+  `identity_sync_status='pending'` and no open job older than 60 s get a job).
+- The retrier loop runs in `care-worker` ([ADR 0008](../adr/0008-care-worker-component.md)) and polls `status='pending' AND next_attempt_at <= now()`. As built for
+  Case 1 it is a plain read: a session-scoped per-doctor advisory lock (shared with the inline path) plus a re-check of
+  the job and its `next_attempt_at` inside the lock mean two workers never send for one doctor at once and never retry
+  before a backoff elapses (a double-send would be harmless anyway, Identity's PATCH is idempotent). Worker retries make one attempt per job per tick and build no response view.
 - On success: job `succeeded`, `doctor_profiles.identity_sync_status='synced'`, audit `identity_sync.synced`
   (actor role `system`), caches invalidated (a newly synced approved doctor becomes searchable).
 - On transient failure: `attempts++`, `consecutive_failures++`, `next_attempt_at = now + min(backoff, cap)`
-  (Case 1 cap 5 min, Case 3 cap 60 s).
+  (as built `IDENTITY_SYNC_RETRY_CAP_SECONDS=60` for Case 1; Case 3 cap 60 s).
 - A newer decision for the same doctor supersedes the open job (`superseded`) in the same transaction.
 - Jobs survive restarts because they live in Postgres, not in memory.
 
@@ -100,6 +103,8 @@ sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises
 | `ExclusionViolationSpike` | `23P01` > 20/min | ticket |
 | `AuditWriteFailures` | any audit insert failure | page |
 | `HealthCheckFailing` | `/api/health/ready` 503 for 2 min | page |
+
+**As built for Case 1 (verification, 2026-10-08):** `IdentitySyncTransitionRejected` is an `error` log line (`IdentitySyncTransitionRejected`, with `jobId` and `profileId`, no reason or body) written when the job and profile move to `failed`; `IdentityApprovalSyncPending` is an `error` log line written once, by the first retry attempt that crosses `IDENTITY_SYNC_ALERT_AFTER_SECONDS` (900 s) after the job was created. Alert rules match those log events; a metric is not emitted. `UploadVerificationFailureSpike` is described in [file-handling.md](./file-handling.md) and [deployment.md](./deployment.md).
 
 Runtime alerts added 2026-09-15 (`OutboxLagHigh`, `OutboxDeadJobs`, `DbReplicaLagHigh`, `WorkerHeartbeatStale`,
 `AuditPartitionMissing`, `IdentityReinstatementSyncPending`, `RateLimiterDegraded`, `AvailabilityBudgetBurn`):

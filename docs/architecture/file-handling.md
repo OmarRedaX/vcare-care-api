@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-10-08
 tags: [architecture, files, uploads, downloads, object-storage, s3, security, clinical, audit]
-related: [clinical-records, data-model, api, rbac, infrastructure, deployment, resilience, runbook, adr-0013-verified-direct-upload-lifecycle, adr-0014-on-demand-download-urls, adr-0015-aws-sdk-storage-adapter, hub-adr-0011-object-storage-host]
+related: [verification-spec, clinical-records, data-model, api, rbac, infrastructure, deployment, resilience, runbook, adr-0013-verified-direct-upload-lifecycle, adr-0014-on-demand-download-urls, adr-0015-aws-sdk-storage-adapter, hub-adr-0011-object-storage-host]
 ---
 
 # File Handling — Verification Documents and Record Attachments
@@ -34,8 +34,8 @@ DOWNLOAD
  client ── navigate url ─────────────────▶ S3
 ```
 
-## 2. Contract changes required (provider: care-service; land via `/construct-spec` + `/develop`)
-The current `contracts/openapi.yaml` still has the multipart operations and inline `downloadUrl`; it changes as follows.
+## 2. Contract changes (verification operations applied; record-attachment operations still planned)
+The verification-document rows below are in `contracts/openapi.yaml` (applied 2026-10-07, checked against the routes 2026-10-08); the multipart verification operation and its inline `downloadUrl` are gone. The `record_attachments` rows land with the `records` module.
 
 | Operation | Roles / ownership (`x-roles`, `x-ownership`) | Request | Responses | Audit |
 |---|---|---|---|---|
@@ -85,6 +85,15 @@ object metadata are never read for the decision.
 soft-deleted and audited (`attachment.quarantined` / `verification.document_quarantined`) and alerts — the upload
 lifecycle above does not change.
 
+## 4a. As built for verification documents (2026-10-08)
+The steps above are the design; the shipped `complete` differs in these points ([verification spec](../verification/spec.md) §16):
+- **Serialization** is a session-scoped PostgreSQL advisory lock per intent (replacing the `SELECT … FOR UPDATE` of step 1 for the storage phase); a refused lock answers `409 Conflict` + `Retry-After: 1`. Step 9 locks the intent row `FOR UPDATE` only inside its short transaction. The worker purge takes the same per-intent lock.
+- **Step 8 is bound to the inspected object:** `HEAD` returns the S3 `ETag`; `promote` copies with `CopySourceIfMatch` and the detected content type, so a re-POST to the quarantine key after the checks makes the copy fail (`500`, intent stays open). The adapter does not re-read or re-sniff.
+- **No idempotency middleware** on intent creation and both `download-url` routes; each issued URL writes one audit row first and fails closed on an audit error.
+- **Metrics:** `upload_verification_failed` carries the single label `reason=invalid_file`; `upload_intent_expired` is emitted by the purge; `upload_intent_created` and `download_url_issued` are not emitted yet.
+- **Orphans:** no prefix-scan reconciliation; a rolled-back step 9 deletes its copied final object best-effort (`verification_orphan_cleanup_failed` log on failure) and the bucket lifecycle is the backstop. The expired `quarantine/*` lifecycle (24 h) is configured in local MinIO by `minio-setup`.
+- **Local storage:** dev and test Compose run a digest-pinned MinIO ([ADR 0020](../adr/0020-local-s3-emulator-image.md)); route-level integration tests inject an in-memory storage port, and a separate adapter suite runs against real MinIO.
+
 ## 5. Security and privacy
 - **Presigned POST** (5 min, `UPLOAD_POLICY_TTL_SECONDS`): conditions `key` exact, `content-length-range` 1–`max_bytes`,
   `x-amz-server-side-encryption`; no public ACL possible.
@@ -101,7 +110,7 @@ lifecycle above does not change.
 - **Admins** never receive record attachment URLs (403 by role); they can open verification documents (audited).
 
 ## 6. Operations
-- `care-worker` loop **upload-intent purge** (every 5 min, advisory lock): intents with `consumed_at IS NULL AND
+- `care-worker` loop **upload-intent purge** (built; every 5 min as the constant `INTENT_PURGE_INTERVAL_MS`, singleton advisory lock; `node dist/worker.js --once upload-intent-purge` runs one tick): intents with `consumed_at IS NULL AND
   expires_at < now()` → delete the quarantine object → set `consumed_at`; delete intent rows older than 7 days.
 - Metrics: `upload_intent_created`, `upload_verification_failed{reason}`, `upload_intent_expired`,
   `download_url_issued{kind}`.

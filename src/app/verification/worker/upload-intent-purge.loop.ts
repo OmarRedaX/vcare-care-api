@@ -3,18 +3,18 @@ import type { Logger } from "../../../lib/logger/logger";
 import { withSessionAdvisoryLock } from "../../../lib/knex/session-advisory-lock";
 import type { TickOutcome, WorkerLoop } from "../../../lib/worker/types";
 import type { VerificationService } from "../service/verification.service";
-import { INTENT_PURGE_BATCH, INTENT_PURGE_INTERVAL_MS, INTENT_PURGE_LOCK_NAMESPACE, INTENT_PURGE_LOOP_NAME, INTENT_RETENTION_MS } from "../constants";
+import { INTENT_PURGE_BATCH, INTENT_PURGE_LOCK_NAMESPACE, INTENT_PURGE_LOOP_NAME, INTENT_RETENTION_MS } from "../constants";
 
 /**
  * care-worker loop `upload-intent-purge` (spec §7): singleton under an advisory lock. Expired open intents lose their
  * quarantine object (outside any DB transaction) and are then closed; a storage error leaves the intent open for the
  * next tick. Consumed intents older than seven days are deleted. Orphaned final objects rely on the bucket lifecycle.
  */
-export function buildUploadIntentPurgeLoop(deps: { service: VerificationService; db: Knex; logger: Logger; now?: () => Date }): WorkerLoop {
+export function buildUploadIntentPurgeLoop(deps: { service: VerificationService; db: Knex; logger: Logger; intervalSeconds: number; now?: () => Date }): WorkerLoop {
     const now = deps.now ?? (() => new Date());
     return {
         name: INTENT_PURGE_LOOP_NAME,
-        intervalMs: INTENT_PURGE_INTERVAL_MS,
+        intervalMs: deps.intervalSeconds * 1000,
         tick: async (signal: AbortSignal): Promise<TickOutcome | void> => {
             const ran = await withSessionAdvisoryLock(deps.db, INTENT_PURGE_LOCK_NAMESPACE, 0, async () => {
                 let purged = 0; let failed = 0;

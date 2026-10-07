@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [rbac, authorization, ownership, privacy, security]
 related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -93,12 +93,12 @@ not a policy check.
 |---|---|---|---|
 | `GET /specialties` | patient (active), doctor (pending, active, or rejected — a doctor picks specialties while applying), admin (active) — contract `x-account-state` | none | — |
 | `POST /specialties`, `PATCH /specialties/:id` | admin | none | admin-action |
-| `POST /doctors/apply`, `GET/PATCH /doctors/me`, `GET /doctors/me/application` (live); `POST /doctors/me/documents` (planned) | doctor (pending, active, or rejected) | self — profile by `auth.userId`; `PATCH /me` checks local suspension | `doctor.profile_created` / `doctor.profile_updated` on real writes |
+| `POST /doctors/apply`, `GET/PATCH /doctors/me`, `GET /doctors/me/application`, `DELETE /doctors/me/documents/:documentId` (live) | doctor (pending, active, or rejected) | self — profile by `auth.userId`; `PATCH /me` checks local suspension | `doctor.profile_created` / `doctor.profile_updated` on real writes |
 | `GET /doctors`, `GET /doctors/:doctorUserId`, `GET /doctors/:doctorUserId/slots` | patient, admin | none (patients see bookable doctors only) | — |
 | `GET/PUT /doctors/me/working-hours`, `GET/POST /doctors/me/exceptions`, `DELETE /doctors/me/exceptions/:id`, `GET/POST /doctors/me/consultation-types`, `PATCH /doctors/me/consultation-types/:id` | doctor (active, not suspended) | self; `:id` must belong to the caller's profile, else `deny-not-found` | admin-action when a block with conflicts is confirmed |
-| `GET /admin/applications` | admin | none | — |
-| `GET /admin/applications/:id` | admin | none | admin-action |
-| `PATCH /admin/applications/:id/approve`, `/reject`, `/reopen` | admin | none | admin-action |
+| `GET /admin/applications` (live) | admin | none | — |
+| `GET /admin/applications/:id` (live) | admin | none | `verification.documents_viewed` (metadata only, no URL) |
+| `PATCH /admin/applications/:id/approve`, `/reject`, `/reopen` (live) | admin | none; approve/reject refused with `409 Conflict` + `Retry-After: 5` while `identity_sync_status` is `pending` | `verification.approved|rejected|reopened`, `identity_sync.pending|synced|failed` |
 | `PATCH /admin/doctors/:doctorUserId/suspend` | admin | none | admin-action |
 | `PATCH /admin/doctors/:doctorUserId/reinstate` (planned, ADR 0012) | admin | none | admin-action |
 | `GET /patients/me` | patient | self | clinical-read |
@@ -119,8 +119,8 @@ not a policy check.
 | `POST /records/:id/attachments`, `DELETE /records/:id/attachments/:aid` | doctor | `assigned-doctor`; delete only before lock | clinical-write |
 | `POST /records/:id/attachments/uploads`, `…/uploads/:uploadId/complete` (planned, ADR 0013) | doctor (active, not suspended) | `assigned-doctor`; `complete` also requires intent owner = caller (else `deny-not-found`) and re-checks assignment | clinical-write on complete |
 | `POST /records/:id/attachments/:aid/download-url` (planned, ADR 0014) | patient, doctor | same as `GET /records/:id`; admins 403 | clinical-read (`attachment.url_issued`) |
-| `POST /doctors/me/documents/uploads`, `…/uploads/:uploadId/complete`, `POST /doctors/me/documents/:documentId/download-url` (planned) | doctor (pending, active, or rejected) | self; uploads only while the application is `draft`/`rejected`; intent owner = caller | `verification.document_uploaded` / `verification.document_url_issued` |
-| `POST /admin/applications/:id/documents/:documentId/download-url` (planned) | admin | none | admin-action (`verification.document_url_issued`) |
+| `POST /doctors/me/documents/uploads`, `…/uploads/:uploadId/complete`, `POST /doctors/me/documents/:documentId/download-url` (live) | doctor (pending, active, or rejected) | self; uploads only while the application is `draft`/`rejected`; intent owner = caller | `verification.document_uploaded` / `verification.document_url_issued` |
+| `POST /admin/applications/:id/documents/:documentId/download-url` (live) | admin | none; document must belong to the application | admin-action (`verification.document_url_issued`) |
 | `GET /help-articles`, `GET /help-articles/:id` | patient, doctor, admin | none (published and own audience; admins see drafts) | — |
 | `POST/PATCH/DELETE /help-articles*` | admin | none | admin-action |
 | `GET /audit-logs` | admin | none | — |

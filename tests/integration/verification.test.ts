@@ -313,7 +313,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
     it("should purge expired quarantine objects and close intents with the real service", async () => {
         await profile(); const upload = await intent(); storage.seed(upload.key, PDF);
         await ownerDb("upload_intents").where("id", upload.id).update({ expires_at: new Date(Date.now() - 1000) });
-        const loop = buildUploadIntentPurgeLoop({ service, db, logger });
+        const loop = buildUploadIntentPurgeLoop({ service, db, logger, intervalSeconds: 300 });
         await expect(loop.tick(new AbortController().signal)).resolves.toBe("done");
         expect(storage.has(upload.key)).toBe(false);
         expect((await ownerDb("upload_intents").where("id", upload.id).first()).consumed_at).not.toBeNull();

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -40,7 +40,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `STORAGE_FORCE_PATH_STYLE` | `false` | | Strict `true`/`false`; `true` for MinIO |
 | `UPLOAD_POLICY_TTL_SECONDS` / `UPLOAD_INTENT_TTL_SECONDS` / `DOWNLOAD_URL_TTL_SECONDS` | `300` / `900` / `60` | | Validated positive integers; fixed outside tests |
 | `IDENTITY_SYNC_POLL_SECONDS` / `IDENTITY_SYNC_RETRY_CAP_SECONDS` / `IDENTITY_SYNC_ALERT_AFTER_SECONDS` | `10` / `60` / `900` | | Validated positive integer worker intervals |
-| `UPLOAD_INTENT_PURGE_SECONDS` | `300` | | Validated positive integer worker interval |
+| `UPLOAD_INTENT_PURGE_SECONDS` | `300` | | Validated positive integer: the `upload-intent-purge` loop interval |
 | `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | `CORS_ORIGINS` | `""` (none) | | comma-separated origins (`scheme://host[:port]`, no path), honoured only when `NODE_ENV=development`; production is single-origin with CORS disabled (hub ADR 0005). `.env.example` sets `http://localhost:5173` |
 | `LOG_LEVEL` | `info` | | `debug` \| `info` \| `warn` \| `error`; `debug` is rejected when `NODE_ENV=production` |
@@ -276,7 +276,7 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
   both bounded by `SHUTDOWN_TIMEOUT_MS` (`worker_stop_timeout` and exit 1 on overrun). `node dist/worker.js --once
   <loop>` runs exactly one tick of that loop, closes the pool, and exits 0 (`worker_loop_unknown` / `worker_tick_failed`
   / `worker_once_incomplete` — the tick ran but did not reach its goal, e.g. partitions not ensured or the lock held
-  elsewhere — → exit 1).
+  elsewhere — → exit 1). Loops: `audit-partitions`, `identity-sync`, `upload-intent-purge`. The worker pool has 4 connections (session advisory locks pin some); it also constructs its own Identity and storage clients, closed on stop and on `--once`.
 
 ## Local stack (compose)
 `docker-compose.yml` (`name: vcare-care`): Postgres 17 on `127.0.0.1:5433` and Redis 7 on `127.0.0.1:6380`, both on
@@ -285,7 +285,7 @@ the owner); `care-api` with the public listener
 on `3001` (all host interfaces) and the internal listener on `127.0.0.1:3101`; and `care-worker`. The test stack
 (`docker-compose.test.yml`, `vcare-care-test`) uses `127.0.0.1:5434` (tmpfs) and `127.0.0.1:6381`; the integration
 global setup migrates as the owner and provisions `care_app`. Identity's stack keeps 5432/6379 and 3000/3100;
-`care-api`, `care-worker`, and `migrate` reach its JWKS through `host.docker.internal` (`extra_hosts: host-gateway`).
+`care-api`, `care-worker`, and `migrate` reach its JWKS through `host.docker.internal` (`extra_hosts: host-gateway`). A `minio` service (loopback `9002`, test `9003`) plus a one-shot `minio-setup` job (private bucket, `quarantine/` one-day expiry) provide S3 for verification uploads; start them with `docker compose up -d minio minio-setup` (in Git Bash prefix with `MSYS_NO_PATHCONV=1`). Identity's internal listener (`3100`) must also be running for Cases 1 and 2 (see the environment dependency in [integration.md](./integration.md)).
 
 ## Runtime notes
 The platform deployment topology — edge routing, private network, every service's components, the availability

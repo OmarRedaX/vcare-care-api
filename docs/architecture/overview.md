@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -66,12 +66,12 @@ flowchart LR
 |---|---|
 | Public listener (`PORT=3001`) | `/api/*` — every user-facing route and `/api/health/live`, `/api/health/ready`. Behind the public ingress. |
 | Internal listener (`INTERNAL_PORT=3101`) | `/internal/*` — `GET /internal/doctors/:userId/summary`, `/internal/health/live|ready`. Binds to the private interface; the ingress never routes `/internal`. |
-| `care-worker` (separate component, same image) | Identity-sync retrier, notification outbox, reminder scan, `next-available` refresh, audit partitions ([ADR 0008](../adr/0008-care-worker-component.md), [deployment.md](./deployment.md)). |
+| `care-worker` (separate component, same image) | Identity-sync retrier (built), upload-intent purge (built), audit partitions (built), notification outbox, reminder scan, `next-available` refresh ([ADR 0008](../adr/0008-care-worker-component.md), [deployment.md](./deployment.md)). |
 | PostgreSQL | System of record for everything Care owns. `btree_gist` for the non-overlap exclusion constraint. `TIMESTAMPTZ`, UTC sessions. |
 | Redis | Derived caches (`slots:*`, `next-available:*`, `identity:user:*`), idempotency records (24 h), rate-limit windows. Never a source of truth. |
 | Object storage | Verification documents and record attachments under random keys; uploaded directly by browsers with presigned POSTs and turned into rows only after `complete` verifies the bytes; opened through on-demand, audited 60 s presigned GETs ([file-handling.md](./file-handling.md)). |
 | auth (`lib/auth`) | User-token verification: Identity's JWKS cached in memory (`JwksCache`: 5-minute refresh, demand fetch on an unknown `kid` at most once per minute, keys trusted ≤ 1 h after the last success), `UserTokenVerifier` (jose `jwtVerify`), `userGuard()`. The JWKS fetch is a public-key read on Identity's public listener, not an integration case, so it does not go through identity-client. |
-| identity-client (`lib/identity-client`, planned) | The only code that calls identity-service's internal API: service-token cache, batch hydration (Case 2), status changes (Cases 1, 3, 4). |
+| identity-client (`lib/identity-client`, built for Cases 1 and 2; Cases 3, 4 and contacts planned) | The only code that calls identity-service's internal API: service-token cache, batch hydration (Case 2), status changes (Cases 1, 3, 4). |
 | Video port (`lib/video`) | Creates rooms and issues short-lived per-participant join tokens from a third-party provider. |
 | Email port (`lib/email`) | Sends notifications asynchronously; failure never affects the triggering write. |
 
@@ -81,7 +81,7 @@ flowchart LR
 |---|---|---|---|
 | `specialties` | specialty catalog | `specialties` | — |
 | `doctors` | **Built:** own-profile onboarding, languages and specialty links, accepting toggle, local suspension check. **Planned:** search and suspension writes | `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built) | `SpecialtiesService` for linked specialty validation; identity-client (Case 2/3) and availability later |
-| `verification` | documents, application states, decisions | `verification_documents`, `identity_sync_jobs` | identity-client (Case 1), storage (uploads, download URLs) |
+| `verification` | documents, application states, decisions | `verification_documents`, `upload_intents`, `identity_sync_jobs` (**built**, 2026-10-08) | identity-client (Cases 1, 2), storage (uploads, download URLs) |
 | `schedules` | working hours, exceptions, consultation types, conflict detection | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
 | `consultations` | booking, reschedule, cancel, no-show, lists, calendar | `consultations` | `availability`, `doctors` (bookability), email, identity-client (Case 2) |
@@ -107,7 +107,9 @@ src/lib/            built (foundation): config, di, error, logger, request-id, h
                     built (specialties, 2026-10-04): auth/require-auth, knex/pg-errors (23505 → constraint),
                       http/pagination text + µs timestamp cursors, validation/transforms (ToInt, ToBoolean),
                       validation/string-decorators (CodePointLength, NoControlCharacters)
-                    planned: identity-client, storage (S3 presign/verify), video, email
+                    built (verification, 2026-10-08): identity-client (service token, setUserStatus, getUsersBatch),
+                      storage (S3 port + adapter), knex/session-advisory-lock, http/pagination signed-cursor
+                    planned: video, email
                     may import pkg/; never app/<module>
 src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, utils/uuid.ts, utils/id.ts (built);
                       slots/, utils/interval.ts (planned) — no env, no I/O, no clock (now is passed in)
@@ -170,7 +172,7 @@ answered as an allowed preflight → `404 NotFound`; `express.json` (100 kB); th
 `assertRoutesAuthorized(app.router)`: a route without `authorize`, or without a guard before it, stops the process at
 boot (health is exempt by marker; test-only routers are mounted after the check). `server.ts` starts the JWKS cache
 (one background fetch + the 5-minute interval) and stops it first on shutdown. `care-worker` has its own Postgres pool
-(`care-worker`, 2 connections, as `care_app`) and runs the `audit-partitions` loop. `care-api` and `care-worker` log in
+(`care-worker`, 4 connections, as `care_app`) and runs the `audit-partitions`, `identity-sync` and `upload-intent-purge` loops. `care-api` and `care-worker` log in
 as `care_app` (member of `vcare_app`); only `care-migrate` holds the owner credential
 ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)).
 

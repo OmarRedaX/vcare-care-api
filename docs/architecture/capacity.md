@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-09-28
+last_verified: 2026-10-08
 tags: [architecture, capacity, sizing, load, storage, redis]
 related: [deployment, infrastructure, data-model, scheduling-slots, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, hub-capacity]
 ---
@@ -58,7 +58,7 @@ Case 2 hydration reaching Identity and JWKS/service-token load are platform numb
   audit and outbox rows.
 - **Connections:** each `care-api` task opens up to `DATABASE_POOL_MAX` request connections **plus 1** for the
   readiness probe pool (`application_name=care-api-probe`, foundation 2026-09-28); the worker is budgeted at 5
-  (it has no pool yet); `care-migrate` uses 1 during a release.
+  (its pool max is 4 since verification); `care-migrate` uses 1 during a release.
 
   | `DATABASE_POOL_MAX` | Per API task | 2 tasks + worker | 6 tasks + worker |
   |---|---|---|---|

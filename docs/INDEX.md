@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -32,12 +32,12 @@ Diátaxis type — a label, not a folder tree.
 | [architecture/consultation-lifecycle.md](./architecture/consultation-lifecycle.md) | understand statuses, transitions, windows, reschedule/cancel/leave flows | explanation |
 | [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records, the 24 h lock, amendments, attachments, clinical audit | explanation |
 | [architecture/rbac.md](./architecture/rbac.md) | check who may call a route and what they see | reference |
-| [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–3 with identity-service | explanation |
+| [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–4 with identity-service, including the as-built Case 1 job and worker behavior and the Identity internal-users dependency | explanation |
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts (Postgres, Redis, HTTP, shutdown), Postgres failure modes, retries, degrade policies, idempotency, durable jobs | explanation |
-| [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars (implemented vs planned), database and Redis connection settings, logging and redaction, error envelope, health, request ids, boot and shutdown, the local compose stack | reference |
+| [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars (implemented vs planned), database and Redis connection settings, logging and redaction, error envelope, health, request ids, boot and shutdown, worker loops and `--once`, the local compose stack (Postgres, Redis, MinIO) | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics, alerts | explanation |
 | [architecture/capacity.md](./architecture/capacity.md) | check Care's load, compute, database, storage, Redis sizing, 10× check | explanation |
-| [architecture/file-handling.md](./architecture/file-handling.md) | understand document/attachment uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, required contract changes | explanation |
+| [architecture/file-handling.md](./architecture/file-handling.md) | understand document/attachment uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, contract changes, and the as-built verification deviations (§4a) | explanation |
 | [architecture/future.md](./architecture/future.md) | see deferred work: events, Phase-2 AI (Care's side), scale, out of scope | explanation |
 
 ## Decisions (ADRs, append-only)
@@ -87,8 +87,9 @@ spec, tasks, manual-qa; `reviews/` exists only while a review has open findings)
 | [doctors/tasks.md](./doctors/tasks.md) | see completed doctors implementation, tests, manual QA, and docs tasks by build step | how-to |
 | [doctors/manual-qa.md](./doctors/manual-qa.md) | see the 2026-10-07 CURL run of all four doctors onboarding endpoints (38 pass, 0 fail), including RBAC, ownership isolation, response shapes, validation, idempotency, suspension, and rate limiting; re-run with `scripts/curl-test-doctors.sh` | how-to |
 | [verification/brainstorm.md](./verification/brainstorm.md) | see the agreed scope of the `verification` module (document upload via intents, live `submit`, admin queue/approve/reject/reopen, Case 1 with a real `identity_sync_jobs` worker loop, new `lib/identity-client` and `lib/storage`, MinIO for adapter tests; search-cache invalidation deferred) | explanation |
-| [verification/spec.md](./verification/spec.md) | build or change verification: direct upload and audited download routes, application transitions, Case 1 sync jobs and Case 2 hydration, exact migrations, storage/Identity ports, worker loops, contract edits C1–C6, test plan and build order | reference |
-| [verification/tasks.md](./verification/tasks.md) | track verification build steps and phase A completion | how-to |
+| [verification/spec.md](./verification/spec.md) | build or change verification (v1.1.0, implemented): direct upload and audited download routes, application transitions, Case 1 sync jobs and Case 2 hydration, exact migrations, storage/Identity ports, worker loops, contract edits C1–C6, test plan; §16 As-built notes list the review-driven deviations (pending-sync guard, ETag-bound promote, plain-read worker claim, two-phase keyset), the metrics and env gaps, and the Identity internal-users environment dependency | reference |
+| [verification/tasks.md](./verification/tasks.md) | see the verification build steps (all done except the hub hand-off), its tests (unit 1154, integration 489) and the fix-review pass | how-to |
+| [verification/manual-qa.md](./verification/manual-qa.md) | see the 2026-10-08 CURL run of all verification endpoints (274 pass, 0 fail) on MinIO and a contract-compliant Identity shim — RBAC, upload verification, decisions, Case 1 outage and worker convergence, 410/404 paths, rate limit — plus its findings (real Identity lacks the internal users routes); re-run with `scripts/curl-test-verification.sh` | how-to |
 | [access/spec.md](./access/spec.md) | build or use the access base: JWKS cache and `userGuard()`, the `Policy` shape and `authorize` step order, the boot route assertion, `AuditRecorder.record(trx, entry)`, the `audit_logs` migrations, DB roles (`care` / `vcare_app` / `care_app`, `ensure-app-login`), the worker `audit-partitions` loop, `checks.identityJwks`, env additions, the fixes for #5 #6 #10 #11, the test plan, the decided contract edits C1/C2, the `audit` module hand-off (read indexes deferred), and §15 As-built notes (stricter boot assertion, column-level `INSERT`, `ensure-app-login` refusals, Redis socket timeout, final test counts) | reference |
 
 ## Contract (source of truth — prose above derives from it)

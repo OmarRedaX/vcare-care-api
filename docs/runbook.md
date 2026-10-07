@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-03
+last_verified: 2026-10-08
 tags: [runbook, operations, on-call, care]
 related: [resilience, integration, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -15,7 +15,7 @@ Task-oriented doc for on-call. The foundation is built (2026-09-28): health prob
 under "Boot and shutdown log lines" are live. The access base is built (2026-10-02): user-token verification against
 Identity's JWKS, `authorize`, the boot route assertion, `audit_logs` with the `audit-partitions` worker loop, and the
 owner/app database roles — their alerts (`IdentityJwksStale`, `AuditPartitionMissing`, `AuditWriteFailures`) and
-tasks below are live. Business alerts and the SQL for module tables are the intended shape once those modules exist.
+tasks below are live. Verification is built (2026-10-08): the `identity-sync` and `upload-intent-purge` worker loops, the Case 1 alerts (`IdentityApprovalSyncPending`, `IdentitySyncTransitionRejected`), `UploadVerificationFailureSpike`, and the sync-job and upload-intent queries below are live. Other business alerts and the SQL for module tables are the intended shape once those modules exist.
 
 > **Clinical data never leaves the system.** Tickets, chat, and incident notes carry **ids, statuses, and
 > request ids only** — never complaint text, record contents, names, object keys, presigned URLs, or tokens. Admin DB access
@@ -35,8 +35,8 @@ tasks below are live. Business alerts and the SQL for module tables are the inte
 | Alert | Severity | Trigger | Likely cause | First action |
 |---|---|---|---|---|
 | `IdentitySuspensionSyncFailing` | **page** | a Case 3 `identity_sync_jobs` row has 3 consecutive failed attempts | Identity internal listener down, network policy, expired service client secret | Confirm the doctor is locally suspended (bookings blocked). Check `GET http://<identity>:3100/internal/health/ready`, then Identity's on-call. Inspect the job (below). Do **not** tell the reporter sessions are revoked until the job succeeds. |
-| `IdentitySyncTransitionRejected` | **page** | Identity answered `409 InvalidStatusTransition` to a Case 1 or Case 3 status change; `identity_sync_status='failed'` | Drift: an ops/manual change made outside Care (Identity's admin API refuses doctor targets since hub ADR 0006), or an unexpected state | Retrying cannot fix it. Read both sides' state (Care: `doctor_profiles`; Identity: admin user view). Reconcile with the Identity owner, then requeue the job (below). For a suspension, ask Identity on-call to revoke the doctor's sessions manually meanwhile. |
-| `IdentityApprovalSyncPending` | ticket | a Case 1 job is unsynced for > 15 minutes | Identity degraded | Doctor stays unbookable (correct). Check Identity health; the retrier continues. Requeue after recovery if `next_attempt_at` is far out. |
+| `IdentitySyncTransitionRejected` | **page** | Identity answered `409 InvalidStatusTransition` to a Case 1 or Case 3 status change; `identity_sync_status='failed'` | Drift: an ops/manual change made outside Care (Identity's admin API refuses doctor targets since hub ADR 0006), or an unexpected state | Log line `IdentitySyncTransitionRejected` (error, `jobId`, `profileId`). Retrying cannot fix it. Read both sides' state (Care: `doctor_profiles`; Identity: admin user view). Reconcile with the Identity owner, then requeue the job (below). For a suspension, ask Identity on-call to revoke the doctor's sessions manually meanwhile. |
+| `IdentityApprovalSyncPending` | ticket | a Case 1 job is unsynced for > 15 minutes | Identity degraded | Doctor stays unbookable (correct). Check Identity health; the `identity-sync` loop continues (one attempt per due job per tick). Log line `IdentityApprovalSyncPending` (error, `jobId`, `profileId`). If Identity answers `404` on `/internal/users/{id}/status`, its internal-users module is not deployed yet (known environment dependency): Care keeps retrying and nothing is wrong in Care. Requeue after recovery if `next_attempt_at` is far out, or run `node dist/worker.js --once identity-sync`. While the job is unsynced, admin approve/reject answer `409 Conflict` + `Retry-After: 5` by design. |
 | `IdentityHydrationDegraded` | ticket | `identity_hydration_degraded` > 5 % of hydration calls over 10 min | Identity slow/down, token exchange failing | No user impact beyond missing names (`profileHydrated:false`). Check Identity health and `/internal/auth/token` errors. Never "fix" by failing search. |
 | `SlotComputationLatencyHigh` | ticket | slots endpoint p95 > 300 ms for 10 min | missing index use, cache stampede, a doctor with a huge busy set, DB saturation | `EXPLAIN` the busy-consultations overlap query (must use the GiST index of `excl_consultations_doctor_no_overlap`); check Redis hit rate for `slots:*`; check DB CPU/locks. |
 | `SearchLatencyHigh` | ticket | `GET /api/doctors` p95 > 400 ms for 10 min | `next-available:*` cache misses computed inline, a filter without index, hydration latency | Check `next-available` hit rate; `EXPLAIN` the search query; check Identity batch latency (hydration has a 2 s timeout and 1 retry). |
@@ -51,7 +51,7 @@ tasks below are live. Business alerts and the SQL for module tables are the inte
 | `IdentityJwksStale` | **page** | `jwks_cache_age_s` > 1 800 (no successful JWKS refresh for 30 min; platform alert in hub `architecture/deployment.md` → Observability) | Identity public listener down, `IDENTITY_JWKS_URL` wrong, egress/network policy, a malformed JWKS response | At 3 600 s the cached keys are distrusted and **every authenticated Care request is 401** (health stays 200, `identityJwks: down`). Read `warn jwks_refresh_failed` (`host`, `reason`: `timeout`, `network`, `http_status` + `status`, `content_type`, `too_large`, `invalid_json`, `invalid_document`). `curl -s <IDENTITY_JWKS_URL>` from a Care task; check Identity's `/api/health/ready` and on-call. `error jwks_keys_expired` marks the 1 h crossing. Never "fix" by skipping verification. |
 | `IdentityReinstatementSyncPending` | ticket | a Case 4 job unsynced > 15 min | Identity degraded | Doctor stays unbookable (correct). Check Identity health; the retrier continues. |
 | `RateLimiterDegraded` | ticket | fallback limiter active for 2 min | Redis down or failing over | Check Redis; limits are per instance until it recovers. |
-| `UploadVerificationFailureSpike` | ticket | > 20 `upload_verification_failed` in 10 min | a client build sending wrong files, a client not waiting for the S3 POST before `complete`, or probing | Group by `reason` (`missing`/`size`/`type`) and route; `missing` spikes point at clients, `type` spikes from few users at probing (rate limits apply). No rows were created — nothing to clean beyond quarantine, which the worker purges. |
+| `UploadVerificationFailureSpike` | ticket | > 20 `upload_verification_failed` in 10 min | a client build sending wrong files, a client not waiting for the S3 POST before `complete`, or probing | As built the metric has one label, `reason=invalid_file` (missing object, size, or unrecognized bytes are not distinguished), so correlate by request id and user in the `upload_intents` rows (`consumed_at` set, `result_id` null) and the per-user 20/h intent limit; spikes from few users point at probing, spikes across users at a client build or a client that does not wait for the S3 POST before `complete`. No rows were created — nothing to clean beyond quarantine, which the worker purges. |
 | `AvailabilityBudgetBurn` | **page** | 5xx + readiness failures burning the 99.9 % budget at > 2× over 1 h | any | Correlate with deploys (roll back), Postgres, replica promotion. |
 
 ## Boot and shutdown log lines
@@ -74,7 +74,7 @@ environment or a request.
 | `shutdown_forced` (warn) | a second signal arrived while draining; exit 1 immediately | Check the orchestrator's stop timeout is longer than `SHUTDOWN_TIMEOUT_MS`. |
 | `uncaught_error` (error) | an uncaught exception or unhandled rejection; the task shuts down with exit 1 | A bug: open an issue with the request id and `error.name`/`code`. |
 | `worker_started` / `worker_stopping` (info), `worker_stop_timeout` (error) | `care-worker` lifecycle; the timeout means a loop tick outlived `SHUTDOWN_TIMEOUT_MS` | See `WorkerHeartbeatStale`. |
-| `worker_loop_unknown` / `worker_tick_failed` / `worker_once_incomplete` (error) | `--once <loop>` named no loop, its single tick threw, or the tick ran but did not reach its goal (`audit-partitions`: not ensured, or the lock was held elsewhere); exit 1 | Check the loop name (`audit-partitions`); read `error` for the SQLSTATE, or the preceding `audit_partition_missing` line. |
+| `worker_loop_unknown` / `worker_tick_failed` / `worker_once_incomplete` (error) | `--once <loop>` named no loop, its single tick threw, or the tick ran but did not reach its goal (`audit-partitions`: not ensured, or the lock was held elsewhere); exit 1 | Check the loop name (`audit-partitions`, `identity-sync`, `upload-intent-purge`); read `error` for the SQLSTATE, or the preceding `audit_partition_missing` line. |
 | `route_without_policy: <METHOD> <path>` / `route_without_guard: …` / `handler_before_authorize: …` / `middleware_without_policy: <fn> under <path>` / `param_callback_without_policy: <name> under <path>` / `policy_invalid: …` (inside `boot_failed`) | a route method is mounted without `authorize`, without a guard before it, with a non-guard handler before `authorize`, a router-level layer that is neither a router, an error handler, nor `markPreAuth` middleware, a `router.param` / `app.param` callback (it would run before the guard), or an invalid policy (e.g. a status list containing `suspended`); the process refuses to start | A code defect in the release: roll back. Never work around it by removing the check. |
 | `jwks_refreshed` (info) / `jwks_refresh_failed` (warn) / `jwks_keys_expired` (error) | the JWKS cache loaded `keys` keys (`trigger`: `boot`, `interval`, `stale`, `unknown_kid`, `no_keys`) / a refresh failed (`host`, `reason`, `status?`; previous keys kept) / no successful refresh for 1 h — no key is trusted now | See `IdentityJwksStale`. One `jwks_refresh_failed` at boot while Identity starts is harmless. |
 | `access_denied` (info) | `authorize` denied a request; `reason` (`unauthenticated`, `role`, `status`, `email_unverified`, `check:<name>`, `ownership_not_found`, `ownership_forbidden`) and the route pattern — never ids | Expected traffic; a spike of one reason on one route after a deploy may be a policy regression. |
@@ -154,9 +154,12 @@ UPDATE identity_sync_jobs
 SET status = 'pending', next_attempt_at = now(), consecutive_failures = 0, updated_at = now()
 WHERE id = $1 AND status IN ('pending', 'failed');
 ```
-The retrier picks it up within one poll interval; on success it sets `doctor_profiles.identity_sync_status='synced'`.
+The `identity-sync` loop picks it up within one poll interval (`IDENTITY_SYNC_POLL_SECONDS`, 10 s), or run one tick now with `node dist/worker.js --once identity-sync` (exit 0 when every due job was processed, exit 1 when any failed); on success it sets `doctor_profiles.identity_sync_status='synced'`.
 Confirm with the query above and check the admin console shows the doctor as synced. Log the action in the
 incident with the job id and request id only.
+
+### Run a worker loop once
+`node dist/worker.js --once identity-sync` retries every due Case 1 job once; `--once upload-intent-purge` closes expired open intents (deleting their quarantine objects) and removes intent rows older than 7 days. Both need the worker's normal env (`DATABASE_URL`, Identity and storage variables), use their own pool, and exit 0 on success. `upload-intent-purge` exits 1 (`worker_once_incomplete`) when another worker holds its singleton lock or a storage delete failed; rerun after the cause clears.
 
 ### Move or cancel flagged consultations after a suspension
 1. List the queue: `GET /api/consultations?needsAdminFollowup=true&scope=upcoming` as an admin (admin view has no clinical fields).
@@ -177,7 +180,7 @@ LIMIT 10;
 ```
 - `consumed_at` set and `result_id` null → verification rejected the stored bytes (check `upload_verification_failed`
   by request id); the user uploads again with a real PDF/JPEG/PNG ≤ 10 MB.
-- `consumed_at` null and expired → the client never completed; the worker purge removes the quarantine object.
+- `consumed_at` null and expired → the client never completed; the `upload-intent-purge` loop removes the quarantine object and closes the intent within about 5 minutes (a later `complete` answers `409`).
 - Never read or share the object, its key, or a presigned URL in a ticket.
 
 ### Quarantine not draining
