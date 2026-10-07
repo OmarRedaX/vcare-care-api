@@ -7,10 +7,9 @@ import {
 } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { detectFileType } from "../../pkg/utils/detect-file-type";
 import type { ObjectStorage } from "./object-storage";
 import { StorageError } from "./storage-error";
-import type { DownloadUrl, ObjectHead, S3AdapterOptions, StorageConfig, UploadPolicy } from "./types";
+import type { DownloadUrl, ObjectHead, PromoteExpectation, S3AdapterOptions, StorageConfig, UploadPolicy } from "./types";
 
 const STANDARD_TIMEOUT_MS = 2_000;
 const COPY_TIMEOUT_MS = 10_000;
@@ -72,10 +71,10 @@ export class S3Adapter implements ObjectStorage {
                 new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
                 { abortSignal: AbortSignal.timeout(STANDARD_TIMEOUT_MS) },
             );
-            if (result.ContentLength === undefined) {
+            if (result.ContentLength === undefined || result.ETag === undefined) {
                 throw new StorageError("head");
             }
-            return { sizeBytes: result.ContentLength };
+            return { sizeBytes: result.ContentLength, etag: result.ETag };
         } catch (error) {
             if (isMissing(error)) return null;
             throw new StorageError("head");
@@ -101,11 +100,8 @@ export class S3Adapter implements ObjectStorage {
         }
     }
 
-    async promote(fromKey: string, toKey: string): Promise<void> {
+    async promote(fromKey: string, toKey: string, expected: PromoteExpectation): Promise<void> {
         try {
-            const bytes = await this.readHead(fromKey, 16);
-            const contentType = bytes === null ? null : detectFileType(bytes);
-            if (contentType === null) throw new StorageError("copy");
             // S3 expects one encoded path, not a URL; encode each segment to preserve literal slashes in keys.
             const copySource = `${encodeURIComponent(this.config.bucket)}/${fromKey.split("/").map(encodeURIComponent).join("/")}`;
             await this.client.send(
@@ -113,9 +109,11 @@ export class S3Adapter implements ObjectStorage {
                     Bucket: this.config.bucket,
                     Key: toKey,
                     CopySource: copySource,
+                    // Bind the copy to the object that was inspected: a re-POST to the quarantine key changes the ETag.
+                    CopySourceIfMatch: expected.etag,
                     ServerSideEncryption: "AES256",
                     MetadataDirective: "REPLACE",
-                    ContentType: contentType,
+                    ContentType: expected.contentType,
                 }),
                 { abortSignal: AbortSignal.timeout(COPY_TIMEOUT_MS) },
             );

@@ -10,6 +10,15 @@ export interface UploadPolicy {
 
 export interface ObjectHead {
     sizeBytes: number;
+    /** Opaque version tag of the inspected object (S3 quotes it). Bind a later copy to it with `PromoteExpectation`. */
+    etag: string;
+}
+
+/** What the caller verified: the copy succeeds only if the source is still this exact object. */
+export interface PromoteExpectation {
+    etag: string;
+    /** Detected content type (PDF/JPEG/PNG), written to the promoted object. */
+    contentType: string;
 }
 
 export interface DownloadUrl {
@@ -21,8 +30,8 @@ export interface ObjectStorage {
     createUploadPolicy(key: string, maxBytes: number, ttlSeconds: number): Promise<UploadPolicy>;
     headObject(key: string): Promise<ObjectHead | null>;
     readHead(key: string, byteCount: number): Promise<Uint8Array | null>;
-    /** Copy only. The caller deletes the quarantine key after a successful copy. */
-    promote(fromKey: string, toKey: string): Promise<void>;
+    /** Copy only, bound to the verified object via its ETag. The caller deletes the quarantine key after a successful copy. */
+    promote(fromKey: string, toKey: string, expected: PromoteExpectation): Promise<void>;
     delete(key: string): Promise<void>;
     presignDownload(key: string, contentType: string, ttlSeconds: number): Promise<DownloadUrl>;
 }

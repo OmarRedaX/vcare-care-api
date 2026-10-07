@@ -1,5 +1,7 @@
 import type { UserPolicy } from "../../lib/rbac/types";
+import type { VerificationStatus } from "../doctors/enums";
 import type { DoctorProfile } from "../doctors/entity/doctor-profile.entity";
+import type { DoctorProfileRow } from "../doctors/types";
 import type { VerificationDocumentType, VerificationDocumentStatus, IdentitySyncJobKind, IdentitySyncJobStatus } from "./enums";
 import type { VerificationDocument } from "./entity/verification-document.entity";
 
@@ -13,4 +15,16 @@ export interface DocumentCompletion { document: VerificationDocument; replay: bo
 export interface DecisionResult { view: VerificationApplicationView; status: 200 | 202; identitySync?: "pending" | "failed" }
 export interface SubmitTransition { jobId: number | null }
 export interface QueueCursorPayload { status: string; timestamp: string; id: number }
+export interface QueuePosition { timestamp: string; id: number }
+export type QueueRowShape = DoctorProfileRow & { cursor_timestamp: string | null };
+export interface QueueRow { profile: DoctorProfile; cursorTimestamp: string }
+export interface UploadIntentResult { uploadId: number; url: string; fields: Record<string, string>; expiresAt: string; maxBytes: number }
+export interface ExpiredIntentRef { id: number; quarantineKey: string }
+/** `attemptSync` outcome: which profile was synced, and whether this caller held the per-doctor lock (false = someone else is syncing). */
+export interface SyncAttempt { profileId: number; locked: boolean }
+/** What a resubmit reports back to the doctors service: status only, never an Identity-hydrated view. */
+export interface SyncOutcome extends SubmitSyncResult { profile: DoctorProfile }
+export interface SubmitSyncResult { status: 200 | 202; identitySync?: "pending" | "failed" }
+/** Admin decision written onto `doctor_profiles`; the repository stamps `decided_at` / `submitted_at` with the DB clock. */
+export interface ProfileDecisionChanges { verificationStatus: VerificationStatus; reviewedBy: number | null; reviewNote: string | null; stampDecidedAt: boolean; stampSubmittedAt: boolean }
 export interface VerificationPolicies { createIntent: UserPolicy; complete: UserPolicy; myDownload: UserPolicy; myDelete: UserPolicy; queue: UserPolicy; detail: UserPolicy; adminDownload: UserPolicy; approve: UserPolicy; reject: UserPolicy; reopen: UserPolicy }

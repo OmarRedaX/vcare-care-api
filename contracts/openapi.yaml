@@ -443,7 +443,7 @@ paths:
       operationId: createVerificationUploadIntent
       tags: [doctors-onboarding]
       summary: Create a presigned verification document upload intent
-      description: Draft or rejected applications only. Rate limit 20/hour per doctor. POST directly to the private bucket, then call complete.
+      description: Draft or rejected applications only. Rate limit 20/hour per doctor. POST directly to the private bucket, then call complete. `Idempotency-Key` is not honoured on this operation (the response carries a signed POST policy that is never stored for replay); every call creates a fresh intent.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -452,7 +452,6 @@ paths:
       x-audit-actions: []
       parameters:
         - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       requestBody:
         required: true
         content:
@@ -477,8 +476,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/ApplicationNotEditable'
-        '422':
-          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -532,6 +529,7 @@ paths:
       operationId: getMyVerificationDocumentDownloadUrl
       tags: [doctors-onboarding]
       summary: Issue a 60-second private document download URL
+      description: Every call signs a new URL and writes one `verification.document_url_issued` audit row. `Idempotency-Key` is not honoured on this operation (a signed URL is never stored for replay).
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -540,7 +538,6 @@ paths:
       x-audit-actions: [verification.document_url_issued]
       parameters:
         - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - name: documentId
           in: path
           required: true
@@ -558,8 +555,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
-        '422':
-          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -1261,6 +1256,7 @@ paths:
       operationId: getApplicationDocumentDownloadUrl
       tags: [admin-verification]
       summary: Issue a 60-second private application document download URL
+      description: Every call signs a new URL and writes one `verification.document_url_issued` audit row. `Idempotency-Key` is not honoured on this operation (a signed URL is never stored for replay).
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1269,7 +1265,6 @@ paths:
       x-audit-actions: [verification.document_url_issued]
       parameters:
         - $ref: '#/components/parameters/RequestId'
-        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - $ref: '#/components/parameters/IdPath'
         - name: documentId
           in: path
@@ -1288,8 +1283,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
-        '422':
-          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -1309,6 +1302,10 @@ paths:
         4. A `409 InvalidStatusTransition` from Identity is non-retryable: `identity_sync_status='failed'`, alert
            `IdentitySyncTransitionRejected`, **202** with `identitySync: "failed"`, surfaced in the admin console.
         The doctor is not bookable until `approved` **and** `synced`. Only `submitted` applications are reviewable.
+        While the previous status change (a resubmit or reopen that moved the Identity account back to `pending`) has not
+        reached Identity (`identity_sync_status='pending'`), the decision is refused with `409 Conflict` and `Retry-After: 5`:
+        superseding that unapplied step would ask Identity for a transition it refuses (e.g. `rejected → active`). Retry
+        once the worker has synced.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1340,7 +1337,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/ApplicationNotReviewable'
+          $ref: '#/components/responses/ApplicationDecisionConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -1351,7 +1348,7 @@ paths:
       operationId: rejectApplication
       tags: [admin-verification]
       summary: Reject a submitted application with a reason (Integration Case 1)
-      description: Same sequence as approve with `verification_status='rejected'` and Identity status `rejected`. The local transaction creates a pending sync job and supersedes an older one. Identity 409 marks the job failed; 202 reports pending or failed. `reason` is required.
+      description: Same sequence as approve with `verification_status='rejected'` and Identity status `rejected`. The local transaction creates a pending sync job. Identity 409 marks the job failed; 202 reports pending or failed. `reason` is required. Like approve, refused with `409 Conflict` and `Retry-After: 5` while the account's previous status change has not reached Identity (`identity_sync_status='pending'`).
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1383,7 +1380,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/ApplicationNotReviewable'
+          $ref: '#/components/responses/ApplicationDecisionConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -3569,6 +3566,34 @@ components:
               code: ApplicationNotReviewable
               message: Only submitted applications can be reviewed
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    ApplicationDecisionConflict:
+      description: '`ApplicationNotReviewable` — the application is not in `submitted`. Or `Conflict` with `Retry-After: 5` — the account''s previous status change (resubmit/reopen) has not reached Identity yet (`identity_sync_status=pending`); retry after the delay.'
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            notReviewable:
+              value:
+                success: false
+                error:
+                  code: ApplicationNotReviewable
+                  message: Only submitted applications can be reviewed
+                  requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+            syncPending:
+              value:
+                success: false
+                error:
+                  code: Conflict
+                  message: Conflict
+                  requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ApplicationNotEditable:
       description: '`ApplicationNotEditable` — submitted applications cannot be edited. Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed; retry after the delay.'
       headers:

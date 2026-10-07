@@ -1,16 +1,18 @@
 import type { Knex } from "knex";
 import { db } from "../../../lib/knex/knex";
 import { timestampCursorSelect } from "../../../lib/http/pagination/timestamp-cursor";
-import { DoctorProfile } from "../../doctors/entity/doctor-profile.entity";
+import { DOCTOR_PROFILE_COLUMNS, toDoctorProfile } from "../../doctors/doctor-profile.mapper";
+import type { DoctorProfile } from "../../doctors/entity/doctor-profile.entity";
+import { IdentitySyncStatus, VerificationStatus } from "../../doctors/enums";
 import type { DoctorProfileRow } from "../../doctors/types";
 import { VerificationDocument } from "../entity/verification-document.entity";
 import { IdentitySyncJobStatus } from "../enums";
-import type { IdentitySyncJobRow, QueueQuery, UploadIntentRow, VerificationDocumentRow } from "../types";
+import type { IdentitySyncJobRow, ProfileDecisionChanges, QueuePosition, QueueQuery, QueueRow, QueueRowShape, UploadIntentRow, VerificationDocumentRow } from "../types";
 
+export const QUEUE_NULL_TIMESTAMP = "9999-12-31T23:59:59.999999Z";
 export const DOCUMENT_COLUMNS = ["id", "doctor_profile_id", "type", "object_key", "file_type", "size_bytes", "status", "reviewed_by", "review_note", "created_at", "updated_at", "deleted_at"] as const;
 export const INTENT_COLUMNS = ["id", "kind", "target_id", "owner_user_id", "document_type", "description", "quarantine_key", "max_bytes", "expires_at", "consumed_at", "result_id", "created_at"] as const;
 export const JOB_COLUMNS = ["id", "doctor_profile_id", "doctor_user_id", "kind", "target_status", "reason", "actor_user_id", "request_id", "status", "attempts", "consecutive_failures", "last_error_code", "next_attempt_at", "succeeded_at", "created_at", "updated_at"] as const;
-export const VERIFICATION_PROFILE_COLUMNS = ["id", "user_id", "headline", "bio", "years_experience", "consultation_fee", "currency", "default_slot_minutes", "timezone", "is_accepting_patients", "verification_status", "submitted_at", "reviewed_by", "review_note", "decided_at", "identity_sync_status", "suspended_at", "suspended_by", "suspension_reason", "created_at", "updated_at"] as const;
 
 function toEntity(row: VerificationDocumentRow): VerificationDocument { return new VerificationDocument({ id: row.id, doctorProfileId: row.doctor_profile_id, type: row.type, objectKey: row.object_key, fileType: row.file_type, sizeBytes: row.size_bytes, status: row.status, reviewedBy: row.reviewed_by, reviewNote: row.review_note, createdAt: row.created_at, updatedAt: row.updated_at, deletedAt: row.deleted_at }); }
 export async function findDocument(id: number, conn: Knex = db): Promise<VerificationDocument | undefined> { const row: VerificationDocumentRow | undefined = await conn<VerificationDocumentRow>("verification_documents").select(...DOCUMENT_COLUMNS).where({ id }).whereNull("deleted_at").first(); return row && toEntity(row); }
@@ -32,13 +34,51 @@ export async function findSyncJob(id: number, conn: Knex = db): Promise<Identity
 export async function findPendingSyncJob(profileId: number, conn: Knex = db): Promise<IdentitySyncJobRow | undefined> { return conn<IdentitySyncJobRow>("identity_sync_jobs").select(...JOB_COLUMNS).where({ doctor_profile_id: profileId, status: IdentitySyncJobStatus.Pending }).first(); }
 export async function supersedePendingSyncJob(profileId: number, conn: Knex = db): Promise<void> { await conn("identity_sync_jobs").where({ doctor_profile_id: profileId, status: IdentitySyncJobStatus.Pending }).update({ status: IdentitySyncJobStatus.Superseded, updated_at: conn.fn.now() }); }
 export async function updateSyncJob(id: number, changes: Partial<IdentitySyncJobRow>, conn: Knex = db): Promise<void> { await conn("identity_sync_jobs").where({ id }).update({ ...changes, updated_at: conn.fn.now() }); }
-export async function claimDuePendingJobs(limit = 50, conn: Knex = db): Promise<IdentitySyncJobRow[]> { return conn.transaction(async (trx) => trx<IdentitySyncJobRow>("identity_sync_jobs").select(...JOB_COLUMNS).where("status", IdentitySyncJobStatus.Pending).where("kind", "verification").where("next_attempt_at", "<=", trx.fn.now()).orderBy("next_attempt_at").limit(Math.min(50, Math.max(1, limit))).forUpdate().skipLocked()); }
+/** Due = pending and past `next_attempt_at`. A plain read: the per-doctor lock plus the due re-check in the service are the claim. */
+export async function listDuePendingJobs(limit = 50, conn: Knex = db): Promise<IdentitySyncJobRow[]> { return conn<IdentitySyncJobRow>("identity_sync_jobs").select(...JOB_COLUMNS).where("status", IdentitySyncJobStatus.Pending).where("kind", "verification").where("next_attempt_at", "<=", conn.fn.now()).orderBy("next_attempt_at").limit(Math.min(50, Math.max(1, limit))); }
 
-function toProfile(row: DoctorProfileRow): DoctorProfile { return new DoctorProfile({ id: row.id, userId: row.user_id, headline: row.headline, bio: row.bio, yearsExperience: row.years_experience, consultationFeeAmount: row.consultation_fee, currency: row.currency, defaultSlotMinutes: row.default_slot_minutes, timezone: row.timezone, isAcceptingPatients: row.is_accepting_patients, verificationStatus: row.verification_status, submittedAt: row.submitted_at, reviewedBy: row.reviewed_by, reviewNote: row.review_note, decidedAt: row.decided_at, identitySyncStatus: row.identity_sync_status, suspendedAt: row.suspended_at, suspendedBy: row.suspended_by, suspensionReason: row.suspension_reason, createdAt: row.created_at, updatedAt: row.updated_at }); }
-export async function findProfileById(id: number, conn: Knex = db, lock = false): Promise<DoctorProfile | undefined> { let query = conn<DoctorProfileRow>("doctor_profiles").select(...VERIFICATION_PROFILE_COLUMNS).where({ id }).whereNull("deleted_at"); if (lock) query = query.forUpdate(); const row = await query.first(); return row ? toProfile(row) : undefined; }
-export async function findProfileByUserId(userId: number, conn: Knex = db, lock = false): Promise<DoctorProfile | undefined> { let query = conn<DoctorProfileRow>("doctor_profiles").select(...VERIFICATION_PROFILE_COLUMNS).where({ user_id: userId }).whereNull("deleted_at"); if (lock) query = query.forUpdate(); const row = await query.first(); return row ? toProfile(row) : undefined; }
+export async function findProfileById(id: number, conn: Knex = db, lock = false): Promise<DoctorProfile | undefined> { let query = conn<DoctorProfileRow>("doctor_profiles").select(...DOCTOR_PROFILE_COLUMNS).where({ id }).whereNull("deleted_at"); if (lock) query = query.forUpdate(); const row = await query.first(); return row ? toDoctorProfile(row) : undefined; }
+export async function findProfileByUserId(userId: number, conn: Knex = db, lock = false): Promise<DoctorProfile | undefined> { let query = conn<DoctorProfileRow>("doctor_profiles").select(...DOCTOR_PROFILE_COLUMNS).where({ user_id: userId }).whereNull("deleted_at"); if (lock) query = query.forUpdate(); const row = await query.first(); return row ? toDoctorProfile(row) : undefined; }
 export async function touchProfile(id: number, conn: Knex = db): Promise<void> { await conn("doctor_profiles").where({ id }).whereNull("deleted_at").update({ updated_at: conn.fn.now() }); }
 export async function isProfileLocallySuspended(userId: number, conn: Knex = db): Promise<boolean> { const row: { id: number } | undefined = await conn<{ id: number }>("doctor_profiles").select("id").where("user_id", userId).whereNull("deleted_at").whereNotNull("suspended_at").first(); return row !== undefined; }
-export async function listQueue(query: QueueQuery, position: { timestamp: string; id: number } | undefined, conn: Knex = db): Promise<{ profile: DoctorProfile; cursorTimestamp: string }[]> { const sentinel = "9999-12-31T23:59:59.999999Z"; const timestamp = timestampCursorSelect(conn, "submitted_at", "cursor_timestamp"); let builder = conn<DoctorProfileRow & { cursor_timestamp: string | null }>("doctor_profiles").select(...VERIFICATION_PROFILE_COLUMNS, timestamp).whereNull("deleted_at").where("verification_status", query.status); if (position) builder = builder.whereRaw("(COALESCE(submitted_at, 'infinity'::timestamptz), id) > (?::timestamptz, ?)", [position.timestamp === sentinel ? "infinity" : position.timestamp, position.id]); const rows = await builder.orderByRaw("submitted_at ASC NULLS LAST, id ASC").limit(query.limit + 1) as unknown as Array<DoctorProfileRow & { cursor_timestamp: string | null }>; return rows.map((row) => ({ profile: toProfile(row), cursorTimestamp: row.cursor_timestamp ?? sentinel })); }
+function queueBase(query: QueueQuery, conn: Knex): Knex.QueryBuilder {
+    return conn<QueueRowShape>("doctor_profiles").select(...DOCTOR_PROFILE_COLUMNS, timestampCursorSelect(conn, "submitted_at", "cursor_timestamp")).whereNull("deleted_at").where("verification_status", query.status);
+}
+function toQueueRows(rows: QueueRowShape[]): QueueRow[] { return rows.map((row) => ({ profile: toDoctorProfile(row), cursorTimestamp: row.cursor_timestamp ?? QUEUE_NULL_TIMESTAMP })); }
 
+/**
+ * Keyset page in index order `(submitted_at ASC NULLS LAST, id ASC)`, fetched in two index-friendly phases instead of one
+ * `COALESCE`/`OR` predicate (which Postgres can only apply as a filter, reading every earlier row of the status):
+ * 1. rows with a timestamp: a bare row comparison `(submitted_at, id) > (?, ?)` is an index condition (NULL never matches it);
+ * 2. only if the page is not full: the NULL tail (`submitted_at IS NULL`), ordered by id.
+ */
+export async function listQueue(query: QueueQuery, position: QueuePosition | undefined, conn: Knex = db): Promise<QueueRow[]> {
+    const wanted = query.limit + 1;
+    const inNullTail = position?.timestamp === QUEUE_NULL_TIMESTAMP;
+    const rows: QueueRow[] = [];
+    if (!inNullTail) {
+        let timestamped = queueBase(query, conn).whereNotNull("submitted_at");
+        if (position) timestamped = timestamped.whereRaw("(submitted_at, id) > (?::timestamptz, ?)", [position.timestamp, position.id]);
+        const found: unknown = await timestamped.orderBy([{ column: "submitted_at", order: "asc" }, { column: "id", order: "asc" }]).limit(wanted);
+        rows.push(...toQueueRows(found as QueueRowShape[]));
+    }
+    if (rows.length < wanted) {
+        let tail = queueBase(query, conn).whereNull("submitted_at");
+        if (position && inNullTail) tail = tail.where("id", ">", position.id);
+        const found: unknown = await tail.orderBy("id", "asc").limit(wanted - rows.length);
+        rows.push(...toQueueRows(found as QueueRowShape[]));
+    }
+    return rows;
+}
 
+export async function markProfileSubmitted(id: number, resubmit: boolean, conn: Knex = db): Promise<void> {
+    await conn("doctor_profiles").where({ id }).whereNull("deleted_at").update({ verification_status: VerificationStatus.Submitted, submitted_at: conn.fn.now(), reviewed_by: null, review_note: null, decided_at: null,
+        identity_sync_status: resubmit ? IdentitySyncStatus.Pending : IdentitySyncStatus.NotRequired, updated_at: conn.fn.now() });
+}
+/** Records an admin decision and parks the account sync as pending until the Identity job succeeds. */
+export async function applyProfileDecision(id: number, changes: ProfileDecisionChanges, conn: Knex = db): Promise<void> {
+    await conn("doctor_profiles").where({ id }).whereNull("deleted_at").update({ verification_status: changes.verificationStatus, identity_sync_status: IdentitySyncStatus.Pending,
+        reviewed_by: changes.reviewedBy, review_note: changes.reviewNote, decided_at: changes.stampDecidedAt ? conn.fn.now() : null,
+        ...(changes.stampSubmittedAt ? { submitted_at: conn.fn.now() } : {}), updated_at: conn.fn.now() });
+}
+export async function setProfileIdentitySync(id: number, status: IdentitySyncStatus, conn: Knex = db): Promise<void> { await conn("doctor_profiles").where({ id }).whereNull("deleted_at").update({ identity_sync_status: status, updated_at: conn.fn.now() }); }

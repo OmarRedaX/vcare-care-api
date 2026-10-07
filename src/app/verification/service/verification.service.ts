@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Knex } from "knex";
 import { inject, injectable } from "tsyringe";
 import { actorFromAuth, AuditRecorder } from "../../../lib/audit/audit";
@@ -7,6 +7,7 @@ import type { Env } from "../../../lib/config/types";
 import { TOKENS } from "../../../lib/di/tokens";
 import { Conflict, Forbidden, NotFound, ValidationFailed } from "../../../lib/error/errors";
 import { IdentityClient } from "../../../lib/identity-client/identity-client";
+import { decodeSignedCursor, encodeSignedCursor } from "../../../lib/http/pagination/signed-cursor";
 import { withSessionAdvisoryLock } from "../../../lib/knex/session-advisory-lock";
 import { logger } from "../../../lib/logger/logger";
 import { currentRequestId } from "../../../lib/logger/request-context";
@@ -17,12 +18,13 @@ import { IdentitySyncStatus, VerificationStatus } from "../../doctors/enums";
 import type { DoctorProfile } from "../../doctors/entity/doctor-profile.entity";
 import { ApplicationNotEditable, ApplicationNotReviewable, UploadIntentExpired } from "../errors";
 import { IdentitySyncJobKind, IdentitySyncJobStatus, UploadIntentKind, VerificationAuditAction, VerificationDocumentStatus, VerificationDocumentType } from "../enums";
-import { claimDuePendingJobs, closeIntent, deleteIntentsOlderThan, findDocument, findDocumentForUpdate, findIntent, findIntentForUpdate, findPendingSyncJob, findProfileById, findProfileByUserId, findSyncJob, insertDocument, insertIntent, insertSyncJob, listDocuments, listDocumentsBatch, listExpiredOpenIntents, listQueue, softDeleteDocument, supersedePendingSyncJob, touchProfile, updateSyncJob } from "../repository/verification.repo";
-import type { DecisionResult, DocumentCompletion, QueueCursorPayload, QueuePage, QueueQuery, SubmitTransition, VerificationApplicationView } from "../types";
+import { applyProfileDecision, closeIntent, deleteIntentsOlderThan, findDocument, findDocumentForUpdate, findIntent, findIntentForUpdate, findPendingSyncJob, findProfileById, findProfileByUserId, findSyncJob, insertDocument, insertIntent, insertSyncJob, listDocuments, listDocumentsBatch, listDuePendingJobs, listExpiredOpenIntents, listQueue, markProfileSubmitted, QUEUE_NULL_TIMESTAMP, setProfileIdentitySync, softDeleteDocument, supersedePendingSyncJob, touchProfile, updateSyncJob } from "../repository/verification.repo";
+import type { DecisionResult, DocumentCompletion, ExpiredIntentRef, ProfileDecisionChanges, QueueCursorPayload, QueuePage, QueueQuery, SubmitSyncResult, SubmitTransition, SyncAttempt, SyncOutcome, UploadIntentResult, VerificationApplicationView } from "../types";
 
 export const VERIFICATION_INTENT_LOCK_NAMESPACE = 1101;
 export const VERIFICATION_SYNC_LOCK_NAMESPACE = 1102;
 const MAX_UPLOAD_BYTES = 10_485_760;
+const IDENTITY_SYNC_PENDING_RETRY_AFTER_SECONDS = 5;
 const PROFILE_ENTITY = "doctor_profile";
 const DOCUMENT_ENTITY = "verification_document";
 
@@ -65,8 +67,7 @@ export class VerificationService {
         await this.assertRequiredDocuments(profile.id, trx);
         await supersedePendingSyncJob(profile.id, trx);
         const resubmit = profile.verificationStatus === VerificationStatus.Rejected;
-        await trx("doctor_profiles").where({ id: profile.id }).whereNull("deleted_at").update({ verification_status: VerificationStatus.Submitted, submitted_at: trx.fn.now(), reviewed_by: null, review_note: null, decided_at: null,
-            identity_sync_status: resubmit ? IdentitySyncStatus.Pending : IdentitySyncStatus.NotRequired, updated_at: trx.fn.now() });
+        await markProfileSubmitted(profile.id, resubmit, trx);
         let jobId: number | null = null;
         if (resubmit) {
             const job = await insertSyncJob({ doctor_profile_id: profile.id, doctor_user_id: profile.userId, kind: IdentitySyncJobKind.Verification, target_status: "pending", reason: "verification resubmitted", actor_user_id: actor.userId, request_id: this.requestId(), status: IdentitySyncJobStatus.Pending, next_attempt_at: new Date() }, trx);
@@ -75,9 +76,14 @@ export class VerificationService {
         await this.auditAction(trx, actor, VerificationAuditAction.Submitted, PROFILE_ENTITY, profile.id, { fromStatus: profile.verificationStatus, toStatus: VerificationStatus.Submitted });
         return { jobId };
     }
-    async finishSubmit(actor: AuthContext, transition: SubmitTransition): Promise<DecisionResult | null> { if (transition.jobId === null) return null; return this.syncJob(transition.jobId, actor, 3); }
+    /** Runs the inline Case-1 attempt for a resubmit. Returns status only: the doctors service builds its own view, so no Identity hydration here. */
+    async finishSubmit(actor: AuthContext, transition: SubmitTransition): Promise<SubmitSyncResult | null> {
+        if (transition.jobId === null) return null;
+        const { status, identitySync } = await this.syncOutcome(await this.attemptSync(transition.jobId, actor, 3, false));
+        return { status, ...(identitySync ? { identitySync } : {}) };
+    }
 
-    async createIntent(actor: AuthContext, type: VerificationDocumentType): Promise<{ uploadId: number; url: string; fields: Record<string, string>; expiresAt: string; maxBytes: number }> {
+    async createIntent(actor: AuthContext, type: VerificationDocumentType): Promise<UploadIntentResult> {
         const profile = await findProfileByUserId(actor.userId, this.db); if (!profile) throw NotFound; this.assertEditable(profile);
         const key = `quarantine/${randomUUID()}`;
         const policy = await this.storage.createUploadPolicy(key, MAX_UPLOAD_BYTES, this.env.UPLOAD_POLICY_TTL_SECONDS);
@@ -105,7 +111,8 @@ export class VerificationService {
                 throw ValidationFailed.withDetails([{ field: "file", issue: "stored file is invalid" }]);
             }
             const finalKey = `verification-documents/${randomUUID()}`;
-            await this.storage.promote(intent.quarantine_key, finalKey);
+            // Bound to the inspected object: if the quarantine key was re-POSTed after the checks above, the ETag no longer matches and the copy fails.
+            await this.storage.promote(intent.quarantine_key, finalKey, { etag: head.etag, contentType: fileType });
             await this.storage.delete(intent.quarantine_key);
             try {
                 const document = await this.db.transaction(async (trx) => {
@@ -145,27 +152,32 @@ export class VerificationService {
         const jobId = await this.db.transaction(async (trx) => {
             const profile = await findProfileById(id, trx, true); if (!profile) throw NotFound;
             if (action === "reopen" ? profile.verificationStatus !== VerificationStatus.Rejected : profile.verificationStatus !== VerificationStatus.Submitted) throw ApplicationNotReviewable;
+            // The previous status change (resubmit/reopen -> pending) may not have reached Identity yet. Superseding that job would make
+            // Identity see e.g. rejected -> active, a transition it refuses. Wait until the account is in sync.
+            if (action !== "reopen" && profile.identitySyncStatus === IdentitySyncStatus.Pending) throw Conflict.withExtra({ retryAfter: IDENTITY_SYNC_PENDING_RETRY_AFTER_SECONDS });
             if (action === "approve") await this.assertRequiredDocuments(id, trx);
             await supersedePendingSyncJob(id, trx);
             const status = action === "approve" ? VerificationStatus.Approved : action === "reject" ? VerificationStatus.Rejected : VerificationStatus.Submitted;
             const target = action === "approve" ? "active" : action === "reject" ? "rejected" : "pending";
-            await trx("doctor_profiles").where({ id }).whereNull("deleted_at").update({ verification_status: status, identity_sync_status: IdentitySyncStatus.Pending,
-                reviewed_by: action === "reopen" ? null : actor.userId, review_note: action === "reopen" ? null : note ?? null,
-                decided_at: action === "reopen" ? null : trx.fn.now(), submitted_at: action === "reopen" ? trx.fn.now() : profile.submittedAt, updated_at: trx.fn.now() });
+            const changes: ProfileDecisionChanges = { verificationStatus: status, reviewedBy: action === "reopen" ? null : actor.userId, reviewNote: action === "reopen" ? null : note ?? null,
+                stampDecidedAt: action !== "reopen", stampSubmittedAt: action === "reopen" };
+            await applyProfileDecision(id, changes, trx);
             const job = await insertSyncJob({ doctor_profile_id: id, doctor_user_id: profile.userId, kind: IdentitySyncJobKind.Verification, target_status: target,
                 reason: note ?? `verification ${action}`, actor_user_id: actor.userId, request_id: this.requestId(), status: IdentitySyncJobStatus.Pending, next_attempt_at: new Date() }, trx);
             const auditAction = action === "approve" ? VerificationAuditAction.Approved : action === "reject" ? VerificationAuditAction.Rejected : VerificationAuditAction.Reopened;
             await this.auditAction(trx, actor, auditAction, PROFILE_ENTITY, id, { fromStatus: profile.verificationStatus, toStatus: status });
             return job.id;
         });
-        return this.syncJob(jobId, actor, 3);
+        const outcome = await this.syncOutcome(await this.attemptSync(jobId, actor, 3, false));
+        const view = await this.view(outcome.profile, actor.role === "doctor" ? "doctor" : "admin", this.requestId());
+        return { view, status: outcome.status, ...(outcome.identitySync ? { identitySync: outcome.identitySync } : {}) };
     }
-    async listDueSyncJobIds(limit = 50): Promise<number[]> { return (await claimDuePendingJobs(limit, this.db)).map((job) => job.id); }
-    async listExpiredIntents(limit = 500): Promise<{ id: number; quarantineKey: string }[]> { return (await listExpiredOpenIntents(limit, this.db)).map((intent) => ({ id: intent.id, quarantineKey: intent.quarantine_key })); }
+    async listDueSyncJobIds(limit = 50): Promise<number[]> { return (await listDuePendingJobs(limit, this.db)).map((job) => job.id); }
+    async listExpiredIntents(limit = 500): Promise<ExpiredIntentRef[]> { return (await listExpiredOpenIntents(limit, this.db)).map((intent) => ({ id: intent.id, quarantineKey: intent.quarantine_key })); }
     async purgeExpiredIntent(id: number, quarantineKey: string): Promise<void> { await this.storage.delete(quarantineKey); await this.closeExpiredIntent(id); }
-    async processDueSyncJob(jobId: number): Promise<void> { const job = await findSyncJob(jobId, this.db); if (!job || job.kind !== IdentitySyncJobKind.Verification || job.status !== IdentitySyncJobStatus.Pending) return; await this.attemptSync(jobId, null, 1); }
+    async processDueSyncJob(jobId: number): Promise<void> { const job = await findSyncJob(jobId, this.db); if (!job || job.kind !== IdentitySyncJobKind.Verification || job.status !== IdentitySyncJobStatus.Pending) return; await this.attemptSync(jobId, null, 1, true); }
     /** Runs the guarded Identity call + local transition. Builds no view, so worker retries never hydrate. */
-    private async attemptSync(jobId: number, actor: AuthContext | null, attempts: number): Promise<{ profileId: number; locked: boolean }> {
+    private async attemptSync(jobId: number, actor: AuthContext | null, attempts: number, dueOnly: boolean): Promise<SyncAttempt> {
         const initial = await findSyncJob(jobId, this.db); if (!initial) throw NotFound;
         const locked = await withSessionAdvisoryLock(this.db, VERIFICATION_SYNC_LOCK_NAMESPACE, initial.doctor_profile_id, async () => {
             const job = await findSyncJob(jobId, this.db);
@@ -174,6 +186,8 @@ export class VerificationService {
                 if (job?.status === IdentitySyncJobStatus.Pending) await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Superseded }, this.db);
                 return;
             }
+            // Worker path: another worker may have just recorded a transient failure and scheduled the next attempt. Honour that backoff.
+            if (dueOnly && job.next_attempt_at.getTime() > Date.now()) return true;
             const outcome = await this.identity.setUserStatus(job.doctor_user_id, job.target_status, job.reason ?? "verification", job.actor_user_id, job.request_id ?? this.requestId(), attempts);
             await this.db.transaction(async (trx) => {
                 const current = await findProfileById(job.doctor_profile_id, trx, true);
@@ -183,45 +197,41 @@ export class VerificationService {
                 if (currentPending?.id !== jobId) { await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Superseded }, trx); return; }
                 if (outcome.outcome === "applied") {
                     await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Succeeded, succeeded_at: new Date(), attempts: currentJob.attempts + attempts, consecutive_failures: 0 }, trx);
-                    await trx("doctor_profiles").where({ id: current.id }).update({ identity_sync_status: IdentitySyncStatus.Synced, updated_at: trx.fn.now() });
+                    await setProfileIdentitySync(current.id, IdentitySyncStatus.Synced, trx);
                     await this.audit.record(trx, { actor: actor ? actorFromAuth(actor) : { kind: "system" }, action: VerificationAuditAction.SyncSynced, entityType: PROFILE_ENTITY, entityId: current.id, metadata: { jobId } });
                 } else if (outcome.outcome === "rejected-transition") {
                     await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Failed, attempts: currentJob.attempts + attempts, last_error_code: "InvalidStatusTransition" }, trx);
-                    await trx("doctor_profiles").where({ id: current.id }).update({ identity_sync_status: IdentitySyncStatus.Failed, updated_at: trx.fn.now() });
+                    await setProfileIdentitySync(current.id, IdentitySyncStatus.Failed, trx);
                     await this.audit.record(trx, { actor: actor ? actorFromAuth(actor) : { kind: "system" }, action: VerificationAuditAction.SyncFailed, entityType: PROFILE_ENTITY, entityId: current.id, metadata: { jobId } });
-                    logger.error("IdentitySyncTransitionRejected", { code: "InvalidStatusTransition" });
+                    logger.error("IdentitySyncTransitionRejected", { code: "InvalidStatusTransition", jobId, profileId: current.id });
                 } else {
                     const delay = backoffMs(currentJob.attempts, Math.random, this.env.IDENTITY_SYNC_RETRY_CAP_SECONDS * 1000);
                     await updateSyncJob(jobId, { attempts: currentJob.attempts + attempts, consecutive_failures: currentJob.consecutive_failures + 1, last_error_code: outcome.errorCode,
                         next_attempt_at: new Date(Date.now() + delay) }, trx);
                     if (currentJob.attempts === 0) await this.audit.record(trx, { actor: actor ? actorFromAuth(actor) : { kind: "system" }, action: VerificationAuditAction.SyncPending, entityType: PROFILE_ENTITY, entityId: current.id, metadata: { jobId } });
                     const alertAt = currentJob.created_at.getTime() + this.env.IDENTITY_SYNC_ALERT_AFTER_SECONDS * 1000;
-                    if (currentJob.updated_at.getTime() < alertAt && Date.now() >= alertAt) logger.error("IdentityApprovalSyncPending");
+                    if (currentJob.updated_at.getTime() < alertAt && Date.now() >= alertAt) logger.error("IdentityApprovalSyncPending", { jobId, profileId: current.id });
                 }
             });
             return true;
         });
         return { profileId: initial.doctor_profile_id, locked: locked !== undefined };
     }
-    private async syncJob(jobId: number, actor: AuthContext | null, attempts: number): Promise<DecisionResult> {
-        const { profileId, locked } = await this.attemptSync(jobId, actor, attempts);
+    private async syncOutcome({ profileId, locked }: SyncAttempt): Promise<SyncOutcome> {
         const profile = await findProfileById(profileId, this.db); if (!profile) throw NotFound;
-        const view = await this.view(profile, actor?.role === "doctor" ? "doctor" : "admin", this.requestId());
-        if (!locked) return { view, status: 202, identitySync: "pending" };
-        return profile.identitySyncStatus === IdentitySyncStatus.Synced ? { view, status: 200 } : { view, status: 202, identitySync: profile.identitySyncStatus === IdentitySyncStatus.Failed ? "failed" : "pending" };
+        if (!locked) return { profile, status: 202, identitySync: "pending" };
+        if (profile.identitySyncStatus === IdentitySyncStatus.Synced) return { profile, status: 200 };
+        return { profile, status: 202, identitySync: profile.identitySyncStatus === IdentitySyncStatus.Failed ? "failed" : "pending" };
     }
-    private encodeCursor(payload: QueueCursorPayload): string { const body = Buffer.from(JSON.stringify(payload)).toString("base64url"); const mac = createHmac("sha256", this.env.SERVICE_CLIENT_SECRET).update(body).digest("base64url"); return `${body}.${mac}`; }
-    private decodeCursor(cursor: string, status: string): QueueCursorPayload {
-        const [body, mac] = cursor.split("."); if (!body || !mac) throw ValidationFailed.withDetails([{ field: "cursor", issue: "is invalid" }]);
-        const expected = createHmac("sha256", this.env.SERVICE_CLIENT_SECRET).update(body).digest();
-        let supplied: Buffer; try { supplied = Buffer.from(mac, "base64url"); } catch { throw ValidationFailed.withDetails([{ field: "cursor", issue: "is invalid" }]); }
-        if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw ValidationFailed.withDetails([{ field: "cursor", issue: "is invalid" }]);
-        let payload: unknown; try { payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")); } catch { throw ValidationFailed.withDetails([{ field: "cursor", issue: "is invalid" }]); }
-        if (!payload || typeof payload !== "object" || !("status" in payload) || !("timestamp" in payload) || !("id" in payload) || payload.status !== status || typeof payload.timestamp !== "string" || (payload.timestamp !== "9999-12-31T23:59:59.999999Z" && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(payload.timestamp)) || typeof payload.id !== "number" || !Number.isSafeInteger(payload.id) || payload.id < 1) throw ValidationFailed.withDetails([{ field: "cursor", issue: "is invalid" }]);
-        return payload as QueueCursorPayload;
+    private queuePosition(payload: unknown, status: string): QueueCursorPayload | undefined {
+        if (!payload || typeof payload !== "object" || !("status" in payload) || !("timestamp" in payload) || !("id" in payload)) return undefined;
+        const { status: cursorStatus, timestamp, id } = payload;
+        if (cursorStatus !== status || typeof timestamp !== "string" || (timestamp !== QUEUE_NULL_TIMESTAMP && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(timestamp))) return undefined;
+        if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) return undefined;
+        return { status, timestamp, id };
     }
     async queue(query: QueueQuery): Promise<QueuePage> {
-        const position = query.cursor ? this.decodeCursor(query.cursor, query.status) : undefined;
+        const position = query.cursor ? decodeSignedCursor(query.cursor, this.env.SERVICE_CLIENT_SECRET, (payload) => this.queuePosition(payload, query.status)) : undefined;
         const rows = await listQueue(query, position, this.db);
         const hasMore = rows.length > query.limit;
         const page = rows.slice(0, query.limit);
@@ -229,7 +239,7 @@ export class VerificationService {
         const { users } = await this.identity.getUsersBatch(page.map((row) => row.profile.userId), this.requestId());
         const items = page.map(({ profile }) => { const user = users.get(profile.userId); return { profile, documents: docs.get(profile.id) ?? [], doctor: { displayName: user?.displayName ?? null, avatarUrl: user?.avatarUrl ?? null, profileHydrated: user !== undefined } }; });
         const last = page[page.length - 1];
-        return { items, meta: { nextCursor: hasMore && last ? this.encodeCursor({ status: query.status, timestamp: last.cursorTimestamp, id: last.profile.id }) : null, hasMore, count: items.length } };
+        return { items, meta: { nextCursor: hasMore && last ? encodeSignedCursor({ status: query.status, timestamp: last.cursorTimestamp, id: last.profile.id }, this.env.SERVICE_CLIENT_SECRET) : null, hasMore, count: items.length } };
     }
     /** Worker-facing purge primitives; loops own scheduling and singleton locking. */
     listExpiredOpenIntents(limit = 500): ReturnType<typeof listExpiredOpenIntents> { return listExpiredOpenIntents(limit, this.db); }

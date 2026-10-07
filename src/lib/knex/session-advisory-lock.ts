@@ -1,10 +1,11 @@
 import type { Knex } from "knex";
+import type { SessionPoolClient } from "./types";
 
 const PINNED = new WeakMap<Knex, number>();
 
 /** Reserves a session while leaving at least one pool connection for short transactions. */
 export async function withSessionAdvisoryLock<T>(db: Knex, namespace: number, id: number, work: () => Promise<T>): Promise<T | undefined> {
-    const client = db.client as { acquireConnection(): Promise<unknown>; releaseConnection(connection: unknown): Promise<void>; config?: { pool?: { max?: number } } };
+    const client = db.client as SessionPoolClient;
     const maxPinned = Math.max(0, (client.config?.pool?.max ?? 2) - 1);
     const active = PINNED.get(db) ?? 0;
     if (active >= maxPinned) return undefined;
