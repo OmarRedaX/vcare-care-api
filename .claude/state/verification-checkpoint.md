@@ -13,3 +13,10 @@ Defaults: lock profile edits while submitted; add DELETE own document; no Identi
 - phase B dispatched to 2 Codex agents (lib/storage, lib/identity-client) in parallel.
 ## ▶ NEXT STEP
 /develop verification via Codex: spec §15 tasks 0-7. Docker Desktop + npm run test:infra:up needed first.
+
+## STATE AT HANDOFF (2026-10-07, late)
+Commits on feature/verification: a25b779 brainstorm · 08c86fc spec · 97020ff phase A (contract C1-C6, env, MinIO compose, 4 migrations, ADR 0020) · 9233ac6 libs (storage, identity-client) · 0763438 lib tests.
+UNCOMMITTED (Codex module task, NOT yet verified by me): src/app/verification/**, src/lib/knex/session-advisory-lock.ts, edits to doctors module, bootstrap.ts, routes.ts, server.ts, errorHandler, logger redact, tokens, docs/service-card.md, tasks.md, doctors tests. Typecheck passed at last check. Codex background job may still be running or finished; check `git status` and whether files are still changing before verifying.
+TODO in order: verify module (review diff vs spec, lint, unit, integration; vet every changed doctors test) -> commit -> worker phase (identity-sync + upload-intent-purge loops, worker.ts/worker-loops.ts wiring, close clients) -> /write-tests -> /manual-qa (real Identity + MinIO) -> /review-code -> /update-docs (care + hub + identity; re-sync hub card+contract; rename spec §14 wording done) -> push + care PR (Closes #27).
+OPEN: ../vcare-hub checkout sits on identity branch docs/sync-identity-auth-race-fixes with someone else's uncommitted changes; stop hook reads it and keeps complaining. Hub PR #10 (branch docs/sync-care-verification-contract, worktree in scratchpad/hub-verification) holds the contract sync. Await user choice (merge #10 / sync into checkout / move other work). Pre-existing lint errors in scripts/doctors-qa-fake-identity.mjs (separate tiny fix).
+Env gotchas: Git Bash needs MSYS_NO_PATHCONV=1 for docker -v/-dir paths; docker test stack: `npm run test:infra:up` (pg 5434, redis 6381, MinIO 9003); jest integration needs closeRedis()/client.close() in afterAll or it will not exit; Codex sandbox cannot run docker/child node, lead runs integration + lint-runner unit suite.
