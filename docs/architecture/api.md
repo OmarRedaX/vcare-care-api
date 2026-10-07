@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-04
+last_verified: 2026-10-07
 tags: [api, reference, routes, rbac]
-related: [rbac, specialties-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
+related: [rbac, specialties-spec, doctors-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
 
 # API — care-service (human view)
@@ -53,16 +53,23 @@ characters and `description` rejects NUL (`400`). A `PATCH` that changes nothing
 `POST`/`PATCH` declare `429` but mount no limiter. Rows are never deleted (no `DELETE` route).
 
 ## doctors-onboarding (account `status` pending, active, or rejected)
+
+The four self-owned profile routes below are live. Their `POST /apply` submission path is dormant until verification
+documents exist (`submit=true` returns `400 ValidationFailed` on `documents`); Case 1, document upload, and the
+contract's `202` response land with verification. The profile write audit actions are live and a no-op update is
+not audited. `POST /apply` takes an optional `Idempotency-Key`. Its write rate limit and the `PATCH /me` limit are
+20/min per user; the two reads are 120/min per user.
+
 | Method | Path | Roles | Ownership | Audit / Case | Errors |
 |---|---|---|---|---|---|
-| POST | `/api/doctors/apply` | doctor | self | Case 1 on resubmission (`rejected → submitted`, Identity `pending`) | 200, 201, 202 `identitySync`, 400 (missing documents), 403, 409 `Conflict` |
+| POST | `/api/doctors/apply` | doctor | self | `doctor.profile_created` / `doctor.profile_updated` (live); Case 1 on later resubmission | 200, 201 (live); 202 `identitySync` (planned); 400 (missing documents), 403, 409 `Conflict` |
 | GET | `/api/doctors/me` | doctor | self | — | 404 until applied |
-| PATCH | `/api/doctors/me` | doctor | self (not locally suspended) | — | 400, 403, 404 |
+| PATCH | `/api/doctors/me` | doctor | self (not locally suspended) | `doctor.profile_updated` on a real change | 400, 403, 404 |
 | POST | `/api/doctors/me/documents` | doctor | self | — (multipart, 20/h) — **to be replaced**, ADR 0013 | 400 (MIME/size), 403, 404, 409 |
 | POST | `/api/doctors/me/documents/uploads` (planned, ADR 0013) | doctor | self; application `draft`/`rejected` | — (20/h) | 201 intent, 400, 403, 404, 409 |
 | POST | `/api/doctors/me/documents/uploads/{uploadId}/complete` (planned) | doctor | self (intent owner) | `verification.document_uploaded` | 201, 200 replay, 400 bad bytes, 404, 409, 410 `UploadIntentExpired` |
 | POST | `/api/doctors/me/documents/{documentId}/download-url` (planned, ADR 0014) | doctor | self | `verification.document_url_issued` | 200 `{ url, expiresAt }` (60 s), 404 |
-| GET | `/api/doctors/me/application` | doctor | self | — | 404 |
+| GET | `/api/doctors/me/application` | doctor | self | — | 404; live response has empty `documents` and degraded Identity name/avatar fields |
 
 ## doctors-discovery
 | Method | Path | Roles | Ownership | Case | Notes |

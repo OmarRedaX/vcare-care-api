@@ -3,7 +3,8 @@ title: Care Service — Docs Index
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-10-04
+diataxis: reference
+last_verified: 2026-10-07
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -40,7 +41,7 @@ Diátaxis type — a label, not a folder tree.
 | [architecture/future.md](./architecture/future.md) | see deferred work: events, Phase-2 AI (Care's side), scale, out of scope | explanation |
 
 ## Decisions (ADRs, append-only)
-| ADR | Decision | Lens |
+| ADR | Read it when you need to… | Lens |
 |---|---|---|
 | [adr/0001-no-orm-knex-raw-sql.md](./adr/0001-no-orm-knex-raw-sql.md) | Knex query builder + raw-SQL migrations, no ORM | explanation |
 | [adr/0002-slots-never-stored.md](./adr/0002-slots-never-stored.md) | availability is computed per request, never stored | explanation |
@@ -60,6 +61,7 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0016-foundation-runtime-dependencies.md](./adr/0016-foundation-runtime-dependencies.md) | the foundation's runtime and dev dependencies: `reflect-metadata`, in-house dev CORS, no `uuid`/`dotenv`, deferred `jose`/`luxon`/`undici` | explanation |
 | [adr/0017-generic-helpers-and-transaction-scoping.md](./adr/0017-generic-helpers-and-transaction-scoping.md) | where a domain-free helper goes; how a service opens a transaction | explanation |
 | [adr/0018-db-role-split-explicit-grants-partition-function.md](./adr/0018-db-role-split-explicit-grants-partition-function.md) | owner `care` runs migrations, `care-api`/`care-worker` log in as `care_app` (in `NOLOGIN` `vcare_app`); explicit per-table grants; `audit_logs` partitions via one `SECURITY DEFINER` function; transaction-scoped advisory lock | explanation |
+| [adr/0019-luxon-for-doctor-timezone-validation.md](./adr/0019-luxon-for-doctor-timezone-validation.md) | understand why doctors validate and canonicalize IANA timezones with `luxon` | explanation |
 
 ## Module docs
 Created by the workflow, not ahead of time: `/brainstorm <feature>` creates `docs/<module>/` (brainstorm,
@@ -79,6 +81,10 @@ spec, tasks, manual-qa; `reviews/` exists only while a review has open findings)
 | [specialties/tasks.md](./specialties/tasks.md) | see what the specialties build did (task by task, build-order tags, Codex/docs split), its tests and manual QA, the fix-review pass of 2026-10-04 (code-point lengths, control characters, cursor cap 1024, `x-account-state`; final unit 937 / integration 347 + 2 skipped); the review file is deleted (clean re-review), so `docs/specialties/reviews/` no longer exists | — |
 | [specialties/manual-qa.md](./specialties/manual-qa.md) | see the CURL QA of the specialties catalog on real Identity tokens (RBAC matrix incl. doctor pending/rejected, paging, includeInactive, idempotency, no-op PATCH, 429, audit rows) and the compiled-build #8 check, or re-run `scripts/curl-test-specialties.sh` | how-to |
 | [doctors/brainstorm.md](./doctors/brainstorm.md) | see the agreed scope of the `doctors` module (doctor profile + `POST /doctors/apply`, `GET/PATCH /doctors/me`, `GET /doctors/me/application`; no documents, admin review, search or Identity call), the dormant `submit` rule, currency allowlist, audit decisions and open questions | explanation |
+| [doctors/spec.md](./doctors/spec.md) | build or change the implemented doctors onboarding slice (v1.1.0), its four self-owned routes, three tables, validation, audit, rate limits, and as-built notes; see the deferred submission and reinstate work | reference |
+| [doctors/spec-conformance.md](./doctors/spec-conformance.md) | inspect the 2026-10-05 code-to-spec check, fixes made, and timezone canonicalization observations | reference |
+| [doctors/tasks.md](./doctors/tasks.md) | see completed doctors implementation, tests, manual QA, and docs tasks by build step | how-to |
+| [doctors/manual-qa.md](./doctors/manual-qa.md) | see the 2026-10-07 CURL run of all four doctors onboarding endpoints (38 pass, 0 fail), including RBAC, ownership isolation, response shapes, validation, idempotency, suspension, and rate limiting; re-run with `scripts/curl-test-doctors.sh` | how-to |
 | [access/spec.md](./access/spec.md) | build or use the access base: JWKS cache and `userGuard()`, the `Policy` shape and `authorize` step order, the boot route assertion, `AuditRecorder.record(trx, entry)`, the `audit_logs` migrations, DB roles (`care` / `vcare_app` / `care_app`, `ensure-app-login`), the worker `audit-partitions` loop, `checks.identityJwks`, env additions, the fixes for #5 #6 #10 #11, the test plan, the decided contract edits C1/C2, the `audit` module hand-off (read indexes deferred), and §15 As-built notes (stricter boot assertion, column-level `INSERT`, `ensure-app-login` refusals, Redis socket timeout, final test counts) | reference |
 
 ## Contract (source of truth — prose above derives from it)

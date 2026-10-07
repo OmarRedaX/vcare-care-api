@@ -6,13 +6,18 @@ module: access
 status: implemented
 version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-04
+last_verified: 2026-10-07
 tags: [spec, access, auth, jwks, jose, rbac, authorize, audit, audit-logs, partitions, postgres-roles, worker, redis-breaker]
 related: [access-brainstorm, foundation-spec, rbac, data-model, infrastructure, resilience, integration, deployment, runbook, quickstart, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0009-audit-logs-monthly-partitions, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
 ---
 
 # access — Spec
+
+As built since the doctors slice (2026-10-07): `doctor_not_suspended` is supplied by
+`src/app/doctors/checks.ts` and used by the live `PATCH /api/doctors/me` policy. References below that say
+the doctors module will supply this hook record the original access build plan; other practising routes
+will add the check when their modules land.
 
 The shared access base every business module plugs into: local verification of Identity user tokens, deny-by-default
 `authorize(policy)`, the append-only audit log with its database roles and partition maintenance, and the four latent
