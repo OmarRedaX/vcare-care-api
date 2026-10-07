@@ -2,7 +2,7 @@ import { Type } from "class-transformer";
 import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from "class-validator";
 import type { AppError } from "../../../../src/lib/error/AppError";
 import { ToInt } from "../../../../src/lib/validation/transforms";
-import { validateBody, validateParams, validateQuery } from "../../../../src/lib/validation/validate";
+import { assertEmptyBody, validateBody, validateParams, validateQuery } from "../../../../src/lib/validation/validate";
 
 class AddressDto {
     @IsString()
@@ -156,5 +156,17 @@ describe("lib/validation/validate", () => {
         expect(rendered).not.toContain("SYNTHETIC-COMPLAINT-7731");
         expect(rendered).not.toContain("synthetic.patient@example.test");
         expect(rendered).not.toContain("9999");
+    });
+});
+
+describe("assertEmptyBody", () => {
+    it("should accept an absent or empty body", () => {
+        expect(() => assertEmptyBody(undefined)).not.toThrow();
+        expect(() => assertEmptyBody({})).not.toThrow();
+    });
+
+    it("should reject any member and non-object bodies", () => {
+        expect(() => assertEmptyBody({ extra: 1 })).toThrow(expect.objectContaining({ code: "ValidationFailed" }));
+        expect(() => assertEmptyBody([])).toThrow(expect.objectContaining({ code: "ValidationFailed" }));
     });
 });
