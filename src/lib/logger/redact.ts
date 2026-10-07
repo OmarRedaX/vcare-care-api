@@ -34,6 +34,9 @@ export const REDACTED_KEYS: readonly string[] = [
     "clientSecret",
     "body",
     "requestBody",
+    "headline",
+    "bio",
+    "reviewNote",
     // access: database URLs carry credentials (ensure-app-login, pool configs).
     "connectionString",
     "databaseUrl",

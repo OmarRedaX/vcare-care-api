@@ -38,6 +38,7 @@ describe("lib/config/env parseEnv", () => {
             RATE_LIMIT_FALLBACK_DIVISOR: 2,
             SHUTDOWN_TIMEOUT_MS: 10000,
             WORKER_POLL_INTERVAL_MS: 1000,
+            ALLOWED_CURRENCIES: ["EGP"],
         });
     });
 

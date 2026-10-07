@@ -32,6 +32,9 @@ const EXPECTED_KEYS = [
     "clientSecret",
     "body",
     "requestBody",
+    "headline",
+    "bio",
+    "reviewNote",
     // access spec §7: database URLs carry credentials
     "connectionString",
     "databaseUrl",

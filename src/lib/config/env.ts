@@ -108,6 +108,13 @@ export const envSchema = z
         RATE_LIMIT_FALLBACK_DIVISOR: z.coerce.number().int().min(1).default(2),
         SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(10000),
         WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(1000),
+        ALLOWED_CURRENCIES: z.string().default("EGP").transform((value, ctx) => {
+            const currencies = value.split(",");
+            if (currencies.length === 0 || currencies.some((item) => !/^[A-Z]{3}$/.test(item)) || new Set(currencies).size !== currencies.length) {
+                ctx.addIssue({ code: "custom", message: "must be unique comma-separated uppercase three-letter currency codes" });
+            }
+            return currencies;
+        }),
     })
     .superRefine((value, ctx) => {
         if (value.INTERNAL_PORT === value.PORT) {
@@ -140,7 +147,7 @@ export const envSchema = z
 function withoutEmptyValues(source: EnvSource): EnvSource {
     const cleaned: EnvSource = {};
     for (const [key, value] of Object.entries(source)) {
-        if (value !== undefined && value !== "") {
+        if (value !== undefined && (value !== "" || key === "ALLOWED_CURRENCIES")) {
             cleaned[key] = value;
         }
     }

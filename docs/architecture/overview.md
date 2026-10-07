@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-04
+last_verified: 2026-10-07
 tags: [architecture, overview, modules, layering]
-related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, adr-0017-generic-helpers-and-transaction-scoping]
+related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
 
 # Architecture Overview — care-service
@@ -80,7 +80,7 @@ flowchart LR
 | Module | Owns | Key tables | Talks to |
 |---|---|---|---|
 | `specialties` | specialty catalog | `specialties` | — |
-| `doctors` | doctor profile, languages, specialties links, accepting toggle, local suspension | `doctor_profiles`, `doctor_specialties`, `doctor_languages` | identity-client (Case 2 hydration, Case 3 suspension), `availability` (next-available for search) |
+| `doctors` | **Built:** own-profile onboarding, languages and specialty links, accepting toggle, local suspension check. **Planned:** search and suspension writes | `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built) | `SpecialtiesService` for linked specialty validation; identity-client (Case 2/3) and availability later |
 | `verification` | documents, application states, decisions | `verification_documents`, `identity_sync_jobs` | identity-client (Case 1), storage (uploads, download URLs) |
 | `schedules` | working hours, exceptions, consultation types, conflict detection | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |

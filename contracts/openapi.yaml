@@ -334,7 +334,7 @@ paths:
       x-roles: [doctor]
       x-ownership: self
       x-account-state: 'status in (pending, active, rejected)'
-      x-audit-actions: [verification.submitted, identity_sync.synced]
+      x-audit-actions: [doctor.profile_created, doctor.profile_updated, verification.submitted, identity_sync.synced]
       x-integration-case: 1
       x-failure-policy: retry-report-pending
       parameters:
@@ -3710,10 +3710,12 @@ components:
         amount:
           type: integer
           minimum: 0
+          maximum: 2147483647
           description: Minor units (e.g. 25000 = 250.00).
         currency:
           type: string
           pattern: '^[A-Z]{3}$'
+          description: Must be in the service's configured allowlist (`ALLOWED_CURRENCIES`); another currency is `400 ValidationFailed` with `details[].field = "consultationFee.currency"`.
           examples: [EGP]
     SpecialtyRef:
       type: object
@@ -3876,6 +3878,7 @@ components:
           description: Must be one of `specialtyIds`.
         consultationFee:
           $ref: '#/components/schemas/Money'
+          description: Must be in the service's configured allowlist (`ALLOWED_CURRENCIES`); another currency is `400 ValidationFailed` with `details[].field = "consultationFee.currency"`.
         defaultSlotMinutes:
           type: integer
           minimum: 5
@@ -3924,6 +3927,7 @@ components:
           format: int64
         consultationFee:
           $ref: '#/components/schemas/Money'
+          description: Must be in the service's configured allowlist (`ALLOWED_CURRENCIES`); another currency is `400 ValidationFailed` with `details[].field = "consultationFee.currency"`.
         defaultSlotMinutes:
           type: integer
           minimum: 5

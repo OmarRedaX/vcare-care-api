@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-04
+last_verified: 2026-10-07
 tags: [data-model, postgresql, schema, indexes, erd]
-related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
+related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
@@ -15,8 +15,9 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `20260915000000_create_extension_btree_gist` (the extension only); access (2026-10-02) — `create_app_role` (the
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
-(see `specialties` below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
-modules will build. Written in the style migrations
+(see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`. `knex_migrations` records migration names without the file extension. Everything else below is the design the
+remaining modules will build. Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
 - `id BIGSERIAL` everywhere; FKs `BIGINT` with named constraints and a leading-column index.
@@ -123,6 +124,8 @@ CREATE TABLE doctor_profiles (
     CONSTRAINT chk_doctor_profiles_fee CHECK (consultation_fee >= 0),
     CONSTRAINT chk_doctor_profiles_currency CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT chk_doctor_profiles_default_slot CHECK (default_slot_minutes BETWEEN 5 AND 240),
+    CONSTRAINT chk_doctor_profiles_headline_length CHECK (char_length(headline) >= 5),
+    CONSTRAINT chk_doctor_profiles_bio_length CHECK (bio IS NULL OR char_length(bio) <= 4000),
     CONSTRAINT chk_doctor_profiles_suspension
         CHECK ((suspended_at IS NULL AND suspension_reason IS NULL)
             OR (suspended_at IS NOT NULL AND suspension_reason IS NOT NULL)),
@@ -152,6 +155,13 @@ CREATE INDEX idx_doctor_profiles_bookable_experience_id ON doctor_profiles (year
 CREATE INDEX idx_doctor_profiles_verification_status_submitted_at_id
     ON doctor_profiles (verification_status, submitted_at, id) WHERE deleted_at IS NULL;
 ```
+**As built:** only `uq_doctor_profiles_user_id` exists among the profile indexes above. The fee, experience,
+and verification-queue indexes are deferred until their queries land. The migration comments the Identity user-id
+columns and grants `vcare_app` `SELECT, INSERT, UPDATE` but no `DELETE`; the two link-table migrations grant
+`DELETE` for set replacement, and the specialties link also grants `UPDATE` to move the primary flag.
+The language-code search index below is likewise deferred. Each link table's unique constraint covers its
+`doctor_profile_id` FK; the specialties link has its `specialty_id` leading-column index.
+
 The verification **application** is a view over this row plus its documents (application id = profile id,
 one per doctor). `identity_sync_status` gates bookability together with `verification_status` (Case 1) and
 tracks Case 3 confirmation.
@@ -175,7 +185,8 @@ CREATE INDEX idx_doctor_specialties_specialty_id_doctor_profile_id ON doctor_spe
 -- At most one primary specialty per doctor.
 CREATE UNIQUE INDEX uq_doctor_specialties_primary ON doctor_specialties (doctor_profile_id) WHERE is_primary;
 ```
-Rows are replaced wholesale when a doctor edits specialties (link rows are not a soft-delete entity).
+Doctors apply a set diff when specialties change: removed links are deleted, new links inserted, and the primary
+flag moved. Link rows are not soft-delete entities.
 
 ## `doctor_languages`
 ```sql

@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-04
+last_verified: 2026-10-07
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # RBAC and Ownership
@@ -26,7 +26,7 @@ Implementation guidance: the **`rbac-ownership-guard`** skill. Every route here 
    the only exemption from guard + policy, by explicit marker (`markProbeExempt`); it is not exempt from the param
    check.
 2. **The principal is the verified token only** — `req.auth` from the user-guard (user JWT, verified locally via
-   Identity's JWKS cached in memory, `lib/auth`) or the service-guard (service JWT, lands with the doctors module).
+   Identity's JWKS cached in memory, `lib/auth`) or the service-guard (service JWT, planned for the internal-summary module).
    `X-User-Id`, `X-Role`, `X-Forwarded-User`, body ids, and path params never grant access; ownership resolvers and
    checks receive only `auth` and the path params, never the body.
 3. **Role, then account state, then checks, then ownership** (as built, `lib/rbac/authorize.ts`): no principal 401 →
@@ -84,7 +84,8 @@ rateLimit(byUser)? → idempotency()? → handler`; every module `routes.ts` ret
 
 The local `suspended_at` check closes the up-to-15-minute window in which a suspended doctor's access token is
 still valid. It is a policy `AccessCheck` named `doctor_not_suspended` (`appliesTo: ["doctor"]`) supplied by the
-doctors module; `access` ships only the hook. Booking's check of the **target** doctor is a consultations service rule,
+doctors module. It is live on `PATCH /doctors/me`; the other three onboarding routes stay readable or usable by a
+locally suspended doctor when their token state allows it. Later practising routes must add this check. Booking's check of the **target** doctor is a consultations service rule,
 not a policy check.
 
 ## Per-route policy table
@@ -92,7 +93,7 @@ not a policy check.
 |---|---|---|---|
 | `GET /specialties` | patient (active), doctor (pending, active, or rejected — a doctor picks specialties while applying), admin (active) — contract `x-account-state` | none | — |
 | `POST /specialties`, `PATCH /specialties/:id` | admin | none | admin-action |
-| `POST /doctors/apply`, `GET/PATCH /doctors/me`, `POST /doctors/me/documents`, `GET /doctors/me/application` | doctor (pending, active, or rejected) | self — profile by `auth.userId` | — |
+| `POST /doctors/apply`, `GET/PATCH /doctors/me`, `GET /doctors/me/application` (live); `POST /doctors/me/documents` (planned) | doctor (pending, active, or rejected) | self — profile by `auth.userId`; `PATCH /me` checks local suspension | `doctor.profile_created` / `doctor.profile_updated` on real writes |
 | `GET /doctors`, `GET /doctors/:doctorUserId`, `GET /doctors/:doctorUserId/slots` | patient, admin | none (patients see bookable doctors only) | — |
 | `GET/PUT /doctors/me/working-hours`, `GET/POST /doctors/me/exceptions`, `DELETE /doctors/me/exceptions/:id`, `GET/POST /doctors/me/consultation-types`, `PATCH /doctors/me/consultation-types/:id` | doctor (active, not suspended) | self; `:id` must belong to the caller's profile, else `deny-not-found` | admin-action when a block with conflicts is confirmed |
 | `GET /admin/applications` | admin | none | — |

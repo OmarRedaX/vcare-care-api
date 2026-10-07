@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-03
+last_verified: 2026-10-07
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
-related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
+related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
 
 # Infrastructure — care-service
@@ -17,7 +17,7 @@ Every variable is declared and validated in `lib/config/env.ts` (zod); only that
 `{"level":"error","message":"invalid_environment","keys":[…]}` on stderr naming the **keys only** (never values), then
 exit 1. Empty strings count as unset. **Secrets have no defaults.**
 
-### Implemented (foundation 2026-09-28; access 2026-10-02)
+### Implemented (foundation 2026-09-28; access 2026-10-02; doctors 2026-10-07)
 | Variable | Default | Secret | Purpose / rule |
 |---|---|---|---|
 | `NODE_ENV` | `development` | | `development` \| `test` \| `production`; gates dev CORS and the `LOG_LEVEL=debug` ban |
@@ -36,6 +36,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `RATE_LIMIT_FALLBACK_DIVISOR` | `2` | | per-instance fallback limit `max(1, floor(limit / divisor))` when Redis is down ([ADR 0006](../adr/0006-health-split-redis-tier-2.md)) |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | | 1 000–60 000; deadline for draining requests **and** closing resources on `SIGTERM` (server and worker) |
 | `WORKER_POLL_INTERVAL_MS` | `1000` | | ≥ 100; default `care-worker` loop interval ([ADR 0008](../adr/0008-care-worker-component.md)) |
+| `ALLOWED_CURRENCIES` | `EGP` | | comma-separated uppercase currency allowlist for doctor consultation fees; empty entries and malformed codes are rejected |
 
 ### Planned (declared by the module that first uses them)
 | Variable | Default (local) | Secret | Purpose |
@@ -175,7 +176,10 @@ replaced by `"[REDACTED]"`, recursively through objects and arrays; depth > 8 �
 `diagnosisCode`, `treatmentPlan`, `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `objectKey`,
 `downloadUrl`, `uploadUrl`, `joinToken`, `authorization`, `cookie`, `setCookie`, `fullName`, `displayName`,
 `firstName`, `lastName`, `email`, `phone`, `password`, `token`, `accessToken`, `refreshToken`, `serviceToken`,
-`clientSecret`, `body`, `requestBody`, `connectionString`, `databaseUrl`, `migrationDatabaseUrl`. Tests assert that captured logs contain no clinical fixture strings.
+`clientSecret`, `body`, `requestBody`, `connectionString`, `databaseUrl`, `migrationDatabaseUrl`, `headline`, `bio`,
+`reviewNote`. Tests assert that captured logs contain no clinical fixture strings. Doctors validate IANA zones with
+`luxon` and canonicalize them before storage (ADR 0019). Profile writes audit changed field names in the same
+database transaction, without logging field values.
 
 **Errors in logs:** an `Error` passed under the `error` field is serialized to `{ name, message, code?, stack? }`; a
 database error (SQLSTATE `code`) keeps only identifiers (`name, code, severity?, constraint?, table?, column?,

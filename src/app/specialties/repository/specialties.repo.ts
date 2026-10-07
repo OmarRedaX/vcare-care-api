@@ -36,6 +36,17 @@ export async function listSpecialties(params: ListSpecialtiesParams, conn: Knex 
     return rows.map(toEntity);
 }
 
+/** Batch lookup for doctor profile links; includes inactive rows so existing links remain valid. */
+export async function findSpecialtiesByIds(ids: number[], conn: Knex = db): Promise<Specialty[]> {
+    if (ids.length === 0) return [];
+    const rows: SpecialtyRow[] = await conn<SpecialtyRow>("specialties")
+        .select(...SPECIALTY_COLUMNS)
+        .whereRaw("id = ANY(?::bigint[])", [ids])
+        .orderBy("name", "asc")
+        .orderBy("id", "asc");
+    return rows.map(toEntity);
+}
+
 export async function findSpecialtyByIdForUpdate(id: number, conn: Knex.Transaction): Promise<Specialty | undefined> {
     const row: SpecialtyRow | undefined = await conn<SpecialtyRow>("specialties")
         .select(...SPECIALTY_COLUMNS)

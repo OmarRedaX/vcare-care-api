@@ -3,7 +3,8 @@ title: Care Service — Service Card
 owner: care-team
 service: care-service
 status: draft
-last_verified: 2026-10-04
+diataxis: reference
+last_verified: 2026-10-07
 tags: [service-card, catalog, care]
 related: [index, system-design, runbook, integration, data-model]
 sync_to_hub: catalog/care-service.card.md
@@ -19,7 +20,7 @@ sync_to_hub: catalog/care-service.card.md
 | **Name** | care-service |
 | **Repo** | `vcare-care-api` |
 | **Owner** | care-team |
-| **Status** | foundation built (2026-09-28): both listeners, health live/ready, migrations, `care-worker`; access base built (2026-10-02): user-token verification via Identity's JWKS, deny-by-default `authorize` with a boot route assertion, append-only `audit_logs` (monthly partitions, `audit-partitions` worker loop), owner/app database roles; first business module `specialties` built (2026-10-04): admin-managed catalog `GET/POST /api/specialties`, `PATCH /api/specialties/{id}` (20-row synthetic starter catalog, audited writes); every other business module is designed, not built |
+| **Status** | foundation and access base built; `specialties` catalog built (2026-10-04); `doctors` own-profile onboarding built (2026-10-07): four self-owned routes, three profile/link tables, transactional profile audit and local suspension check. Document upload, submission, admin verification, search, schedules and other business modules remain designed, not built |
 | **Tier** | 1 (booking and consultations are on the synchronous patient path) · availability target **99.9 %** monthly (ADR 0005) |
 | **Runtime** | Node.js 24 LTS + TypeScript (strict), Express 5. `care-api`: two listeners, public `PORT=3001` (`/api/*`), internal `INTERNAL_PORT=3101` (`/internal/*`), 2–6 tasks. `care-worker`: sync retrier, notification outbox, reminders, cache refresh, audit partitions (1 task) |
 | **Datastores** | PostgreSQL 17 (own `care` database, `btree_gist`; primary + async replica; up to `DATABASE_POOL_MAX` + 1 readiness-probe connection per API task, 2 per worker task; two roles — owner `care` for migrations only, app login `care_app` in the `NOLOGIN` group `vcare_app` for `care-api`/`care-worker`, explicit per-table grants, `audit_logs` append-only by grant with column-level `INSERT` — ADR 0018) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
@@ -31,7 +32,7 @@ consultation lifecycle (waiting room, session join, no-show), patient profiles, 
 24 h lock and amendments, help articles (the Phase-2 RAG corpus), and the audit log for all of it.
 
 ## Data owned
-`specialties`, `doctor_profiles`, `doctor_specialties`, `doctor_languages`, `verification_documents`,
+`specialties`, `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built), `verification_documents`,
 `working_hours`, `schedule_exceptions`, `consultation_types`, `consultations`, `patient_profiles`,
 `medical_records`, `medical_record_amendments`, `record_attachments`, `help_articles`, `audit_logs`,
 `identity_sync_jobs`, `notification_outbox`. Identity accounts are referenced only by `*_user_id BIGINT` (no cross-database FK).
@@ -58,13 +59,12 @@ Detail: [architecture/data-model.md](./architecture/data-model.md).
 | admin tooling / future ai-service | `GET /internal/doctors/{userId}/summary` (service token, scope `doctors:read`) | no MVP service client holds `doctors:read` yet |
 
 ## Endpoint families
-`/api/health/live`, `/api/health/ready` (live; body `checks: { database, redis, identityJwks }`; `/api/health` removed) · `/api/specialties` (live: `GET` list, `POST` create, `PATCH /{id}` update) · `/api/doctors/apply`, `/api/doctors/me`, `/api/doctors/me/documents`,
-`/api/doctors/me/application` · `/api/doctors`, `/api/doctors/{doctorUserId}`, `/api/doctors/{doctorUserId}/slots` ·
+`/api/health/live`, `/api/health/ready` (live; body `checks: { database, redis, identityJwks }`; `/api/health` removed) · `/api/specialties` (live: `GET` list, `POST` create, `PATCH /{id}` update) · doctors onboarding (live: `POST /api/doctors/apply`, `GET/PATCH /api/doctors/me`, `GET /api/doctors/me/application`; `ALLOWED_CURRENCIES` env; no Identity call) · `/api/doctors/me/documents` (planned) · `/api/doctors`, `/api/doctors/{doctorUserId}`, `/api/doctors/{doctorUserId}/slots` ·
 `/api/doctors/me/working-hours`, `/api/doctors/me/exceptions`, `/api/doctors/me/consultation-types` ·
 `/api/admin/applications` (approve, reject, reopen) · `/api/admin/doctors/{doctorUserId}/suspend`, `/reinstate` (planned) ·
 `/api/patients/me`, `/api/patients/{patientUserId}`, `/api/patients/{patientUserId}/records` ·
 `/api/consultations` (book, list, waiting-room, calendar, get, reschedule, cancel, join, start, complete, no-show, record) ·
-`/api/records/{id}` (+ attachment uploads, complete, download-url — planned) · document uploads and download-url (planned) · `/api/help-articles` · `/api/audit-logs` · `/internal/doctors/{userId}/summary` · `/internal/health/live`, `/internal/health/ready` (live). Everything except health and `/api/specialties` is designed in the contract, not yet built.
+`/api/records/{id}` (+ attachment uploads, complete, download-url — planned) · document uploads and download-url (planned) · `/api/help-articles` · `/api/audit-logs` · `/internal/doctors/{userId}/summary` · `/internal/health/live`, `/internal/health/ready` (live). Everything except health, specialties and the four doctors onboarding routes is designed in the contract, not yet built.
 
 ## Events
 None in MVP (HTTP-only). Future candidates (no AsyncAPI yet): `consultation.booked`,

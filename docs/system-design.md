@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-28
+last_verified: 2026-10-07
 tags: [system-design, architecture, router, care]
 related: [overview, data-model, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
@@ -51,6 +51,8 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0015](./adr/0015-aws-sdk-storage-adapter.md) | AWS SDK v3 modular packages behind `lib/storage` |
 | [0016](./adr/0016-foundation-runtime-dependencies.md) | Foundation runtime dependencies (`reflect-metadata`, in-house dev CORS, no `uuid`/`dotenv`) |
 | [0017](./adr/0017-generic-helpers-and-transaction-scoping.md) | Generic helpers live in `lib/`/`pkg/`; transactions use Knex's handler form |
+| [0018](./adr/0018-db-role-split-explicit-grants-partition-function.md) | Owner/app database roles and explicit grants; audit partition maintenance |
+| [0019](./adr/0019-luxon-for-doctor-timezone-validation.md) | `luxon` validates doctor IANA timezones; canonical spelling is stored |
 
 `/system-design` 2026-09-15 (Care runtime, capacity, notifications, reinstatement) also produced hub ADR 0009
 (doctor reinstatement via Care) and hub ADR 0010 (notification contact lookup). The file-handling session
