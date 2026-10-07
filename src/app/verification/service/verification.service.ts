@@ -17,7 +17,7 @@ import { IdentitySyncStatus, VerificationStatus } from "../../doctors/enums";
 import type { DoctorProfile } from "../../doctors/entity/doctor-profile.entity";
 import { ApplicationNotEditable, ApplicationNotReviewable, UploadIntentExpired } from "../errors";
 import { IdentitySyncJobKind, IdentitySyncJobStatus, UploadIntentKind, VerificationAuditAction, VerificationDocumentStatus, VerificationDocumentType } from "../enums";
-import { closeIntent, deleteIntentsOlderThan, findDocument, findDocumentForUpdate, findIntent, findIntentForUpdate, findPendingSyncJob, findProfileById, findProfileByUserId, findSyncJob, insertDocument, insertIntent, insertSyncJob, listDocuments, listDocumentsBatch, listExpiredOpenIntents, listQueue, softDeleteDocument, supersedePendingSyncJob, touchProfile, updateSyncJob } from "../repository/verification.repo";
+import { claimDuePendingJobs, closeIntent, deleteIntentsOlderThan, findDocument, findDocumentForUpdate, findIntent, findIntentForUpdate, findPendingSyncJob, findProfileById, findProfileByUserId, findSyncJob, insertDocument, insertIntent, insertSyncJob, listDocuments, listDocumentsBatch, listExpiredOpenIntents, listQueue, softDeleteDocument, supersedePendingSyncJob, touchProfile, updateSyncJob } from "../repository/verification.repo";
 import type { DecisionResult, DocumentCompletion, QueueCursorPayload, QueuePage, QueueQuery, SubmitTransition, VerificationApplicationView } from "../types";
 
 export const VERIFICATION_INTENT_LOCK_NAMESPACE = 1101;
@@ -160,6 +160,9 @@ export class VerificationService {
         });
         return this.syncJob(jobId, actor, 3);
     }
+    async listDueSyncJobIds(limit = 50): Promise<number[]> { return (await claimDuePendingJobs(limit, this.db)).map((job) => job.id); }
+    async listExpiredIntents(limit = 500): Promise<{ id: number; quarantineKey: string }[]> { return (await listExpiredOpenIntents(limit, this.db)).map((intent) => ({ id: intent.id, quarantineKey: intent.quarantine_key })); }
+    async purgeExpiredIntent(id: number, quarantineKey: string): Promise<void> { await this.storage.delete(quarantineKey); await this.closeExpiredIntent(id); }
     async processDueSyncJob(jobId: number): Promise<void> { const job = await findSyncJob(jobId, this.db); if (!job || job.kind !== IdentitySyncJobKind.Verification || job.status !== IdentitySyncJobStatus.Pending) return; await this.syncJob(jobId, null, 1); }
     private async syncJob(jobId: number, actor: AuthContext | null, attempts: number): Promise<DecisionResult> {
         const initial = await findSyncJob(jobId, this.db); if (!initial) throw NotFound;

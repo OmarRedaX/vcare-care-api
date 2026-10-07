@@ -1,6 +1,8 @@
 import type { Knex } from "knex";
 import type { Env } from "../config/types";
 import type { Logger } from "../logger/logger";
+import type { ObjectStorage } from "../storage/object-storage";
+import type { IdentityClient } from "../identity-client/identity-client";
 
 /**
  * What a tick may report besides throwing: `"incomplete"` = it ran without throwing but did not achieve its goal (e.g.
@@ -26,4 +28,6 @@ export interface WorkerLoopDeps {
     env: Env;
     db: Knex;
     logger: Logger;
+    storage: ObjectStorage;
+    identity: IdentityClient;
 }
