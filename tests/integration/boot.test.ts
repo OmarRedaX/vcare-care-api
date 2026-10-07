@@ -113,6 +113,12 @@ describe("boot-time route authorization (integration: real app factories)", () =
         }
     });
 
+    it("should answer GET /api/doctors/me without a token with 401 when the real router is mounted", async () => {
+        const res = await request(buildTestApps().publicApp).get("/api/doctors/me");
+        expect(res.status).toBe(401);
+        expectErrorEnvelope(res.body, "Unauthorized", res.headers["x-request-id"]);
+    });
+
     it("should start with test routers that lack authorize because extraRouters are mounted after the check (A8)", async () => {
         const { publicApp, internalApp } = buildTestApps({
             publicRouters: [{ path: "/api", router: buildEnvelopeRouter() }],

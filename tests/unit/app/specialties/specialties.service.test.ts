@@ -15,6 +15,7 @@ import type { AuthContext } from "../../../../src/lib/types/types";
 // service reads at call time (jest.mock hoisting is not applied by this ts-jest setup).
 const repo = jest.requireActual<typeof RepoModule>("../../../../src/app/specialties/repository/specialties.repo");
 const repoMock = {
+    findSpecialtiesByIds: jest.spyOn(repo, "findSpecialtiesByIds"),
     listSpecialties: jest.spyOn(repo, "listSpecialties"),
     findSpecialtyByIdForUpdate: jest.spyOn(repo, "findSpecialtyByIdForUpdate"),
     insertSpecialty: jest.spyOn(repo, "insertSpecialty"),
@@ -52,6 +53,21 @@ const query = (init: Partial<ListSpecialtiesQueryDto> = {}): ListSpecialtiesQuer
 const pgError = (code: string, constraint?: string): Error => Object.assign(new Error("pg"), { code, constraint });
 
 describe("SpecialtiesService", () => {
+    describe("findByIds", () => {
+        it("should return existing rows including inactive specialties", async () => {
+            const { service, db } = setup();
+            const rows = [row({ id: 1 }), row({ id: 2, isActive: false })];
+            repoMock.findSpecialtiesByIds.mockResolvedValue(rows);
+            expect(await service.findByIds([1, 2], db)).toEqual(rows);
+            expect(repoMock.findSpecialtiesByIds).toHaveBeenCalledWith([1, 2], db);
+        });
+
+        it("should return no rows when ids are unknown", async () => {
+            const { service } = setup();
+            repoMock.findSpecialtiesByIds.mockResolvedValue([]);
+            expect(await service.findByIds([999])).toEqual([]);
+        });
+    });
     describe("list", () => {
         it.each([
             ["admin", admin, true],

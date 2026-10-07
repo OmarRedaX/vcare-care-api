@@ -4,6 +4,9 @@ import { ensureAppLogin } from "../../src/lib/knex/app-login";
 import { createKnex, db, probeDb } from "../../src/lib/knex/knex";
 import { migrationConfig } from "../../src/lib/knex/knexfile";
 import * as seedMigration from "../../src/migrations/20261004120100_seed_specialties_starter_catalog";
+import * as doctorProfilesMigration from "../../src/migrations/20261005120000_create_doctor_profiles";
+import * as doctorLanguagesMigration from "../../src/migrations/20261005120100_create_doctor_languages";
+import * as doctorSpecialtiesMigration from "../../src/migrations/20261005120200_create_doctor_specialties";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -65,6 +68,10 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         try {
             await migrator.migrate.rollback(migrationConfig, true);
             expect(await hasBtreeGist(migrator)).toBe(false);
+            const dropped = await migrator.raw<{ rows: Array<{ profiles: string | null; languages: string | null; specialties: string | null }> }>(
+                "SELECT to_regclass('public.doctor_profiles')::text AS profiles, to_regclass('public.doctor_languages')::text AS languages, to_regclass('public.doctor_specialties')::text AS specialties",
+            );
+            expect(dropped.rows[0]).toEqual({ profiles: null, languages: null, specialties: null });
             const [, pending] = (await migrator.migrate.list(migrationConfig)) as [unknown[], unknown[]];
             expect(pending.length).toBeGreaterThanOrEqual(1);
         } finally {
@@ -73,6 +80,10 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await ensureAppLogin(migrator, process.env.DATABASE_URL ?? "");
         }
         expect(await hasBtreeGist(migrator)).toBe(true);
+        const doctors = await migrator.raw<{ rows: Array<{ profiles: string | null; languages: string | null; specialties: string | null }> }>(
+            "SELECT to_regclass('public.doctor_profiles')::text AS profiles, to_regclass('public.doctor_languages')::text AS languages, to_regclass('public.doctor_specialties')::text AS specialties",
+        );
+        expect(doctors.rows[0]).toEqual({ profiles: "doctor_profiles", languages: "doctor_languages", specialties: "doctor_specialties" });
     });
 
     describe("access migrations (create_app_role, create_audit_logs, create_audit_logs_ensure_partitions)", () => {
@@ -249,6 +260,42 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             const remaining = await ownerDb.raw<{ rows: Array<{ slug: string }> }>("SELECT slug FROM specialties");
             expect(remaining.rows).toEqual([{ slug: "synthetic-custom" }]);
         });
+
+        it("should keep a starter specialty referenced by doctor_specialties when seed down runs", async () => {
+            await seedMigration.up(ownerDb);
+            const specialty = await ownerDb("specialties").where("slug", "cardiology").first("id");
+            const [profile] = await ownerDb("doctor_profiles").insert({ user_id: 202, headline: "Synthetic doctor headline",
+                years_experience: 5, consultation_fee: 100, currency: "EGP", default_slot_minutes: 30,
+                timezone: "Africa/Cairo", is_accepting_patients: true, verification_status: "draft",
+                identity_sync_status: "not_required" }).returning("id");
+            await ownerDb("doctor_specialties").insert({ doctor_profile_id: profile.id, specialty_id: specialty.id, is_primary: true });
+            await seedMigration.down(ownerDb);
+            expect(await ownerDb("specialties").where("slug", "cardiology")).toHaveLength(1);
+            expect(await count()).toBe(1);
+        });
+    });
+
+    it("should round-trip all three doctor table migrations with their named indexes and grants", async () => {
+        await truncateAll();
+        try {
+            await doctorSpecialtiesMigration.down(migrator);
+            await doctorLanguagesMigration.down(migrator);
+            await doctorProfilesMigration.down(migrator);
+            const absent = await migrator.raw<{ rows: Array<{ profile: string | null }> }>("SELECT to_regclass('public.doctor_profiles')::text AS profile");
+            expect(absent.rows[0]?.profile).toBeNull();
+        } finally {
+            await doctorProfilesMigration.up(migrator);
+            await doctorLanguagesMigration.up(migrator);
+            await doctorSpecialtiesMigration.up(migrator);
+        }
+        const result = await migrator.raw<{ rows: Array<{ name: string }> }>(
+            "SELECT indexname AS name FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'",
+        );
+        expect(result.rows).toEqual([{ name: "uq_doctor_profiles_user_id" }]);
+        const grant = await migrator.raw<{ rows: Array<{ can_select: boolean; can_delete: boolean }> }>(
+            "SELECT has_table_privilege('vcare_app','doctor_profiles','SELECT') AS can_select, has_table_privilege('vcare_app','doctor_profiles','DELETE') AS can_delete",
+        );
+        expect(grant.rows[0]).toEqual({ can_select: true, can_delete: false });
     });
 
     it("should report UTC when SHOW TIME ZONE runs on a pooled connection (F8)", async () => {
