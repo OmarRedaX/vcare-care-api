@@ -40,6 +40,8 @@ services:
       MINIO_ROOT_USER: care-local
       MINIO_ROOT_PASSWORD: synthetic-minio-secret
       MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:5173
+      # Synthetic static KMS key so MinIO accepts the x-amz-server-side-encryption=AES256 POST condition (SSE-S3), as AWS does.
+      MINIO_KMS_SECRET_KEY: care-local-key:c3ludGhldGljLWxvY2FsLWttcy1rZXktMDEyMzQ1Njc=
     ports:
       - "127.0.0.1:9002:9000"
     volumes:
