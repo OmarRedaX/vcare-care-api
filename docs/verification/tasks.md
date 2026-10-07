@@ -5,7 +5,7 @@ service: care-service
 module: verification
 status: in-progress
 diataxis: how-to
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [tasks, verification]
 related: [verification-spec, verification-brainstorm]
 ---
@@ -40,3 +40,4 @@ related: [verification-spec, verification-brainstorm]
 - [~] (step 6 · test) Add unit, integration, concurrency, RBAC, contract and MinIO suites.
 - [~] (step 7 · qa/docs) CURL manual QA done 2026-10-08 (274 pass / 0 fail, see manual-qa.md; one low-severity worker finding open); as-built module and service docs/card still pending `/update-docs`.
 - [ ] (step 7 · qa/docs) Hand off hub documentation and sync deltas.
+- [x] (step 6 · test) Fix review 20261008-1500: pending-sync guard, ETag-bound promote, no idempotency on URL routes, session-lock and rate-limit tests, keyset index use, worker backoff re-check, layering and logging items (typecheck, lint, unit and full integration suites green).
