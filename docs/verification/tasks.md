@@ -38,5 +38,5 @@ related: [verification-spec, verification-brainstorm]
 - [~] (step 5 · runtime) Add worker loops, DI registration, routes and mounts. API wiring is done; worker loops remain for the separate task.
 - [x] (step 5 · runtime) Wire request id, rate limit, idempotency and audit behavior for the API routes.
 - [~] (step 6 · test) Add unit, integration, concurrency, RBAC, contract and MinIO suites.
-- [ ] (step 7 · qa/docs) Run CURL manual QA and update as-built module and service docs/card.
+- [~] (step 7 · qa/docs) CURL manual QA done 2026-10-08 (274 pass / 0 fail, see manual-qa.md; one low-severity worker finding open); as-built module and service docs/card still pending `/update-docs`.
 - [ ] (step 7 · qa/docs) Hand off hub documentation and sync deltas.
