@@ -1,5 +1,7 @@
 // Loopback-only, synthetic JWKS and user-token issuer for scripts/curl-test-doctors.sh.
 // Keys and tokens exist only in memory. No requests or responses are logged.
+import process from 'node:process';
+import { URL } from 'node:url';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
