@@ -381,11 +381,10 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
         await apply();
         await expect(db.raw("DELETE FROM doctor_profiles")).rejects.toMatchObject({ code: "42501" });
         await expect(db.raw("TRUNCATE doctor_profiles")).rejects.toMatchObject({ code: "42501" });
-        await db.transaction(async (trx) => {
-            await trx.raw("SET LOCAL enable_seqscan = off");
-            const result = await trx.raw<{ rows: Array<{ "QUERY PLAN": string }> }>("EXPLAIN SELECT id FROM doctor_profiles WHERE user_id = ? AND deleted_at IS NULL LIMIT 1", [202]);
-            expect(result.rows.map((row) => row["QUERY PLAN"]).join(" ")).toContain("uq_doctor_profiles_user_id");
-        });
+        // A plan assertion is not stable on a one-row table once other doctor_profiles indexes exist, so check the
+        // live-user index definition itself (unique, user_id, partial on deleted_at IS NULL).
+        const index = await db.raw<{ rows: Array<{ indexdef: string }> }>("SELECT indexdef FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'");
+        expect(index.rows[0]?.indexdef).toMatch(/UNIQUE INDEX.*\(user_id\).*WHERE \(deleted_at IS NULL\)/);
     });
 
     it("should grant child row deletion while enforcing named profile and link constraints", async () => {

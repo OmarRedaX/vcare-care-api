@@ -62,6 +62,7 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0017-generic-helpers-and-transaction-scoping.md](./adr/0017-generic-helpers-and-transaction-scoping.md) | where a domain-free helper goes; how a service opens a transaction | explanation |
 | [adr/0018-db-role-split-explicit-grants-partition-function.md](./adr/0018-db-role-split-explicit-grants-partition-function.md) | owner `care` runs migrations, `care-api`/`care-worker` log in as `care_app` (in `NOLOGIN` `vcare_app`); explicit per-table grants; `audit_logs` partitions via one `SECURITY DEFINER` function; transaction-scoped advisory lock | explanation |
 | [adr/0019-luxon-for-doctor-timezone-validation.md](./adr/0019-luxon-for-doctor-timezone-validation.md) | understand why doctors validate and canonicalize IANA timezones with `luxon` | explanation |
+| [adr/0020-local-s3-emulator-image.md](./adr/0020-local-s3-emulator-image.md) | understand why dev/test compose runs a digest-pinned frozen community MinIO build instead of the official image | explanation |
 
 ## Module docs
 Created by the workflow, not ahead of time: `/brainstorm <feature>` creates `docs/<module>/` (brainstorm,
@@ -87,6 +88,7 @@ spec, tasks, manual-qa; `reviews/` exists only while a review has open findings)
 | [doctors/manual-qa.md](./doctors/manual-qa.md) | see the 2026-10-07 CURL run of all four doctors onboarding endpoints (38 pass, 0 fail), including RBAC, ownership isolation, response shapes, validation, idempotency, suspension, and rate limiting; re-run with `scripts/curl-test-doctors.sh` | how-to |
 | [verification/brainstorm.md](./verification/brainstorm.md) | see the agreed scope of the `verification` module (document upload via intents, live `submit`, admin queue/approve/reject/reopen, Case 1 with a real `identity_sync_jobs` worker loop, new `lib/identity-client` and `lib/storage`, MinIO for adapter tests; search-cache invalidation deferred) | explanation |
 | [verification/spec.md](./verification/spec.md) | build or change verification: direct upload and audited download routes, application transitions, Case 1 sync jobs and Case 2 hydration, exact migrations, storage/Identity ports, worker loops, contract edits C1–C6, test plan and build order | reference |
+| [verification/tasks.md](./verification/tasks.md) | track verification build steps and phase A completion | how-to |
 | [access/spec.md](./access/spec.md) | build or use the access base: JWKS cache and `userGuard()`, the `Policy` shape and `authorize` step order, the boot route assertion, `AuditRecorder.record(trx, entry)`, the `audit_logs` migrations, DB roles (`care` / `vcare_app` / `care_app`, `ensure-app-login`), the worker `audit-partitions` loop, `checks.identityJwks`, env additions, the fixes for #5 #6 #10 #11, the test plan, the decided contract edits C1/C2, the `audit` module hand-off (read indexes deferred), and §15 As-built notes (stricter boot assertion, column-level `INSERT`, `ensure-app-login` refusals, Redis socket timeout, final test counts) | reference |
 
 ## Contract (source of truth — prose above derives from it)

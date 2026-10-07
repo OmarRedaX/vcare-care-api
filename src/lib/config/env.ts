@@ -11,6 +11,8 @@ export class InvalidEnvError extends Error {
 }
 
 const port = z.coerce.number().int().min(1).max(65535);
+const positiveSeconds = z.coerce.number().int().min(1).max(86400);
+const strictBoolean = z.enum(["true", "false"]).transform((value) => value === "true");
 
 const urlWithScheme = (schemes: string[], label: string) =>
     z
@@ -102,6 +104,22 @@ export const envSchema = z
         REDIS_URL: urlWithScheme(["redis:", "rediss:"], "redis"),
         /** No default: a wrong default would answer 401 to every request silently (access spec §3.10). */
         IDENTITY_JWKS_URL: urlWithScheme(["http:", "https:"], "http(s)"),
+        IDENTITY_INTERNAL_URL: urlWithScheme(["http:", "https:"], "http(s)"),
+        SERVICE_CLIENT_ID: z.string().min(1),
+        SERVICE_CLIENT_SECRET: z.string().min(1),
+        STORAGE_BUCKET: z.string().min(1),
+        STORAGE_REGION: z.string().min(1),
+        STORAGE_ENDPOINT: urlWithScheme(["http:", "https:"], "http(s)").optional(),
+        STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
+        STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+        STORAGE_FORCE_PATH_STYLE: strictBoolean.default(false),
+        UPLOAD_POLICY_TTL_SECONDS: positiveSeconds.default(300),
+        UPLOAD_INTENT_TTL_SECONDS: positiveSeconds.default(900),
+        DOWNLOAD_URL_TTL_SECONDS: positiveSeconds.default(60),
+        IDENTITY_SYNC_POLL_SECONDS: positiveSeconds.default(10),
+        IDENTITY_SYNC_RETRY_CAP_SECONDS: positiveSeconds.default(60),
+        IDENTITY_SYNC_ALERT_AFTER_SECONDS: positiveSeconds.default(900),
+        UPLOAD_INTENT_PURGE_SECONDS: positiveSeconds.default(300),
         AUDIT_PARTITION_MONTHS_AHEAD: z.coerce.number().int().min(1).max(12).default(2),
         CORS_ORIGINS: corsOrigins,
         LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
@@ -117,6 +135,24 @@ export const envSchema = z
         }),
     })
     .superRefine((value, ctx) => {
+        if ((value.STORAGE_ACCESS_KEY_ID === undefined) !== (value.STORAGE_SECRET_ACCESS_KEY === undefined)) {
+            for (const key of ["STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY"] as const) {
+                ctx.addIssue({ code: "custom", path: [key], message: "storage credentials must be supplied together" });
+            }
+        }
+        if (value.NODE_ENV !== "production" && (value.STORAGE_ACCESS_KEY_ID === undefined || value.STORAGE_SECRET_ACCESS_KEY === undefined)) {
+            for (const key of ["STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY"] as const) {
+                ctx.addIssue({ code: "custom", path: [key], message: "required for local and test storage" });
+            }
+        }
+        if (value.NODE_ENV !== "production" && value.STORAGE_ENDPOINT === undefined) {
+            ctx.addIssue({ code: "custom", path: ["STORAGE_ENDPOINT"], message: "required for local and test storage" });
+        }
+        if (value.NODE_ENV !== "test") {
+            for (const [key, expected] of [["UPLOAD_POLICY_TTL_SECONDS", 300], ["UPLOAD_INTENT_TTL_SECONDS", 900], ["DOWNLOAD_URL_TTL_SECONDS", 60]] as const) {
+                if (value[key] !== expected) ctx.addIssue({ code: "custom", path: [key], message: "security TTL is fixed outside tests" });
+            }
+        }
         if (value.INTERNAL_PORT === value.PORT) {
             ctx.addIssue({
                 code: "custom",

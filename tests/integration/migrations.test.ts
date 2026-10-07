@@ -7,6 +7,10 @@ import * as seedMigration from "../../src/migrations/20261004120100_seed_special
 import * as doctorProfilesMigration from "../../src/migrations/20261005120000_create_doctor_profiles";
 import * as doctorLanguagesMigration from "../../src/migrations/20261005120100_create_doctor_languages";
 import * as doctorSpecialtiesMigration from "../../src/migrations/20261005120200_create_doctor_specialties";
+import * as uploadIntentsMigration from "../../src/migrations/20261007120000_create_upload_intents";
+import * as verificationDocumentsMigration from "../../src/migrations/20261007120100_create_verification_documents";
+import * as identitySyncJobsMigration from "../../src/migrations/20261007120200_create_identity_sync_jobs";
+import * as verificationQueueIndexMigration from "../../src/migrations/20261007120300_add_verification_queue_index";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -275,9 +279,13 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         });
     });
 
-    it("should round-trip all three doctor table migrations with their named indexes and grants", async () => {
+    it("should round-trip doctor and verification migrations with their named indexes and grants", async () => {
         await truncateAll();
         try {
+            await verificationQueueIndexMigration.down(migrator);
+            await identitySyncJobsMigration.down(migrator);
+            await verificationDocumentsMigration.down(migrator);
+            await uploadIntentsMigration.down(migrator);
             await doctorSpecialtiesMigration.down(migrator);
             await doctorLanguagesMigration.down(migrator);
             await doctorProfilesMigration.down(migrator);
@@ -287,6 +295,10 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await doctorProfilesMigration.up(migrator);
             await doctorLanguagesMigration.up(migrator);
             await doctorSpecialtiesMigration.up(migrator);
+            await uploadIntentsMigration.up(migrator);
+            await verificationDocumentsMigration.up(migrator);
+            await identitySyncJobsMigration.up(migrator);
+            await verificationQueueIndexMigration.up(migrator);
         }
         const result = await migrator.raw<{ rows: Array<{ name: string }> }>(
             "SELECT indexname AS name FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'",
@@ -296,6 +308,37 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             "SELECT has_table_privilege('vcare_app','doctor_profiles','SELECT') AS can_select, has_table_privilege('vcare_app','doctor_profiles','DELETE') AS can_delete",
         );
         expect(grant.rows[0]).toEqual({ can_select: true, can_delete: false });
+    });
+
+    it("should grant only the required verification table operations", async () => {
+        const result = await migrator.raw<{ rows: Array<{ table_name: string; can_select: boolean; can_insert: boolean; can_update: boolean; can_delete: boolean }> }>(
+            `SELECT name AS table_name,
+                    has_table_privilege('vcare_app', name, 'SELECT') AS can_select,
+                    has_table_privilege('vcare_app', name, 'INSERT') AS can_insert,
+                    has_table_privilege('vcare_app', name, 'UPDATE') AS can_update,
+                    has_table_privilege('vcare_app', name, 'DELETE') AS can_delete
+             FROM (VALUES ('upload_intents'), ('verification_documents'), ('identity_sync_jobs')) AS tables(name)
+             ORDER BY name`,
+        );
+        expect(result.rows).toEqual([
+            { table_name: "identity_sync_jobs", can_select: true, can_insert: true, can_update: true, can_delete: false },
+            { table_name: "upload_intents", can_select: true, can_insert: true, can_update: true, can_delete: true },
+            { table_name: "verification_documents", can_select: true, can_insert: true, can_update: true, can_delete: false },
+        ]);
+    });
+
+    it("should offer the named verification queue and worker indexes to their queries", async () => {
+        await migrator.transaction(async (trx) => {
+            await trx.raw("SET LOCAL enable_seqscan = off");
+            const queue = await trx.raw<{ rows: Array<{ 'QUERY PLAN': string }> }>(
+                "EXPLAIN SELECT id FROM doctor_profiles WHERE verification_status='submitted' AND deleted_at IS NULL ORDER BY submitted_at, id LIMIT 20",
+            );
+            expect(queue.rows.map((row) => row["QUERY PLAN"]).join("\n")).toContain("idx_doctor_profiles_verification_status_submitted_at_id");
+            const jobs = await trx.raw<{ rows: Array<{ 'QUERY PLAN': string }> }>(
+                "EXPLAIN SELECT id FROM identity_sync_jobs WHERE status='pending' AND next_attempt_at <= NOW() ORDER BY next_attempt_at LIMIT 50",
+            );
+            expect(jobs.rows.map((row) => row["QUERY PLAN"]).join("\n")).toContain("idx_identity_sync_jobs_pending_next_attempt_at");
+        });
     });
 
     it("should report UTC when SHOW TIME ZONE runs on a pooled connection (F8)", async () => {

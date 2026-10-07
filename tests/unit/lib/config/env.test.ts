@@ -1,10 +1,14 @@
-import { InvalidEnvError, envSchema, parseEnv, parseMigrationEnv } from "../../../../src/lib/config/env";
+import { InvalidEnvError, envSchema, parseEnv as parseEnvRaw, parseMigrationEnv } from "../../../../src/lib/config/env";
 import type * as EnvModule from "../../../../src/lib/config/env";
 import type { EnvSource } from "../../../../src/lib/config/types";
 
 const SECRET_DB = "postgres://synthetic-user:synthetic-pass-9931@localhost:5434/care_test";
 const SECRET_REDIS = "redis://:synthetic-redis-pass-4417@localhost:6381/0";
 const JWKS_URL = "http://127.0.0.1:1/.well-known/jwks.json";
+const newRequired = { IDENTITY_INTERNAL_URL: "http://localhost:3100", SERVICE_CLIENT_ID: "synthetic-care",
+    SERVICE_CLIENT_SECRET: "synthetic-secret", STORAGE_BUCKET: "care-test", STORAGE_REGION: "us-east-1",
+    STORAGE_ENDPOINT: "http://localhost:9003", STORAGE_ACCESS_KEY_ID: "synthetic-access", STORAGE_SECRET_ACCESS_KEY: "synthetic-storage-secret" };
+const parseEnv = (source: EnvSource) => parseEnvRaw({ ...newRequired, ...source });
 
 const secretsOnly = (): EnvSource => ({ DATABASE_URL: SECRET_DB, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
 
@@ -32,6 +36,15 @@ describe("lib/config/env parseEnv", () => {
             DATABASE_POOL_MAX: 20,
             REDIS_URL: SECRET_REDIS,
             IDENTITY_JWKS_URL: JWKS_URL,
+            ...newRequired,
+            STORAGE_FORCE_PATH_STYLE: false,
+            UPLOAD_POLICY_TTL_SECONDS: 300,
+            UPLOAD_INTENT_TTL_SECONDS: 900,
+            DOWNLOAD_URL_TTL_SECONDS: 60,
+            IDENTITY_SYNC_POLL_SECONDS: 10,
+            IDENTITY_SYNC_RETRY_CAP_SECONDS: 60,
+            IDENTITY_SYNC_ALERT_AFTER_SECONDS: 900,
+            UPLOAD_INTENT_PURGE_SECONDS: 300,
             AUDIT_PARTITION_MONTHS_AHEAD: 2,
             CORS_ORIGINS: [],
             LOG_LEVEL: "info",
@@ -116,7 +129,7 @@ describe("lib/config/env parseEnv", () => {
         expect(error.keys).toEqual(["DATABASE_URL"]);
         expect(error.message).not.toContain("synthetic-pass-9931");
 
-        const result = envSchema.safeParse({ DATABASE_URL: url, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
+        const result = envSchema.safeParse({ ...newRequired, DATABASE_URL: url, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
         expect(result.success).toBe(false);
         expect(result.error?.issues.map((issue) => issue.message)).toEqual([
             "must not set options, statement_timeout, query_timeout, application_name — Care sets them per pool",
@@ -252,7 +265,7 @@ describe("lib/config/env — access variables (spec §3.10)", () => {
         const error = captureInvalid({ ...secretsOnly(), MIGRATION_DATABASE_URL: sameUser });
         expect(error.keys).toEqual(["MIGRATION_DATABASE_URL"]);
         expect(error.message).not.toContain("other-pass");
-        const result = envSchema.safeParse({ ...secretsOnly(), MIGRATION_DATABASE_URL: sameUser });
+        const result = envSchema.safeParse({ ...newRequired, ...secretsOnly(), MIGRATION_DATABASE_URL: sameUser });
         expect(result.error?.issues.map((issue) => issue.message)).toEqual(["must use a different role than DATABASE_URL"]);
 
         // URL-encoding does not hide the collision.
@@ -277,5 +290,29 @@ describe("lib/config/env — access variables (spec §3.10)", () => {
                 "AUDIT_PARTITION_MONTHS_AHEAD",
             ]);
         }
+    });
+});
+
+describe("verification storage and worker environment", () => {
+    it("requires Identity client credentials and local storage credentials together", () => {
+        expect(captureInvalid({ ...secretsOnly(), SERVICE_CLIENT_SECRET: "" }).keys).toEqual(["SERVICE_CLIENT_SECRET"]);
+        expect(captureInvalid({ ...secretsOnly(), STORAGE_SECRET_ACCESS_KEY: "" }).keys).toContain("STORAGE_SECRET_ACCESS_KEY");
+        expect(captureInvalid({ ...secretsOnly(), STORAGE_ENDPOINT: "" }).keys).toEqual(["STORAGE_ENDPOINT"]);
+    });
+
+    it("accepts only strict path-style booleans and bounded integer intervals", () => {
+        expect(parseEnv({ ...secretsOnly(), STORAGE_FORCE_PATH_STYLE: "true" }).STORAGE_FORCE_PATH_STYLE).toBe(true);
+        expect(captureInvalid({ ...secretsOnly(), STORAGE_FORCE_PATH_STYLE: "1" }).keys).toEqual(["STORAGE_FORCE_PATH_STYLE"]);
+        expect(captureInvalid({ ...secretsOnly(), IDENTITY_SYNC_POLL_SECONDS: "0" }).keys).toEqual(["IDENTITY_SYNC_POLL_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), UPLOAD_INTENT_PURGE_SECONDS: "1.5" }).keys).toEqual(["UPLOAD_INTENT_PURGE_SECONDS"]);
+    });
+
+    it("fixes security TTLs outside tests and permits task-role credentials in production", () => {
+        expect(captureInvalid({ ...secretsOnly(), UPLOAD_POLICY_TTL_SECONDS: "301" }).keys).toEqual(["UPLOAD_POLICY_TTL_SECONDS"]);
+        const production = parseEnv({ ...secretsOnly(), NODE_ENV: "production", STORAGE_ENDPOINT: "",
+            STORAGE_ACCESS_KEY_ID: "", STORAGE_SECRET_ACCESS_KEY: "" });
+        expect(production.STORAGE_ACCESS_KEY_ID).toBeUndefined();
+        expect(production.STORAGE_ENDPOINT).toBeUndefined();
+        expect(parseEnv({ ...secretsOnly(), NODE_ENV: "test", UPLOAD_POLICY_TTL_SECONDS: "30" }).UPLOAD_POLICY_TTL_SECONDS).toBe(30);
     });
 });

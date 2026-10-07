@@ -29,6 +29,41 @@ services:
       timeout: 3s
       retries: 10
 
+  minio:
+    # MinIO stopped publishing public images in 2025; this is a frozen community build (2025-05-24) pinned by digest (ADR 0015 addendum).
+    image: bitnamilegacy/minio@sha256:451fe6858cb770cc9d0e77ba811ce287420f781c7c1b806a386f6896471a349c
+    user: "0"
+    entrypoint: ["minio"]
+    # MinIO has no per-bucket CORS API; browser POST CORS is server-wide. Production S3 uses docker/minio-cors.xml as the bucket CORS reference.
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: care-local
+      MINIO_ROOT_PASSWORD: synthetic-minio-secret
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:5173
+    ports:
+      - "127.0.0.1:9002:9000"
+    volumes:
+      - care-minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio-setup:
+    image: bitnamilegacy/minio@sha256:451fe6858cb770cc9d0e77ba811ce287420f781c7c1b806a386f6896471a349c
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["mc alias set local http://minio:9000 care-local synthetic-minio-secret && mc mb --ignore-existing local/care-private && mc anonymous set none local/care-private && mc ilm rule add --expire-days 1 --prefix quarantine/ local/care-private && touch /tmp/ready && exec tail -f /dev/null"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: "no"
+
   migrate:
     build: .
     # Owner runs the migrations, then creates/updates the app login from DATABASE_URL (ADR 0018).
@@ -39,6 +74,15 @@ services:
       DATABASE_URL: postgres://care_app:care_app@postgres:5432/care
       REDIS_URL: redis://redis:6379
       IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}
+      IDENTITY_INTERNAL_URL: ${IDENTITY_INTERNAL_URL:-http://host.docker.internal:3100}
+      SERVICE_CLIENT_ID: care-local-synthetic
+      SERVICE_CLIENT_SECRET: synthetic-local-service-secret
+      STORAGE_BUCKET: care-private
+      STORAGE_REGION: us-east-1
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ACCESS_KEY_ID: care-local
+      STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
+      STORAGE_FORCE_PATH_STYLE: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -57,6 +101,15 @@ services:
       DATABASE_URL: postgres://care_app:care_app@postgres:5432/care
       REDIS_URL: redis://redis:6379
       IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}
+      IDENTITY_INTERNAL_URL: ${IDENTITY_INTERNAL_URL:-http://host.docker.internal:3100}
+      SERVICE_CLIENT_ID: care-local-synthetic
+      SERVICE_CLIENT_SECRET: synthetic-local-service-secret
+      STORAGE_BUCKET: care-private
+      STORAGE_REGION: us-east-1
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ACCESS_KEY_ID: care-local
+      STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
+      STORAGE_FORCE_PATH_STYLE: "true"
       LOG_LEVEL: info
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -68,6 +121,8 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_started
+      minio-setup:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/api/health/ready"]
       interval: 10s
@@ -83,6 +138,15 @@ services:
       DATABASE_URL: postgres://care_app:care_app@postgres:5432/care
       REDIS_URL: redis://redis:6379
       IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}
+      IDENTITY_INTERNAL_URL: ${IDENTITY_INTERNAL_URL:-http://host.docker.internal:3100}
+      SERVICE_CLIENT_ID: care-local-synthetic
+      SERVICE_CLIENT_SECRET: synthetic-local-service-secret
+      STORAGE_BUCKET: care-private
+      STORAGE_REGION: us-east-1
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ACCESS_KEY_ID: care-local
+      STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
+      STORAGE_FORCE_PATH_STYLE: "true"
       AUDIT_PARTITION_MONTHS_AHEAD: 2
       LOG_LEVEL: info
     extra_hosts:
@@ -90,6 +154,9 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      minio-setup:
+        condition: service_completed_successfully
 
 volumes:
   care-pg-data:
+  care-minio-data:

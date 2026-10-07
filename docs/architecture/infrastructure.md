@@ -30,6 +30,17 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `DATABASE_POOL_MAX` | `20` | | 1–100, request pool size per `care-api` task. The readiness probe has its own extra connection, so a task opens up to `DATABASE_POOL_MAX + 1` |
 | `REDIS_URL` | — | **yes, no default** | `redis:`/`rediss:` URL. Local: `redis://localhost:6380` (compose host port 6380) |
 | `IDENTITY_JWKS_URL` | — (**no default**: a wrong default would 401 every request silently) | | `http:`/`https:` URL of Identity's public `GET /.well-known/jwks.json`. Required by the shared schema, so `care-worker` and `care-migrate` set it too. Local: `http://localhost:3000/.well-known/jwks.json` (wherever the local identity public listener runs); compose: `${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}` |
+| `IDENTITY_INTERNAL_URL` | — | | Required Identity internal listener URL; local `http://localhost:3100` |
+| `SERVICE_CLIENT_ID` | — | | Required, nonempty client credentials id |
+| `SERVICE_CLIENT_SECRET` | — | **yes, no default** | Required client credentials secret |
+| `STORAGE_BUCKET` | — | | Required private bucket; local `care-private`, test `care-test-private` |
+| `STORAGE_REGION` | — | | Required region; local `us-east-1` |
+| `STORAGE_ENDPOINT` | unset | | Optional AWS endpoint override; local MinIO `http://localhost:9002`, test `http://localhost:9003` |
+| `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY` | unset | **yes, no defaults** | Required together in local/test; omitted together for AWS task-role credentials |
+| `STORAGE_FORCE_PATH_STYLE` | `false` | | Strict `true`/`false`; `true` for MinIO |
+| `UPLOAD_POLICY_TTL_SECONDS` / `UPLOAD_INTENT_TTL_SECONDS` / `DOWNLOAD_URL_TTL_SECONDS` | `300` / `900` / `60` | | Validated positive integers; fixed outside tests |
+| `IDENTITY_SYNC_POLL_SECONDS` / `IDENTITY_SYNC_RETRY_CAP_SECONDS` / `IDENTITY_SYNC_ALERT_AFTER_SECONDS` | `10` / `60` / `900` | | Validated positive integer worker intervals |
+| `UPLOAD_INTENT_PURGE_SECONDS` | `300` | | Validated positive integer worker interval |
 | `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | `CORS_ORIGINS` | `""` (none) | | comma-separated origins (`scheme://host[:port]`, no path), honoured only when `NODE_ENV=development`; production is single-origin with CORS disabled (hub ADR 0005). `.env.example` sets `http://localhost:5173` |
 | `LOG_LEVEL` | `info` | | `debug` \| `info` \| `warn` \| `error`; `debug` is rejected when `NODE_ENV=production` |
@@ -42,14 +53,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | Variable | Default (local) | Secret | Purpose |
 |---|---|---|---|
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
-| `IDENTITY_INTERNAL_URL` | `http://localhost:3100` | | Identity internal listener |
-| `IDENTITY_TIMEOUT_MS` | `2000` | | per-attempt timeout for Identity calls |
-| `SERVICE_CLIENT_ID` | `care-service` | | client-credentials id |
-| `SERVICE_CLIENT_SECRET` | — | **yes, no default** | client-credentials secret |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
-| `UPLOAD_INTENT_TTL_SECONDS` | `900` | | upload intent lifetime ([file-handling.md](./file-handling.md), ADR 0013) |
-| `UPLOAD_POLICY_TTL_SECONDS` | `300` | | presigned POST validity; must be ≤ `UPLOAD_INTENT_TTL_SECONDS` |
-| `DOWNLOAD_URL_TTL_SECONDS` | `60` | | presigned GET validity; must be ≤ 60 (ADR 0014) |
 | `BOOKING_HORIZON_DAYS` | `60` | | Domain rule 3 |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | Domain rule 10 |
 | `NO_SHOW_GRACE_MINUTES` | `10` | | Domain rule 11 |
@@ -57,11 +61,6 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `SESSION_OVERRUN_MINUTES` | `15` | | Domain rule 12 (window closes after end) |
 | `SLOT_CACHE_TTL_SECONDS` | `60` | | must be ≤ 60 |
 | `NEXT_AVAILABLE_CACHE_TTL_SECONDS` | `300` | | |
-| `STORAGE_ENDPOINT` | `http://localhost:9000` | | S3-compatible object storage |
-| `STORAGE_REGION` | `us-east-1` | | |
-| `STORAGE_BUCKET` | `care-private` | | private bucket; never public |
-| `STORAGE_ACCESS_KEY_ID` | — | **yes, no default** | |
-| `STORAGE_SECRET_ACCESS_KEY` | — | **yes, no default** | |
 | `UPLOAD_MAX_BYTES` | `10485760` | | 10 MB cap |
 | `VIDEO_PROVIDER_URL` | provider base URL | | room provider behind `lib/video` |
 | `VIDEO_PROVIDER_KEY` | — | **yes, no default** | |
@@ -77,6 +76,8 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `OUTBOX_MAX_ATTEMPTS` | `8` | | notification attempts before `dead` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)) |
 | `OUTBOX_RETENTION_DAYS` | `30` | | purge of `sent` outbox rows |
 | `REMINDER_SCAN_INTERVAL_MS` | `60000` | | reminder scan cadence |
+
+Local Compose now includes a loopback-only MinIO API (digest-pinned frozen community build, [ADR 0020](../adr/0020-local-s3-emulator-image.md)) on port 9002; test Compose uses 9003. Their setup jobs create separate private buckets, permit presigned browser `POST` from `http://localhost:5173`, and expire `quarantine/` objects after one day. Production storage uses TLS, bucket public access blocking, server-side encryption, and task-role credentials; the local HTTP endpoint and synthetic keys are development/test only. The Identity attempt timeout is a fixed 2000 ms, not an env variable.
 
 Token issuer, audience, algorithm, clock tolerance (30 s), and the JWKS cache policy are **constants** in
 `lib/auth/constants.ts`, not env (the contract fixes them; the planned `JWT_ISSUER`/`JWT_AUDIENCE` variables were
