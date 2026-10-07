@@ -163,8 +163,9 @@ export class VerificationService {
     async listDueSyncJobIds(limit = 50): Promise<number[]> { return (await claimDuePendingJobs(limit, this.db)).map((job) => job.id); }
     async listExpiredIntents(limit = 500): Promise<{ id: number; quarantineKey: string }[]> { return (await listExpiredOpenIntents(limit, this.db)).map((intent) => ({ id: intent.id, quarantineKey: intent.quarantine_key })); }
     async purgeExpiredIntent(id: number, quarantineKey: string): Promise<void> { await this.storage.delete(quarantineKey); await this.closeExpiredIntent(id); }
-    async processDueSyncJob(jobId: number): Promise<void> { const job = await findSyncJob(jobId, this.db); if (!job || job.kind !== IdentitySyncJobKind.Verification || job.status !== IdentitySyncJobStatus.Pending) return; await this.syncJob(jobId, null, 1); }
-    private async syncJob(jobId: number, actor: AuthContext | null, attempts: number): Promise<DecisionResult> {
+    async processDueSyncJob(jobId: number): Promise<void> { const job = await findSyncJob(jobId, this.db); if (!job || job.kind !== IdentitySyncJobKind.Verification || job.status !== IdentitySyncJobStatus.Pending) return; await this.attemptSync(jobId, null, 1); }
+    /** Runs the guarded Identity call + local transition. Builds no view, so worker retries never hydrate. */
+    private async attemptSync(jobId: number, actor: AuthContext | null, attempts: number): Promise<{ profileId: number; locked: boolean }> {
         const initial = await findSyncJob(jobId, this.db); if (!initial) throw NotFound;
         const locked = await withSessionAdvisoryLock(this.db, VERIFICATION_SYNC_LOCK_NAMESPACE, initial.doctor_profile_id, async () => {
             const job = await findSyncJob(jobId, this.db);
@@ -200,9 +201,13 @@ export class VerificationService {
             });
             return true;
         });
-        if (locked === undefined) { const profile = await findProfileById(initial.doctor_profile_id, this.db); if (!profile) throw NotFound; return { view: await this.view(profile, actor?.role === "doctor" ? "doctor" : "admin", this.requestId()), status: 202, identitySync: "pending" }; }
-        const profile = await findProfileById(initial.doctor_profile_id, this.db); if (!profile) throw NotFound;
+        return { profileId: initial.doctor_profile_id, locked: locked !== undefined };
+    }
+    private async syncJob(jobId: number, actor: AuthContext | null, attempts: number): Promise<DecisionResult> {
+        const { profileId, locked } = await this.attemptSync(jobId, actor, attempts);
+        const profile = await findProfileById(profileId, this.db); if (!profile) throw NotFound;
         const view = await this.view(profile, actor?.role === "doctor" ? "doctor" : "admin", this.requestId());
+        if (!locked) return { view, status: 202, identitySync: "pending" };
         return profile.identitySyncStatus === IdentitySyncStatus.Synced ? { view, status: 200 } : { view, status: 202, identitySync: profile.identitySyncStatus === IdentitySyncStatus.Failed ? "failed" : "pending" };
     }
     private encodeCursor(payload: QueueCursorPayload): string { const body = Buffer.from(JSON.stringify(payload)).toString("base64url"); const mac = createHmac("sha256", this.env.SERVICE_CLIENT_SECRET).update(body).digest("base64url"); return `${body}.${mac}`; }
