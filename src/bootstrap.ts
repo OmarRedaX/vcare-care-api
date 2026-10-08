@@ -1,6 +1,11 @@
 import { HealthController } from "./app/health/controller/health.controller";
 import { DoctorsController } from "./app/doctors/controller/doctors.controller";
 import { DoctorsService } from "./app/doctors/service/doctors.service";
+import { buildScheduleOwnerResolver } from "./app/doctors/schedule-owner.resolver";
+import { SchedulesController } from "./app/schedules/controller/schedules.controller";
+import { NoopScheduleChangeListener } from "./app/schedules/service/noop-schedule-change-listener";
+import { NoopScheduleImpactProvider } from "./app/schedules/service/noop-schedule-impact.provider";
+import { SchedulesService } from "./app/schedules/service/schedules.service";
 import { HealthService } from "./app/health/service/health.service";
 import { SpecialtiesController } from "./app/specialties/controller/specialties.controller";
 import { SpecialtiesService } from "./app/specialties/service/specialties.service";
@@ -27,6 +32,13 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.HealthController, HealthController);
     container.registerSingleton(TOKENS.SpecialtiesService, SpecialtiesService);
     container.registerSingleton(TOKENS.SpecialtiesController, SpecialtiesController);
+    // Schedules seams: default no-op ports (`consultations` / `availability` rebind them) and the lazy owner resolver
+    // that breaks the doctors <-> schedules constructor cycle (DoctorsService is looked up at call time).
+    container.registerSingleton(TOKENS.ScheduleImpactProvider, NoopScheduleImpactProvider);
+    container.registerSingleton(TOKENS.ScheduleChangeListener, NoopScheduleChangeListener);
+    container.register(TOKENS.ScheduleOwnerResolver, { useFactory: (c) => buildScheduleOwnerResolver(() => c.resolve<DoctorsService>(TOKENS.DoctorsService)) });
+    container.registerSingleton(TOKENS.SchedulesService, SchedulesService);
+    container.registerSingleton(TOKENS.SchedulesController, SchedulesController);
     container.registerSingleton(TOKENS.DoctorsService, DoctorsService);
     container.registerSingleton(TOKENS.DoctorsController, DoctorsController);
     container.registerSingleton(TOKENS.VerificationService, VerificationService);

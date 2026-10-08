@@ -1,0 +1,22 @@
+export const SCHEDULES_WRITE_USER_LIMIT = 30;
+export const SCHEDULES_READ_USER_LIMIT = 120;
+export const SCHEDULES_RATE_WINDOW_MS = 60_000;
+export const MAX_INTERVALS_PER_DAY = 6;
+export const MAX_WEEKDAYS = 7;
+export const MAX_EXCEPTION_RANGE_DATES = 60;
+export const MAX_CONSULTATION_TYPES_PER_DOCTOR = 20;
+export const DURATION_MIN = 5;
+export const DURATION_MAX = 240;
+export const PRICE_MAX = 2_147_483_647;
+export const NAME_MIN_LENGTH = 2;
+export const NAME_MAX_LENGTH = 100;
+export const REASON_MAX_LENGTH = 500;
+export const TIME_OF_DAY_PATTERN = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$|^24:00$/;
+/** Ids written to the `schedule.conflicts_confirmed` audit row (joined by `,`, so ≤ 500 chars by construction). */
+export const AUDIT_CONFLICT_IDS_MAX = 20;
+export const DATE_CURSOR_LENGTH = 10;
+export const DOCTOR_PROFILE_ENTITY_TYPE = "doctor_profile";
+export const SCHEDULE_EXCEPTION_ENTITY_TYPE = "schedule_exception";
+export const CONSULTATION_TYPE_ENTITY_TYPE = "consultation_type";
+export const UQ_SCHEDULE_EXCEPTION_DATE = "uq_schedule_exceptions_doctor_profile_id_date";
+export const UQ_CONSULTATION_TYPE_NAME = "uq_consultation_types_doctor_profile_id_name";

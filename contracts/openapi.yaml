@@ -658,7 +658,9 @@ paths:
       tags: [schedules]
       summary: Replace the caller's weekly hours (split shifts allowed)
       description: |
-        Replaces the full weekly set. Intervals on the same weekday must not overlap. If the new hours would leave any
+        Replaces the full weekly set. One entry per weekday (a repeated `weekday` is `400 ValidationFailed`). Intervals on the
+        same weekday must not overlap; touching intervals (`09:00-12:00` and `12:00-14:00`) are allowed. Each interval needs
+        `endTime > startTime` (`24:00` is valid only as an end). If the new hours would leave any
         future non-terminal consultation outside working hours, the call returns `409 ScheduleConflictsUnconfirmed`
         listing the affected consultation ids; resubmit with `confirmConflicts=true` to apply, flag those consultations
         `needs_admin_followup`, and queue patient notifications. Consultations are never moved or cancelled automatically.
@@ -749,6 +751,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -762,6 +766,8 @@ paths:
         `custom_hours` covers exactly one date and replaces (does not add to) that weekday's hours.
         A date that already has a live exception returns `409 Conflict`. Intersecting existing non-terminal consultations
         without `confirmConflicts=true` returns `409 ScheduleConflictsUnconfirmed` (flow F).
+        Dates before today in the doctor's timezone are `400 ValidationFailed`. `startTime`/`endTime` are forbidden for
+        `day_off` and required for `custom_hours`; `endDate` is forbidden for `custom_hours`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -802,6 +808,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/ScheduleConflictsUnconfirmed'
         '422':
@@ -816,25 +824,41 @@ paths:
       operationId: deleteMyException
       tags: [schedules]
       summary: Remove a schedule exception (soft delete)
-      description: Sets `deleted_at`. An id not belonging to the caller's profile returns `404 NotFound`.
+      description: |
+        Sets `deleted_at`. An id not belonging to the caller's profile returns `404 NotFound`.
+        Deleting a `custom_hours` exception reverts its date to the weekly hours; if that leaves future non-terminal
+        consultations outside working hours, the call returns `409 ScheduleConflictsUnconfirmed` unless
+        `confirmConflicts=true`. Deleting a `day_off` or a past exception never conflicts.
       security:
         - bearerUser: []
       x-roles: [doctor]
       x-ownership: self
       x-account-state: 'status active; not locally suspended'
-      x-audit-actions: [schedule.exception_deleted]
+      x-audit: admin-action
+      x-audit-actions: [schedule.exception_deleted, schedule.conflicts_confirmed]
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdPath'
+        - name: confirmConflicts
+          in: query
+          required: false
+          description: Strict `true`/`false`. Apply the delete even when it strands future consultations (they are flagged, never cancelled).
+          schema:
+            type: boolean
+            default: false
       responses:
         '204':
           $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ScheduleConflictsUnconfirmed'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -885,6 +909,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -893,6 +919,10 @@ paths:
       operationId: createMyConsultationType
       tags: [schedules]
       summary: Define a consultation type (duration + price)
+      description: |
+        A doctor has at most 20 consultation types (active or inactive); beyond that the call returns `409 Conflict`.
+        `currency` must equal the doctor's profile currency and be in the service's allowlist (`ALLOWED_CURRENCIES`),
+        else `400 ValidationFailed` with `details[].field = "currency"`. A duplicate live `name` is `409 Conflict`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -930,6 +960,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -947,6 +979,7 @@ paths:
       description: |
         Changes apply to future bookings only; existing consultations keep their `starts_at`/`ends_at` and price snapshot.
         Deactivating the last active type removes the doctor from search (Domain rule 6).
+        `currency`, when given, must equal the doctor's profile currency and be in the service's allowlist (`400 ValidationFailed`, `details[].field = "currency"`).
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -3720,7 +3753,7 @@ components:
               message: The upload intent has expired
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ScheduleConflictsUnconfirmed:
-      description: '`ScheduleConflictsUnconfirmed` (body lists the affected consultation ids; resubmit with `confirmConflicts=true`) or `Conflict` (a live exception already exists for a date). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict). `Conflict` bodies are the plain envelope.'
+      description: '`ScheduleConflictsUnconfirmed` (also returned by `deleteMyException`; body lists the affected consultation ids; resubmit with `confirmConflicts=true`) or `Conflict` (a live exception already exists for a date). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict). `Conflict` bodies are the plain envelope.'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -4645,7 +4678,7 @@ components:
         endDate:
           type: string
           format: date
-          description: '`day_off` only; inclusive; at most 60 days after `date`.'
+          description: '`day_off` only; inclusive; at most 60 dates in total (`endDate` <= `date` + 59 days).'
         startTime:
           $ref: '#/components/schemas/TimeOfDay'
         endTime:
@@ -4674,6 +4707,7 @@ components:
         price:
           type: integer
           minimum: 0
+          maximum: 2147483647
           description: Minor units.
         currency:
           type: string
@@ -4702,9 +4736,11 @@ components:
         price:
           type: integer
           minimum: 0
+          maximum: 2147483647
         currency:
           type: string
           pattern: '^[A-Z]{3}$'
+          description: Must equal the doctor's profile currency and be in the service allowlist.
     ConsultationTypeUpdate:
       type: object
       additionalProperties: false
@@ -4721,9 +4757,11 @@ components:
         price:
           type: integer
           minimum: 0
+          maximum: 2147483647
         currency:
           type: string
           pattern: '^[A-Z]{3}$'
+          description: Must equal the doctor's profile currency and be in the service allowlist.
         isActive:
           type: boolean
 
