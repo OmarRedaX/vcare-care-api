@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-03
+last_verified: 2026-10-08
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
 ---
@@ -20,13 +20,13 @@ Sizing: [capacity.md](./capacity.md). Env vars: [infrastructure.md](./infrastruc
 | Component | Image / entrypoint | Count | Scaling | Health used | Egress |
 |---|---|---|---|---|---|
 | `care-api` | one image, `node dist/server.js` (both listeners); DB login `care_app` | min 2, max 6, across AZs | CPU 60 %; step on search p95 > 400 ms | LB: `/api/health/ready`, `/internal/health/ready`; orchestrator: `/api/health/live` | Identity public JWKS, video provider, object storage |
-| `care-worker` | same image, `node dist/worker.js`; DB login `care_app` (own pool, 2 connections) | 1 (2 on repeated lag) | manual | orchestrator: process liveness | email provider, object storage (quarantine purge) |
+| `care-worker` | same image, `node dist/worker.js`; DB login `care_app` (own pool, 4 connections: session advisory locks pin some) | 1 (2 on repeated lag) | manual | orchestrator: process liveness | email provider, Identity internal listener (`identity-sync`), object storage (quarantine purge) |
 | `care-migrate` | same image, `node dist/migrate.js latest && node dist/migrate.js ensure-app-login`; DB **owner** (`MIGRATION_DATABASE_URL`) + the app secret it provisions | one-off per release | — | exit code | none |
 
 All reach own Postgres and Redis; `care-api` and `care-worker` reach Identity's internal LB, and `care-api` its
 public JWKS. Only `care-migrate` holds the owner credential ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md);
 hub `deployment.md` → Release pipeline step 3).
-`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)): identity-sync retrier + sweeper · notification
+`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1 retrier, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **planned:** identity-sync sweeper and Cases 3/4 jobs · notification
 outbox · reminder scan (1 min) · `next-available` refresh · `audit_logs` partition maintenance (daily) · outbox purge ·
 upload-intent purge (5 min; [file-handling.md](./file-handling.md), ADR 0013).
 

@@ -56,3 +56,10 @@ export interface AppLoginResult {
     /** `true` when the login was created; `false` when it existed and its password and membership were re-synced. */
     created: boolean;
 }
+
+/** The slice of Knex's pg client the session advisory lock uses to pin one pooled connection. */
+export interface SessionPoolClient {
+    acquireConnection(): Promise<unknown>;
+    releaseConnection(connection: unknown): Promise<void>;
+    config?: { pool?: { max?: number } };
+}

@@ -27,3 +27,40 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  minio:
+    # MinIO stopped publishing public images in 2025; this is a frozen community build (2025-05-24) pinned by digest (ADR 0015 addendum).
+    image: bitnamilegacy/minio@sha256:451fe6858cb770cc9d0e77ba811ce287420f781c7c1b806a386f6896471a349c
+    user: "0"
+    entrypoint: ["minio"]
+    # MinIO has no per-bucket CORS API; browser POST CORS is server-wide. Production S3 uses docker/minio-cors.xml as the bucket CORS reference.
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: care-test
+      MINIO_ROOT_PASSWORD: synthetic-test-minio-secret
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:5173
+      # Synthetic static KMS key so MinIO accepts the x-amz-server-side-encryption=AES256 POST condition (SSE-S3), as AWS does.
+      MINIO_KMS_SECRET_KEY: care-test-key:c3ludGhldGljLXRlc3Qta21zLWtleS0wMTIzNDU2Nzg=
+    ports:
+      - "127.0.0.1:9003:9000"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio-setup:
+    image: bitnamilegacy/minio@sha256:451fe6858cb770cc9d0e77ba811ce287420f781c7c1b806a386f6896471a349c
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["mc alias set local http://minio:9000 care-test synthetic-test-minio-secret && mc mb --ignore-existing local/care-test-private && mc anonymous set none local/care-test-private && mc ilm rule add --expire-days 1 --prefix quarantine/ local/care-test-private && touch /tmp/ready && exec tail -f /dev/null"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: "no"

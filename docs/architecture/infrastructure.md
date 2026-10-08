@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -30,6 +30,17 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `DATABASE_POOL_MAX` | `20` | | 1–100, request pool size per `care-api` task. The readiness probe has its own extra connection, so a task opens up to `DATABASE_POOL_MAX + 1` |
 | `REDIS_URL` | — | **yes, no default** | `redis:`/`rediss:` URL. Local: `redis://localhost:6380` (compose host port 6380) |
 | `IDENTITY_JWKS_URL` | — (**no default**: a wrong default would 401 every request silently) | | `http:`/`https:` URL of Identity's public `GET /.well-known/jwks.json`. Required by the shared schema, so `care-worker` and `care-migrate` set it too. Local: `http://localhost:3000/.well-known/jwks.json` (wherever the local identity public listener runs); compose: `${IDENTITY_JWKS_URL:-http://host.docker.internal:3000/.well-known/jwks.json}` |
+| `IDENTITY_INTERNAL_URL` | — | | Required Identity internal listener URL; local `http://localhost:3100` |
+| `SERVICE_CLIENT_ID` | — | | Required, nonempty client credentials id |
+| `SERVICE_CLIENT_SECRET` | — | **yes, no default** | Required client credentials secret |
+| `STORAGE_BUCKET` | — | | Required private bucket; local `care-private`, test `care-test-private` |
+| `STORAGE_REGION` | — | | Required region; local `us-east-1` |
+| `STORAGE_ENDPOINT` | unset | | Optional AWS endpoint override; local MinIO `http://localhost:9002`, test `http://localhost:9003` |
+| `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY` | unset | **yes, no defaults** | Required together in local/test; omitted together for AWS task-role credentials |
+| `STORAGE_FORCE_PATH_STYLE` | `false` | | Strict `true`/`false`; `true` for MinIO |
+| `UPLOAD_POLICY_TTL_SECONDS` / `UPLOAD_INTENT_TTL_SECONDS` / `DOWNLOAD_URL_TTL_SECONDS` | `300` / `900` / `60` | | Validated positive integers; fixed outside tests |
+| `IDENTITY_SYNC_POLL_SECONDS` / `IDENTITY_SYNC_RETRY_CAP_SECONDS` / `IDENTITY_SYNC_ALERT_AFTER_SECONDS` | `10` / `60` / `900` | | Validated positive integer worker intervals |
+| `UPLOAD_INTENT_PURGE_SECONDS` | `300` | | Validated positive integer: the `upload-intent-purge` loop interval |
 | `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | `CORS_ORIGINS` | `""` (none) | | comma-separated origins (`scheme://host[:port]`, no path), honoured only when `NODE_ENV=development`; production is single-origin with CORS disabled (hub ADR 0005). `.env.example` sets `http://localhost:5173` |
 | `LOG_LEVEL` | `info` | | `debug` \| `info` \| `warn` \| `error`; `debug` is rejected when `NODE_ENV=production` |
@@ -42,14 +53,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | Variable | Default (local) | Secret | Purpose |
 |---|---|---|---|
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
-| `IDENTITY_INTERNAL_URL` | `http://localhost:3100` | | Identity internal listener |
-| `IDENTITY_TIMEOUT_MS` | `2000` | | per-attempt timeout for Identity calls |
-| `SERVICE_CLIENT_ID` | `care-service` | | client-credentials id |
-| `SERVICE_CLIENT_SECRET` | — | **yes, no default** | client-credentials secret |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
-| `UPLOAD_INTENT_TTL_SECONDS` | `900` | | upload intent lifetime ([file-handling.md](./file-handling.md), ADR 0013) |
-| `UPLOAD_POLICY_TTL_SECONDS` | `300` | | presigned POST validity; must be ≤ `UPLOAD_INTENT_TTL_SECONDS` |
-| `DOWNLOAD_URL_TTL_SECONDS` | `60` | | presigned GET validity; must be ≤ 60 (ADR 0014) |
 | `BOOKING_HORIZON_DAYS` | `60` | | Domain rule 3 |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | Domain rule 10 |
 | `NO_SHOW_GRACE_MINUTES` | `10` | | Domain rule 11 |
@@ -57,11 +61,6 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `SESSION_OVERRUN_MINUTES` | `15` | | Domain rule 12 (window closes after end) |
 | `SLOT_CACHE_TTL_SECONDS` | `60` | | must be ≤ 60 |
 | `NEXT_AVAILABLE_CACHE_TTL_SECONDS` | `300` | | |
-| `STORAGE_ENDPOINT` | `http://localhost:9000` | | S3-compatible object storage |
-| `STORAGE_REGION` | `us-east-1` | | |
-| `STORAGE_BUCKET` | `care-private` | | private bucket; never public |
-| `STORAGE_ACCESS_KEY_ID` | — | **yes, no default** | |
-| `STORAGE_SECRET_ACCESS_KEY` | — | **yes, no default** | |
 | `UPLOAD_MAX_BYTES` | `10485760` | | 10 MB cap |
 | `VIDEO_PROVIDER_URL` | provider base URL | | room provider behind `lib/video` |
 | `VIDEO_PROVIDER_KEY` | — | **yes, no default** | |
@@ -77,6 +76,8 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `OUTBOX_MAX_ATTEMPTS` | `8` | | notification attempts before `dead` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)) |
 | `OUTBOX_RETENTION_DAYS` | `30` | | purge of `sent` outbox rows |
 | `REMINDER_SCAN_INTERVAL_MS` | `60000` | | reminder scan cadence |
+
+Local Compose now includes a loopback-only MinIO API (digest-pinned frozen community build, [ADR 0020](../adr/0020-local-s3-emulator-image.md)) on port 9002; test Compose uses 9003. Their setup jobs create separate private buckets, permit presigned browser `POST` from `http://localhost:5173`, and expire `quarantine/` objects after one day. Production storage uses TLS, bucket public access blocking, server-side encryption, and task-role credentials; the local HTTP endpoint and synthetic keys are development/test only. The Identity attempt timeout is a fixed 2000 ms, not an env variable.
 
 Token issuer, audience, algorithm, clock tolerance (30 s), and the JWKS cache policy are **constants** in
 `lib/auth/constants.ts`, not env (the contract fixes them; the planned `JWT_ISSUER`/`JWT_AUDIENCE` variables were
@@ -275,7 +276,7 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
   both bounded by `SHUTDOWN_TIMEOUT_MS` (`worker_stop_timeout` and exit 1 on overrun). `node dist/worker.js --once
   <loop>` runs exactly one tick of that loop, closes the pool, and exits 0 (`worker_loop_unknown` / `worker_tick_failed`
   / `worker_once_incomplete` — the tick ran but did not reach its goal, e.g. partitions not ensured or the lock held
-  elsewhere — → exit 1).
+  elsewhere — → exit 1). Loops: `audit-partitions`, `identity-sync`, `upload-intent-purge`. The worker pool has 4 connections (session advisory locks pin some); it also constructs its own Identity and storage clients, closed on stop and on `--once`.
 
 ## Local stack (compose)
 `docker-compose.yml` (`name: vcare-care`): Postgres 17 on `127.0.0.1:5433` and Redis 7 on `127.0.0.1:6380`, both on
@@ -284,7 +285,7 @@ the owner); `care-api` with the public listener
 on `3001` (all host interfaces) and the internal listener on `127.0.0.1:3101`; and `care-worker`. The test stack
 (`docker-compose.test.yml`, `vcare-care-test`) uses `127.0.0.1:5434` (tmpfs) and `127.0.0.1:6381`; the integration
 global setup migrates as the owner and provisions `care_app`. Identity's stack keeps 5432/6379 and 3000/3100;
-`care-api`, `care-worker`, and `migrate` reach its JWKS through `host.docker.internal` (`extra_hosts: host-gateway`).
+`care-api`, `care-worker`, and `migrate` reach its JWKS through `host.docker.internal` (`extra_hosts: host-gateway`). A `minio` service (loopback `9002`, test `9003`) plus a one-shot `minio-setup` job (private bucket, `quarantine/` one-day expiry) provide S3 for verification uploads; start them with `docker compose up -d minio minio-setup` (in Git Bash prefix with `MSYS_NO_PATHCONV=1`). Identity's internal listener (`3100`) must also be running for Cases 1 and 2 (see the environment dependency in [integration.md](./integration.md)).
 
 ## Runtime notes
 The platform deployment topology — edge routing, private network, every service's components, the availability

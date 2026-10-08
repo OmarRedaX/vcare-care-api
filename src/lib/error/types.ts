@@ -20,6 +20,8 @@ export type ErrorCode =
     | "NotAssignedDoctor"
     | "RecordLocked"
     | "ApplicationNotReviewable"
+    | "ApplicationNotEditable"
+    | "UploadIntentExpired"
     | "ScheduleConflictsUnconfirmed"
     | "IdentityUnavailable"
     | "IdempotencyConflict"

@@ -6,6 +6,7 @@ import type { JwksCache } from "../../src/lib/auth/jwks-cache";
 import type { UserTokenVerifier } from "../../src/lib/auth/user-token-verifier";
 import type { MountedRouter } from "../../src/lib/http/types";
 import type { Logger } from "../../src/lib/logger/logger";
+import type { ObjectStorage } from "../../src/lib/storage/object-storage";
 
 export interface BuildTestAppsOptions {
     publicRouters?: MountedRouter[];
@@ -149,4 +150,19 @@ export interface FakeLogger {
     logger: Logger;
     text(): string;
     messages(level: "debug" | "info" | "warn" | "error"): string[];
+}
+
+export interface StorageCall {
+    operation: "createUploadPolicy" | "headObject" | "readHead" | "promote" | "delete" | "presignDownload";
+    args: readonly (string | number)[];
+}
+
+export interface FakeStorage extends ObjectStorage {
+    calls: StorageCall[];
+    seed(key: string, bytes: Uint8Array): void;
+    has(key: string): boolean;
+    failNextCopy(): void;
+    replaceAfterNextHead(key: string, bytes: Uint8Array): void;
+    setHeadSize(key: string, sizeBytes: number): void;
+    clear(): void;
 }

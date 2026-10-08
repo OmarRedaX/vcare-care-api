@@ -165,7 +165,7 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
     it.each(["submitted", "approved"])("should return 409 when application is %s", async (status) => {
         await apply();
         await ownerDb("doctor_profiles").where("user_id", 202).update({ verification_status: status, decided_at: new Date() });
-        const res = await apply(); expect(res.status).toBe(409); expectErrorEnvelope(res.body, "Conflict");
+        const res = await apply(); expect(res.status).toBe(409); expectErrorEnvelope(res.body, status === "submitted" ? "ApplicationNotEditable" : "Conflict");
         expect(await audits()).toHaveLength(1);
     });
 
@@ -357,9 +357,11 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
         expect(await audits()).toHaveLength(1);
     });
 
-    it.each(["submitted", "approved"])("should allow PATCH when application status is %s", async (status) => {
+    it.each(["submitted", "approved"])("should enforce PATCH edit policy when application status is %s", async (status) => {
         await apply(); await ownerDb("doctor_profiles").where("user_id", 202).update({ verification_status: status, decided_at: new Date() });
-        expect((await patch({ headline: "Synthetic revised headline" })).status).toBe(200);
+        const res = await patch({ headline: "Synthetic revised headline" });
+        expect(res.status).toBe(status === "submitted" ? 409 : 200);
+        if (status === "submitted") expectErrorEnvelope(res.body, "ApplicationNotEditable");
     });
 
     it("should deny PATCH but allow reads when locally suspended", async () => {
@@ -381,11 +383,10 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
         await apply();
         await expect(db.raw("DELETE FROM doctor_profiles")).rejects.toMatchObject({ code: "42501" });
         await expect(db.raw("TRUNCATE doctor_profiles")).rejects.toMatchObject({ code: "42501" });
-        await db.transaction(async (trx) => {
-            await trx.raw("SET LOCAL enable_seqscan = off");
-            const result = await trx.raw<{ rows: Array<{ "QUERY PLAN": string }> }>("EXPLAIN SELECT id FROM doctor_profiles WHERE user_id = ? AND deleted_at IS NULL LIMIT 1", [202]);
-            expect(result.rows.map((row) => row["QUERY PLAN"]).join(" ")).toContain("uq_doctor_profiles_user_id");
-        });
+        // A plan assertion is not stable on a one-row table once other doctor_profiles indexes exist, so check the
+        // live-user index definition itself (unique, user_id, partial on deleted_at IS NULL).
+        const index = await db.raw<{ rows: Array<{ indexdef: string }> }>("SELECT indexdef FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'");
+        expect(index.rows[0]?.indexdef).toMatch(/UNIQUE INDEX.*\(user_id\).*WHERE \(deleted_at IS NULL\)/);
     });
 
     it("should grant child row deletion while enforcing named profile and link constraints", async () => {

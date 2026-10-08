@@ -1,14 +1,16 @@
 import "reflect-metadata";
-import type { Knex } from "knex";
 import { getEnv } from "./lib/config/env";
 import { createKnex } from "./lib/knex/knex";
 import { runMain } from "./lib/lifecycle/run-main";
 import { logger } from "./lib/logger/logger";
+import { IdentityClient } from "./lib/identity-client/identity-client";
+import { S3Adapter } from "./lib/storage/s3.adapter";
 import { LoopRunner } from "./lib/worker/loop-runner";
 import type { WorkerLoop } from "./lib/worker/types";
 import { buildWorkerLoops } from "./worker-loops";
 
-const WORKER_POOL_MAX = 2;
+// Session advisory locks pin connections (singleton purge + per-intent/per-doctor), so keep headroom for transactions.
+const WORKER_POOL_MAX = 4;
 const WORKER_STATEMENT_TIMEOUT_MS = 5_000;
 
 /**
@@ -16,7 +18,7 @@ const WORKER_STATEMENT_TIMEOUT_MS = 5_000;
  * the pool is closed and the process exits — 0 on success, 1 for an unknown loop, a tick that throws, or a tick that
  * reports `"incomplete"` (e.g. audit partitions not ensured, or the lock held by another worker).
  */
-async function runOnce(name: string | undefined, loops: WorkerLoop[], workerDb: Knex): Promise<never> {
+async function runOnce(name: string | undefined, loops: WorkerLoop[], closeAll: () => Promise<void>): Promise<never> {
     const loop = loops.find((candidate) => candidate.name === name);
     let code: 0 | 1 = 0;
     if (loop === undefined) {
@@ -36,7 +38,7 @@ async function runOnce(name: string | undefined, loops: WorkerLoop[], workerDb: 
             code = 1;
         }
     }
-    await workerDb.destroy();
+    await closeAll();
     process.exit(code);
 }
 
@@ -51,11 +53,14 @@ function main(): void | Promise<void> {
         statementTimeoutMs: WORKER_STATEMENT_TIMEOUT_MS,
         applicationName: "care-worker",
     });
-    const loops = buildWorkerLoops({ env, db: workerDb, logger });
+    const identity = new IdentityClient({ env });
+    const storage = new S3Adapter({ bucket: env.STORAGE_BUCKET, region: env.STORAGE_REGION, endpoint: env.STORAGE_ENDPOINT, accessKeyId: env.STORAGE_ACCESS_KEY_ID, secretAccessKey: env.STORAGE_SECRET_ACCESS_KEY, forcePathStyle: env.STORAGE_FORCE_PATH_STYLE });
+    const closeAll = async (): Promise<void> => { await identity.close(); await workerDb.destroy(); };
+    const loops = buildWorkerLoops({ env, db: workerDb, logger, storage, identity });
 
     const onceAt = process.argv.indexOf("--once");
     if (onceAt !== -1) {
-        return runOnce(process.argv[onceAt + 1], loops, workerDb).then(() => undefined);
+        return runOnce(process.argv[onceAt + 1], loops, closeAll).then(() => undefined);
     }
 
     const runner = new LoopRunner(loops, { logger });
@@ -79,7 +84,7 @@ function main(): void | Promise<void> {
         // Stop after the current tick, then close the pool — both inside the SHUTDOWN_TIMEOUT_MS deadline.
         runner
             .stop()
-            .then(() => workerDb.destroy())
+            .then(() => closeAll())
             .then(() => {
                 clearTimeout(timer);
                 process.exit(exitCode);

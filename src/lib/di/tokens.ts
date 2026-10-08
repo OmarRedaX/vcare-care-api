@@ -7,6 +7,7 @@ export const TOKENS = {
     /** Readiness-only pool (spec §3.1): never the request pool. */
     ProbeDb: Symbol.for("ProbeDb"),
     Redis: Symbol.for("Redis"),
+    IDENTITY_CLIENT: Symbol.for("IdentityClient"),
     ShutdownState: Symbol.for("ShutdownState"),
     InFlightCounter: Symbol.for("InFlightCounter"),
     /** Identity's JWKS in memory (`lib/auth`); started by `server.ts`, never by the worker. */
@@ -14,10 +15,13 @@ export const TOKENS = {
     UserTokenVerifier: Symbol.for("UserTokenVerifier"),
     /** `record(trx, entry)` — one audit row in the caller's transaction (`lib/audit`). */
     AuditRecorder: Symbol.for("AuditRecorder"),
+    STORAGE: Symbol.for("Storage"),
     HealthService: Symbol.for("HealthService"),
     HealthController: Symbol.for("HealthController"),
     SpecialtiesService: Symbol.for("SpecialtiesService"),
     SpecialtiesController: Symbol.for("SpecialtiesController"),
     DoctorsService: Symbol.for("DoctorsService"),
     DoctorsController: Symbol.for("DoctorsController"),
+    VerificationService: Symbol.for("VerificationService"),
+    VerificationController: Symbol.for("VerificationController"),
 } as const;

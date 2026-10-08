@@ -11,12 +11,15 @@ import type { Specialty } from "../../specialties/entity/specialties.entity";
 import { SpecialtiesService } from "../../specialties/service/specialties.service";
 import { DOCTOR_PROFILE_ENTITY_TYPE, DOCTOR_PROFILE_UNIQUE_USER } from "../constants";
 import { DoctorAuditAction, DoctorProfileField, IdentitySyncStatus, VerificationStatus } from "../enums";
-import { ApplicationNotEditable, CurrencyNotAllowed, PrimarySpecialtyNotLinked, PrimarySpecialtyRequired, SubmitRequiresDocuments, UnknownSpecialty } from "../errors";
+import { ApplicationNotEditable, CurrencyNotAllowed, PrimarySpecialtyNotLinked, PrimarySpecialtyRequired, UnknownSpecialty } from "../errors";
+import { Conflict } from "../../../lib/error/errors";
 import { deleteLanguagesNotIn, insertLanguages, listLanguages } from "../repository/doctor-languages.repo";
 import { findProfileByUserId, findProfileByUserIdForUpdate, insertProfile, isUserLocallySuspended, updateProfile } from "../repository/doctor-profiles.repo";
 import { clearPrimaryExcept, deleteLinksNotIn, insertLinks, listSpecialtyLinks, markPrimary } from "../repository/doctor-specialties.repo";
 import type { ApplyResult, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, SpecialtyLink, SpecialtyRef } from "../types";
 import type { DoctorProfile } from "../entity/doctor-profile.entity";
+import { VerificationService } from "../../verification/service/verification.service";
+import type { VerificationApplicationView } from "../../verification/types";
 
 export function isBookable(profile: DoctorProfile, hasActiveConsultationType: boolean): boolean {
     return profile.verificationStatus === VerificationStatus.Approved && profile.identitySyncStatus === IdentitySyncStatus.Synced &&
@@ -34,6 +37,7 @@ export class DoctorsService {
         @inject(TOKENS.AuditRecorder) private readonly audit: AuditRecorder,
         @inject(TOKENS.Env) private readonly env: Env,
         @inject(TOKENS.SpecialtiesService) private readonly specialties: SpecialtiesService,
+        @inject(TOKENS.VerificationService) private readonly verification: VerificationService,
     ) {}
 
     async getOwn(actor: AuthContext): Promise<DoctorProfileView> {
@@ -41,6 +45,8 @@ export class DoctorsService {
         if (profile === undefined) throw NotFound;
         return this.loadView(profile, this.db);
     }
+
+    getOwnApplication(actor: AuthContext): Promise<VerificationApplicationView> { return this.verification.getOwnApplication(actor); }
 
     async isLocallySuspended(userId: number): Promise<boolean> { return isUserLocallySuspended(userId, this.db); }
 
@@ -56,27 +62,32 @@ export class DoctorsService {
     }
 
     private async applyOnce(actor: AuthContext, input: DoctorProfileInput): Promise<ApplyResult> {
-        return this.db.transaction(async (trx) => {
+        const result = await this.db.transaction(async (trx) => {
             const current = await findProfileByUserIdForUpdate(actor.userId, trx);
             if (current === undefined) {
-                if (input.submit) throw SubmitRequiresDocuments;
                 await this.resolveSpecialties(input.specialtyIds, [], trx);
                 const created = await insertProfile(actor.userId, input, canonicalIanaTimezone(input.timezone), trx);
                 await insertLanguages(created.id, input.languages, trx);
                 await insertLinks(created.id, input.specialtyIds.map((specialtyId) => ({ specialtyId, isPrimary: specialtyId === input.primarySpecialtyId })), trx);
                 await this.audit.record(trx, { actor: actorFromAuth(actor), action: DoctorAuditAction.ProfileCreated,
                     entityType: DOCTOR_PROFILE_ENTITY_TYPE, entityId: created.id, metadata: {} });
-                return { view: await this.loadView(created, trx), created: true };
+                const transition = input.submit ? await this.verification.submitInTransaction(actor, created, trx) : { jobId: null };
+                return { view: await this.loadView(created, trx), created: true, transition };
             }
-            if (current.verificationStatus === VerificationStatus.Submitted || current.verificationStatus === VerificationStatus.Approved) throw ApplicationNotEditable;
-            if (input.submit) throw SubmitRequiresDocuments;
+            if (current.verificationStatus === VerificationStatus.Submitted) throw ApplicationNotEditable;
+            if (current.verificationStatus === VerificationStatus.Approved) throw Conflict;
             await this.resolveSpecialties(input.specialtyIds, (await listSpecialtyLinks(current.id, trx)).map((link) => link.specialtyId), trx);
             const changes: DoctorProfileChanges = { headline: input.headline, bio: input.bio ?? null,
                 yearsExperience: input.yearsExperience, languages: input.languages, specialtyIds: input.specialtyIds,
                 primarySpecialtyId: input.primarySpecialtyId, consultationFee: input.consultationFee,
                 defaultSlotMinutes: input.defaultSlotMinutes, timezone: input.timezone };
-            return { view: await this.applyChanges(actor, current, changes, trx), created: false };
+            const view = await this.applyChanges(actor, current, changes, trx);
+            const transition = input.submit ? await this.verification.submitInTransaction(actor, view.profile, trx) : { jobId: null };
+            return { view, created: false, transition };
         });
+        if (!input.submit) return { view: result.view, created: result.created };
+        const sync = await this.verification.finishSubmit(actor, result.transition);
+        return { view: await this.getOwn(actor), created: result.created, status: sync?.status ?? (result.created ? 201 : 200), identitySync: sync?.identitySync };
     }
 
     async update(actor: AuthContext, changes: DoctorProfileChanges): Promise<DoctorProfileView> {
@@ -84,6 +95,7 @@ export class DoctorsService {
         return this.db.transaction(async (trx) => {
             const current = await findProfileByUserIdForUpdate(actor.userId, trx);
             if (current === undefined) throw NotFound;
+            if (current.verificationStatus === VerificationStatus.Submitted) throw ApplicationNotEditable;
             const links = await listSpecialtyLinks(current.id, trx);
             if (changes.specialtyIds !== undefined || changes.primarySpecialtyId !== undefined) {
                 const ids = changes.specialtyIds ?? links.map((link) => link.specialtyId);

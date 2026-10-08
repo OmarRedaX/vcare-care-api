@@ -35,6 +35,10 @@ const EXPECTED_KEYS = [
     "headline",
     "bio",
     "reviewNote",
+    "quarantineKey",
+    "fields",
+    "url",
+    "avatarUrl",
     // access spec §7: database URLs carry credentials
     "connectionString",
     "databaseUrl",

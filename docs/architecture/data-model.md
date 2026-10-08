@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -16,7 +16,7 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
 (see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
-`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`. `knex_migrations` records migration names without the file extension. Everything else below is the design the
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE). `knex_migrations` records migration names without the file extension. Everything else below is the design the
 remaining modules will build. Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
@@ -155,8 +155,9 @@ CREATE INDEX idx_doctor_profiles_bookable_experience_id ON doctor_profiles (year
 CREATE INDEX idx_doctor_profiles_verification_status_submitted_at_id
     ON doctor_profiles (verification_status, submitted_at, id) WHERE deleted_at IS NULL;
 ```
-**As built:** only `uq_doctor_profiles_user_id` exists among the profile indexes above. The fee, experience,
-and verification-queue indexes are deferred until their queries land. The migration comments the Identity user-id
+**As built:** `uq_doctor_profiles_user_id` and (since verification, 2026-10-08)
+`idx_doctor_profiles_verification_status_submitted_at_id` exist among the profile indexes above. The fee and
+experience indexes are deferred until their queries land. The migration comments the Identity user-id
 columns and grants `vcare_app` `SELECT, INSERT, UPDATE` but no `DELETE`; the two link-table migrations grant
 `DELETE` for set replacement, and the specialties link also grants `UPDATE` to move the primary flag.
 The language-code search index below is likewise deferred. Each link table's unique constraint covers its
@@ -235,6 +236,7 @@ CREATE TABLE verification_documents (
 --   WHERE doctor_profile_id = $1 AND deleted_at IS NULL ORDER BY type, id
 CREATE INDEX idx_verification_documents_doctor_profile_id_type ON verification_documents (doctor_profile_id, type) WHERE deleted_at IS NULL;
 ```
+**Built** by verification (migration `20261007120100`). The app role has no `DELETE`: removal sets `deleted_at`, the final object stays under the bucket retention policy. A row exists only after `complete` verified the stored bytes; `file_type` is the detected type.
 
 ## `working_hours`
 ```sql
@@ -519,7 +521,7 @@ CREATE INDEX idx_record_attachments_medical_record_id ON record_attachments (med
 Temporary, single-use upload intents ([ADR 0013](../adr/0013-verified-direct-upload-lifecycle.md),
 [file-handling.md](./file-handling.md)). Operational, never exposed: a row is **not** a document or attachment; the
 real row is inserted only after `complete` verifies the stored object. `file_type` of the real row is the detected
-type. `care-worker` closes expired intents and purges rows older than 7 days.
+type. `care-worker` (`upload-intent-purge`, every 5 min) closes expired intents and purges rows older than 7 days. **Built** by verification (migration `20261007120000`); `complete` serializes on a session advisory lock per intent, so concurrent completes and the purge never act on one intent together.
 ```sql
 CREATE TABLE upload_intents (
     id              BIGSERIAL PRIMARY KEY,
@@ -537,7 +539,7 @@ CREATE TABLE upload_intents (
     CONSTRAINT uq_upload_intents_quarantine_key UNIQUE (quarantine_key),
     CONSTRAINT chk_upload_intents_kind CHECK (kind IN ('verification_document', 'record_attachment')),
     CONSTRAINT chk_upload_intents_document_type CHECK (
-        (kind = 'verification_document' AND document_type IN ('license', 'id', 'degree'))
+        (kind = 'verification_document' AND document_type IN ('license', 'id', 'degree') AND description IS NULL)
         OR (kind = 'record_attachment' AND document_type IS NULL)),
     CONSTRAINT chk_upload_intents_max_bytes CHECK (max_bytes BETWEEN 1 AND 10485760),
     CONSTRAINT chk_upload_intents_result CHECK (result_id IS NULL OR consumed_at IS NOT NULL)
@@ -643,7 +645,7 @@ CREATE INDEX idx_audit_logs_created_at_id ON audit_logs (created_at DESC, id DES
 ```
 
 ## `identity_sync_jobs`
-Durable retry for Integration Cases 1, 3, and 4 (restarts do not lose them). Polled by `care-worker`.
+Durable retry for Integration Cases 1, 3, and 4 (restarts do not lose them). Polled by `care-worker` (`identity-sync` loop). **Built** by verification (migration `20261007120200`) for `kind='verification'` only; the job row is inserted in the **decision transaction** (including the inline-success path), and the worker ignores `suspension` and `reinstatement` until those modules add their policies. `reason` is confidential (needed to retry) and never appears in responses, logs, or audit metadata.
 `kind` gains `'reinstatement'` with `target_status = 'active'` ([ADR 0012](../adr/0012-doctor-reinstatement.md)).
 ```sql
 CREATE TABLE identity_sync_jobs (
@@ -672,7 +674,7 @@ CREATE TABLE identity_sync_jobs (
     CONSTRAINT chk_identity_sync_jobs_status CHECK (status IN ('pending', 'succeeded', 'failed', 'superseded'))
 );
 -- Retrier poll: SELECT … WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at
---   FOR UPDATE SKIP LOCKED LIMIT 50
+--   LIMIT 50 (as built a plain read; a per-doctor session advisory lock and a re-check of next_attempt_at serialize workers, no SKIP LOCKED)
 CREATE INDEX idx_identity_sync_jobs_pending_next_attempt_at ON identity_sync_jobs (next_attempt_at) WHERE status = 'pending';
 -- At most one open job per doctor; a newer decision marks the older job 'superseded' in the same transaction.
 -- Also covers the doctor_profile_id FK and the runbook lookup by profile.

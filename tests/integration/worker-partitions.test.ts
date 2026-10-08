@@ -302,8 +302,14 @@ describe("care-worker audit-partitions loop (integration: real Postgres as care_
         expect(jsonLines(unknown.output).find((line) => line.message === "worker_loop_unknown")).toMatchObject({
             level: "error",
             loop: "no-such-loop",
-            loops: ["audit-partitions"],
+            loops: ["audit-partitions", "identity-sync", "upload-intent-purge"],
         });
+    });
+
+    it.each(["identity-sync", "upload-intent-purge"])("should run one tick and exit 0 for `worker --once %s`", async (loop) => {
+        const once = await runWorker(["--once", loop]);
+        expect(once.code).toBe(0);
+        expect(jsonLines(once.output).map((line) => line.message)).toContain("worker_once_completed");
     });
 
     it("should exit 1 for `worker --once audit-partitions` when a default-partition row blocks a new month (L4)", async () => {

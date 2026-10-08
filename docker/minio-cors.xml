@@ -1,0 +1,8 @@
+<CORSConfiguration>
+  <CORSRule>
+    <AllowedOrigin>http://localhost:5173</AllowedOrigin>
+    <AllowedMethod>POST</AllowedMethod>
+    <AllowedHeader>*</AllowedHeader>
+    <MaxAgeSeconds>300</MaxAgeSeconds>
+  </CORSRule>
+</CORSConfiguration>

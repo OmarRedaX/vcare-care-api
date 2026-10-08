@@ -322,19 +322,21 @@ paths:
         Creates the caller's doctor profile in `draft` (201) or updates an existing `draft`/`rejected` profile (200).
         With `submit=true` the application moves to `submitted`; this requires at least one live `license` and one
         live `id` verification document (else `400 ValidationFailed` with `details[].field = "documents"`).
-        A profile already `submitted` or `approved` returns `409 Conflict`.
-        Upload documents with `POST /api/doctors/me/documents` after the draft exists.
+        A `submitted` profile is locked from edits (`409 ApplicationNotEditable`). Upload documents through
+        `POST /api/doctors/me/documents/uploads` after the draft exists. A new `submit=true` profile without
+        both required documents fails without creating a profile.
 
         **Resubmission** (`rejected → submitted`) follows the Integration Case 1 path with Identity status `pending`, so the
         account returns to `pending` alongside the application: 200 when Identity confirmed, 202 with
         `identitySync: "pending"` (or `"failed"` on a non-retryable `409 InvalidStatusTransition` from Identity) otherwise.
-        `draft → submitted` makes no Identity call.
+        `draft → submitted` makes no Identity call. Resubmission creates a durable sync job in the local
+        transaction, superseding any older pending job; Identity 409 marks the new job failed.
       security:
         - bearerUser: []
       x-roles: [doctor]
       x-ownership: self
       x-account-state: 'status in (pending, active, rejected)'
-      x-audit-actions: [doctor.profile_created, doctor.profile_updated, verification.submitted, identity_sync.synced]
+      x-audit-actions: [doctor.profile_created, doctor.profile_updated, verification.submitted, identity_sync.pending, identity_sync.failed, identity_sync.synced]
       x-integration-case: 1
       x-failure-policy: retry-report-pending
       parameters:
@@ -360,7 +362,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/ApplicationNotEditable'
         '422':
           $ref: '#/components/responses/IdempotencyConflict'
         '429':
@@ -400,6 +402,7 @@ paths:
       description: |
         Changing `timezone` or `isAcceptingPatients` invalidates the doctor's slot and next-available caches.
         Turning `isAcceptingPatients` off never cancels existing consultations. A locally suspended doctor gets `403 Forbidden`.
+        A submitted application locks profile edits with `409 ApplicationNotEditable`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -408,6 +411,7 @@ paths:
       x-audit-actions: [doctor.profile_updated]
       parameters:
         - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       requestBody:
         required: true
         content:
@@ -425,50 +429,122 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ApplicationNotEditable'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /api/doctors/me/documents:
+  /api/doctors/me/documents/uploads:
     post:
-      operationId: uploadVerificationDocument
+      operationId: createVerificationUploadIntent
       tags: [doctors-onboarding]
-      summary: Upload a verification document (license, id, degree)
-      description: |
-        `multipart/form-data`. MIME allowlist `application/pdf`, `image/jpeg`, `image/png` (content-sniffed), 10 MB cap,
-        random object key (the client filename is never used in the key). Allowed only while the application is
-        `draft` or `rejected`. Rate limit 20 uploads/hour per user.
+      summary: Create a presigned verification document upload intent
+      description: Draft or rejected applications only. Rate limit 20/hour per doctor. POST directly to the private bucket, then call complete. `Idempotency-Key` is not honoured on this operation (the response carries a signed POST policy that is never stored for replay); every call creates a fresh intent.
       security:
         - bearerUser: []
       x-roles: [doctor]
-      x-ownership: self
-      x-account-state: 'status in (pending, active, rejected)'
-      x-audit-actions: [verification.document_uploaded]
+      x-ownership: self (database doctor profile)
+      x-account-state: 'status in (pending, active, rejected); application in (draft, rejected)'
+      x-audit-actions: []
       parameters:
         - $ref: '#/components/parameters/RequestId'
       requestBody:
         required: true
         content:
-          multipart/form-data:
+          application/json:
             schema:
-              $ref: '#/components/schemas/VerificationDocumentUpload'
+              type: object
+              additionalProperties: false
+              required: [type]
+              properties:
+                type:
+                  $ref: '#/components/schemas/VerificationDocumentType'
       responses:
         '201':
-          description: Document stored. The response carries a signed download URL bound to the caller.
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/XRequestId'
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, data]
-                properties:
-                  success:
-                    const: true
-                  data:
-                    $ref: '#/components/schemas/VerificationDocument'
+          $ref: '#/components/responses/UploadIntentCreated'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ApplicationNotEditable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/documents/uploads/{uploadId}/complete:
+    post:
+      operationId: completeVerificationUpload
+      tags: [doctors-onboarding]
+      summary: Verify the uploaded object and complete the intent
+      description: Recheck doctor ownership and application editability; verify stored size and magic bytes. An already consumed intent replays its document with 200. Expired intent returns 410.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self (database intent owner and doctor profile)
+      x-account-state: 'status in (pending, active, rejected); application in (draft, rejected)'
+      x-audit-actions: [verification.document_uploaded]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+        - name: uploadId
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationDocumentOk'
+        '201':
+          $ref: '#/components/responses/VerificationDocumentOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ApplicationNotEditable'
+        '410':
+          $ref: '#/components/responses/UploadIntentExpired'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/doctors/me/documents/{documentId}/download-url:
+    post:
+      operationId: getMyVerificationDocumentDownloadUrl
+      tags: [doctors-onboarding]
+      summary: Issue a 60-second private document download URL
+      description: Every call signs a new URL and writes one `verification.document_url_issued` audit row. `Idempotency-Key` is not honoured on this operation (a signed URL is never stored for replay).
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self (database document to doctor profile)
+      x-account-state: 'status in (pending, active, rejected)'
+      x-audit-actions: [verification.document_url_issued]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: documentId
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          $ref: '#/components/responses/DownloadUrlOk'
         '400':
           $ref: '#/components/responses/ValidationFailed'
         '401':
@@ -484,11 +560,51 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/doctors/me/documents/{documentId}:
+    delete:
+      operationId: deleteMyVerificationDocument
+      tags: [doctors-onboarding]
+      summary: Soft-delete one verification document
+      description: Draft or rejected applications only; the stored object remains under retention policy.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: self (database document to doctor profile)
+      x-account-state: 'status in (pending, active, rejected); application in (draft, rejected)'
+      x-audit-actions: [verification.document_deleted]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+        - name: documentId
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ApplicationNotEditable'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/doctors/me/application:
     get:
       operationId: getMyApplication
       tags: [doctors-onboarding]
       summary: Track the caller's verification application
+      description: Returns metadata-only documents and missing requirements for the doctor's own view.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -1052,7 +1168,12 @@ paths:
       operationId: listApplications
       tags: [admin-verification]
       summary: Verification queue
-      description: Defaults to `status=submitted`, oldest first. Doctor names are hydrated per Case 2 (degrade).
+      description: |
+        Defaults to `status=submitted`; status is a whitelisted VerificationStatus filter. Keyset order is
+        `(submittedAt ASC, id ASC)` with null `submittedAt` last (then id). Cursor encodes both sort values.
+        Doctor names are hydrated in one Case-2 batch. On Identity outage the doctor block has null displayName
+        and avatarUrl with `profileHydrated=false`; the queue still succeeds. Documents contain metadata only.
+        Rate limit 120/min per admin user.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1103,8 +1224,8 @@ paths:
     get:
       operationId: getApplication
       tags: [admin-verification]
-      summary: View one application with signed document URLs
-      description: The application id is the doctor profile id (one application per doctor). Issuing document URLs is audited.
+      summary: View one application with metadata-only documents
+      description: The application id is the doctor profile id. Viewing documents is audited; download URL issue is a separate POST. Case-2 identity hydration degrades to null doctor fields.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1130,6 +1251,43 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/admin/applications/{id}/documents/{documentId}/download-url:
+    post:
+      operationId: getApplicationDocumentDownloadUrl
+      tags: [admin-verification]
+      summary: Issue a 60-second private application document download URL
+      description: Every call signs a new URL and writes one `verification.document_url_issued` audit row. `Idempotency-Key` is not honoured on this operation (a signed URL is never stored for replay).
+      security:
+        - bearerUser: []
+      x-roles: [admin]
+      x-ownership: none (database document-to-application match required)
+      x-account-state: 'status=active'
+      x-audit-actions: [verification.document_url_issued]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+        - name: documentId
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          $ref: '#/components/responses/DownloadUrlOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/admin/applications/{id}/approve:
     patch:
       operationId: approveApplication
@@ -1137,19 +1295,23 @@ paths:
       summary: Approve a submitted application (Integration Case 1)
       description: |
         1. One transaction: `verification_status='approved'`, `reviewed_by`, `review_note`, `decided_at`,
-           `identity_sync_status='pending'`, audit row.
+           `identity_sync_status='pending'`, audit row and pending identity sync job; supersede an older pending job.
         2. `PATCH /internal/users/{id}/status` on Identity → `active`, up to 3 attempts (2 s timeout each, backoff).
         3. Identity confirmed → `identity_sync_status='synced'`, **200**. Still failing → decision kept, **202** with
            `identitySync: "pending"`; a durable `identity_sync_jobs` retrier continues and alerts after 15 minutes unsynced.
         4. A `409 InvalidStatusTransition` from Identity is non-retryable: `identity_sync_status='failed'`, alert
            `IdentitySyncTransitionRejected`, **202** with `identitySync: "failed"`, surfaced in the admin console.
         The doctor is not bookable until `approved` **and** `synced`. Only `submitted` applications are reviewable.
+        While the previous status change (a resubmit or reopen that moved the Identity account back to `pending`) has not
+        reached Identity (`identity_sync_status='pending'`), the decision is refused with `409 Conflict` and `Retry-After: 5`:
+        superseding that unapplied step would ask Identity for a transition it refuses (e.g. `rejected → active`). Retry
+        once the worker has synced.
       security:
         - bearerUser: []
       x-roles: [admin]
       x-ownership: none
       x-audit: admin-action
-      x-audit-actions: [verification.approved, identity_sync.synced]
+      x-audit-actions: [verification.approved, identity_sync.pending, identity_sync.failed, identity_sync.synced]
       x-integration-case: 1
       x-failure-policy: retry-report-pending
       parameters:
@@ -1175,7 +1337,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/ApplicationNotReviewable'
+          $ref: '#/components/responses/ApplicationDecisionConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -1186,13 +1348,13 @@ paths:
       operationId: rejectApplication
       tags: [admin-verification]
       summary: Reject a submitted application with a reason (Integration Case 1)
-      description: Same sequence as approve with `verification_status='rejected'` and Identity status `rejected`. `reason` is required.
+      description: Same sequence as approve with `verification_status='rejected'` and Identity status `rejected`. The local transaction creates a pending sync job. Identity 409 marks the job failed; 202 reports pending or failed. `reason` is required. Like approve, refused with `409 Conflict` and `Retry-After: 5` while the account's previous status change has not reached Identity (`identity_sync_status='pending'`).
       security:
         - bearerUser: []
       x-roles: [admin]
       x-ownership: none
       x-audit: admin-action
-      x-audit-actions: [verification.rejected, identity_sync.synced]
+      x-audit-actions: [verification.rejected, identity_sync.pending, identity_sync.failed, identity_sync.synced]
       x-integration-case: 1
       x-failure-policy: retry-report-pending
       parameters:
@@ -1218,7 +1380,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/ApplicationNotReviewable'
+          $ref: '#/components/responses/ApplicationDecisionConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -1231,7 +1393,8 @@ paths:
       summary: Re-open a rejected application (Integration Case 1, Identity status pending)
       description: |
         PRD 7.2. `rejected → submitted` (else `409 ApplicationNotReviewable`). One transaction records the transition,
-        `identity_sync_status='pending'`, and the audit row; then `PATCH /internal/users/{id}/status` → `pending` with the
+        `identity_sync_status='pending'`, the audit row and a pending sync job (superseding any older pending job);
+        then `PATCH /internal/users/{id}/status` → `pending` with the
         Case 1 policy: 200 when confirmed, 202 `identitySync: "pending"` while retrying, 202 `identitySync: "failed"` on a
         non-retryable `409 InvalidStatusTransition` from Identity.
       security:
@@ -1239,7 +1402,7 @@ paths:
       x-roles: [admin]
       x-ownership: none
       x-audit: admin-action
-      x-audit-actions: [verification.reopened, identity_sync.synced]
+      x-audit-actions: [verification.reopened, identity_sync.pending, identity_sync.failed, identity_sync.synced]
       x-integration-case: 1
       x-failure-policy: retry-report-pending
       parameters:
@@ -2829,6 +2992,8 @@ components:
     NoContent:
       description: No content.
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
     HealthLiveOk:
@@ -2867,6 +3032,8 @@ components:
     DoctorProfileOwnOk:
       description: The caller's own doctor profile.
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -2882,6 +3049,8 @@ components:
     DoctorProfileOwnCreated:
       description: The caller's doctor profile was created.
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -2895,8 +3064,10 @@ components:
               data:
                 $ref: '#/components/schemas/DoctorProfileOwn'
     VerificationApplicationOk:
-      description: A verification application with signed document URLs.
+      description: A verification application with metadata-only documents.
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -2909,9 +3080,59 @@ components:
                 const: true
               data:
                 $ref: '#/components/schemas/VerificationApplication'
-    ApprovalPendingSync:
-      description: Decision recorded; Identity has not confirmed the account status yet. The doctor stays unbookable until synced.
+    UploadIntentCreated:
+      description: Presigned POST upload intent; rate limited to 20/hour per doctor.
       headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success: { const: true }
+              data:
+                $ref: '#/components/schemas/UploadIntent'
+    VerificationDocumentOk:
+      description: Verified document metadata only.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success: { const: true }
+              data:
+                $ref: '#/components/schemas/VerificationDocument'
+    DownloadUrlOk:
+      description: Short-lived private document download URL; no-store.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success: { const: true }
+              data:
+                $ref: '#/components/schemas/DownloadUrl'
+    ApprovalPendingSync:
+      description: Decision and sync job recorded in one transaction; older pending job superseded. Identity unconfirmed (pending) or rejected a transition with 409 (failed). The doctor stays unbookable until synced.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3053,6 +3274,8 @@ components:
     ValidationFailed:
       description: '`ValidationFailed` — DTO validation failed, unknown properties, a missing required `Idempotency-Key`, or a window too large.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3071,6 +3294,8 @@ components:
     Unauthorized:
       description: '`Unauthorized` (missing/invalid bearer token, unknown key) or `TokenExpired`.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3101,6 +3326,8 @@ components:
     Forbidden:
       description: '`Forbidden` — role or ownership check failed, account state not allowed, or the doctor is locally suspended.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3161,6 +3388,8 @@ components:
     NotFound:
       description: '`NotFound` — absent, soft-deleted, or not visible to the caller (existence is not revealed).'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3178,6 +3407,8 @@ components:
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         Retry-After:
           $ref: '#/components/headers/RetryAfter'
       content:
@@ -3321,6 +3552,8 @@ components:
     ApplicationNotReviewable:
       description: '`ApplicationNotReviewable` — the application is not in `submitted`.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3332,6 +3565,70 @@ components:
             error:
               code: ApplicationNotReviewable
               message: Only submitted applications can be reviewed
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    ApplicationDecisionConflict:
+      description: '`ApplicationNotReviewable` — the application is not in `submitted`. Or `Conflict` with `Retry-After: 5` — the account''s previous status change (resubmit/reopen) has not reached Identity yet (`identity_sync_status=pending`); retry after the delay.'
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            notReviewable:
+              value:
+                success: false
+                error:
+                  code: ApplicationNotReviewable
+                  message: Only submitted applications can be reviewed
+                  requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+            syncPending:
+              value:
+                success: false
+                error:
+                  code: Conflict
+                  message: Conflict
+                  requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    ApplicationNotEditable:
+      description: '`ApplicationNotEditable` — submitted applications cannot be edited. Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed; retry after the delay.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: ApplicationNotEditable
+              message: The submitted application cannot be edited
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    UploadIntentExpired:
+      description: '`UploadIntentExpired` — upload intent expired before completion.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: UploadIntentExpired
+              message: The upload intent has expired
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ScheduleConflictsUnconfirmed:
       description: '`ScheduleConflictsUnconfirmed` (body lists the affected consultation ids; resubmit with `confirmConflicts=true`) or `Conflict` (a live exception already exists for a date). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict). `Conflict` bodies are the plain envelope.'
@@ -3364,6 +3661,8 @@ components:
     IdempotencyConflict:
       description: '`IdempotencyConflict` — the same `Idempotency-Key` was used with a different body.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3379,6 +3678,8 @@ components:
     RateLimited:
       description: '`RateLimited` — Redis sliding-window limiter tripped.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
         Retry-After:
@@ -3396,6 +3697,8 @@ components:
     InternalError:
       description: '`InternalError` — unhandled error (no internals in the body). Also returned when an audit write for a clinical read fails.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3444,6 +3747,8 @@ components:
         - NotAssignedDoctor
         - RecordLocked
         - ApplicationNotReviewable
+        - ApplicationNotEditable
+        - UploadIntentExpired
         - ScheduleConflictsUnconfirmed
         - IdentityUnavailable
         - IdempotencyConflict
@@ -3530,7 +3835,7 @@ components:
         suspension: applied-locally, session-revocation-pending
     ApprovalPendingSync:
       type: object
-      description: 202 body for Case 1 when Identity has not confirmed yet.
+      description: 202 body for Case 1. The local decision and durable sync job were committed together; an older pending job was superseded. Identity remains unconfirmed (`pending`) or rejected the transition with 409 (`failed`).
       required: [success, data]
       properties:
         success:
@@ -3979,7 +4284,7 @@ components:
       enum: [license, id, degree]
     VerificationDocument:
       type: object
-      required: [id, type, status, fileType, sizeBytes, uploadedAt, downloadUrl, downloadUrlExpiresAt]
+      required: [id, type, status, fileType, sizeBytes, uploadedAt]
       properties:
         id:
           type: integer
@@ -4001,26 +4306,40 @@ components:
         uploadedAt:
           type: string
           format: date-time
-        downloadUrl:
-          type: [string, 'null']
-          format: uri
-          description: HMAC-signed URL bound to the viewer, TTL ≤ 10 minutes. Null in list views (no URL issued). Never logged.
-        downloadUrlExpiresAt:
-          type: [string, 'null']
-          format: date-time
-    VerificationDocumentUpload:
+    UploadIntent:
       type: object
-      required: [type, file]
+      required: [uploadId, url, fields, expiresAt, maxBytes]
       properties:
-        type:
-          $ref: '#/components/schemas/VerificationDocumentType'
-        file:
+        uploadId:
+          type: integer
+          format: int64
+        url:
           type: string
-          contentMediaType: application/octet-stream
-          description: PDF, JPEG, or PNG; at most 10 MB.
+          format: uri
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+        maxBytes:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+    DownloadUrl:
+      type: object
+      required: [url, expiresAt]
+      properties:
+        url:
+          type: string
+          format: uri
+        expiresAt:
+          type: string
+          format: date-time
     VerificationApplication:
       type: object
-      description: A doctor's application — a view over the doctor profile's verification state plus its documents.
+      description: A doctor's application with metadata-only documents. The doctor identity block degrades to null fields when Identity is unavailable; missingRequirements appears only in the doctor's own view.
       required: [id, doctorUserId, doctor, status, identitySyncStatus, submittedAt, decidedAt, reviewedBy, reviewNote, documents]
       properties:
         id:

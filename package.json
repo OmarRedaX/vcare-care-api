@@ -26,6 +26,9 @@
     "migrate:ensure-app-login": "tsx --env-file-if-exists=.env src/migrate.ts ensure-app-login"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1147.0",
+    "@aws-sdk/s3-presigned-post": "3.1147.0",
+    "@aws-sdk/s3-request-presigner": "3.1147.0",
     "class-transformer": "0.5.1",
     "class-validator": "0.14.4",
     "express": "5.2.1",

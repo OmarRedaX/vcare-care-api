@@ -101,6 +101,10 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
 
     (res.locals as { errorCode?: string }).errorCode = appError.code;
 
+    const { retryAfter, ...bodyExtra } = appError.extra ?? {};
+    if (typeof retryAfter === "number" && Number.isInteger(retryAfter) && retryAfter > 0) {
+        res.setHeader("Retry-After", String(retryAfter));
+    }
     res.status(appError.status).json({
         success: false,
         error: {
@@ -109,6 +113,6 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
             details: appError.details,
             requestId: req.requestId,
         },
-        ...appError.extra,
+        ...bodyExtra,
     });
 }
