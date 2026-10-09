@@ -96,6 +96,8 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         container.registerInstance(TOKENS.UserTokenVerifier, wiring.verifier);
         container.registerInstance(TOKENS.IDENTITY_CLIENT, identity);
         container.registerInstance(TOKENS.STORAGE, storage);
+        // The engine singleton may already hold the boot-time IdentityClient (resolved by the `previous` snapshot above): rebuild it on the test client.
+        container.registerSingleton(TOKENS.IdentitySyncService, IdentitySyncService);
         identitySync = container.resolve<IdentitySyncService>(TOKENS.IdentitySyncService);
         service = container.resolve(VerificationService);
         container.registerInstance(TOKENS.VerificationService, service);
