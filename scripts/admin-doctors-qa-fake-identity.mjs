@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 // Loopback-only, synthetic Identity for scripts/curl-test-admin-doctors.sh. Everything lives in memory.
 // Serves: JWKS + token minting (user tokens for Care), POST /internal/auth/token, PATCH /internal/users/:id/status,
 // GET /internal/users?ids=, and a runtime control surface (no Care restart needed):

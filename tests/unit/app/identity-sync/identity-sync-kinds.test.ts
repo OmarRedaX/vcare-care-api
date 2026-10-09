@@ -45,7 +45,7 @@ describe("identity sync engine (per job kind)", () => {
     beforeEach(() => {
         jest.restoreAllMocks(); jest.clearAllMocks(); clock.set(START);
         audit.record.mockResolvedValue(undefined);
-        identity.setUserStatus.mockResolvedValue({ outcome: "applied" });
+        identity.setUserStatus.mockResolvedValue({ outcome: "applied", attemptsMade: 1 });
     });
 
     describe("processDue", () => {
@@ -102,7 +102,7 @@ describe("identity sync engine (per job kind)", () => {
     describe("suspension alert (page)", () => {
         const failing = async (consecutiveBefore: number) => {
             arrange(job(IdentitySyncJobKind.Suspension, { consecutive_failures: consecutiveBefore, attempts: consecutiveBefore }));
-            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 1 });
             const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
             await service.processDue(9);
             return error;
@@ -120,7 +120,7 @@ describe("identity sync engine (per job kind)", () => {
 
         it("should not alert on elapsed time alone", async () => {
             arrange(job(IdentitySyncJobKind.Suspension, { created_at: new Date(START - 7 * 86_400_000), updated_at: new Date(START - 7 * 86_400_000) }));
-            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 1 });
             const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
             await service.processDue(9);
             expect(error).not.toHaveBeenCalled();
@@ -138,7 +138,7 @@ describe("identity sync engine (per job kind)", () => {
     describe("unsynced-too-long alert (ticket)", () => {
         const failing = async (kind: IdentitySyncJobKind, changes: Partial<IdentitySyncJobRow> = {}) => {
             arrange(job(kind, changes));
-            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 1 });
             const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
             await service.processDue(9);
             return error;
@@ -172,7 +172,7 @@ describe("identity sync engine (per job kind)", () => {
     describe("Identity 409", () => {
         it.each(KINDS)("should fail the %s job and the profile, audit identity_sync.failed as system and log the kind", async (kind) => {
             const { update, setProfile } = arrange(job(kind, { attempts: 2 }));
-            identity.setUserStatus.mockResolvedValue({ outcome: "rejected-transition" });
+            identity.setUserStatus.mockResolvedValue({ outcome: "rejected-transition", attemptsMade: 1 });
             const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
             await service.processDue(9);
             expect(update).toHaveBeenCalledWith(9, { status: "failed", attempts: 3, last_error_code: "InvalidStatusTransition" }, trx);
@@ -191,7 +191,7 @@ describe("identity sync engine (per job kind)", () => {
     describe("transient failure", () => {
         it.each(KINDS)("should schedule the next %s attempt from the fake clock and count the failure", async (kind) => {
             const { update, setProfile } = arrange(job(kind, { attempts: 2, consecutive_failures: 1 }));
-            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 1 });
             jest.spyOn(logger, "error").mockImplementation(() => undefined);
             await service.processDue(9);
             const delay = backoffMs(2, () => 0.5, getEnv().IDENTITY_SYNC_RETRY_CAP_SECONDS * 1000);
@@ -201,7 +201,7 @@ describe("identity sync engine (per job kind)", () => {
 
         it("should cap the backoff at IDENTITY_SYNC_RETRY_CAP_SECONDS", async () => {
             const { update } = arrange(job(IdentitySyncJobKind.Suspension, { attempts: 40, consecutive_failures: 20 }));
-            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "NetworkError" });
+            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "NetworkError", attemptsMade: 1 });
             jest.spyOn(logger, "error").mockImplementation(() => undefined);
             await service.processDue(9);
             expect(update).toHaveBeenCalledWith(9, expect.objectContaining({ next_attempt_at: new Date(START + getEnv().IDENTITY_SYNC_RETRY_CAP_SECONDS * 1000) }), trx);
@@ -209,7 +209,7 @@ describe("identity sync engine (per job kind)", () => {
 
         it.each([[0, 1], [3, 0], [1, 0]])("should audit identity_sync.pending only when attempts_before is 0 (attempts_before=%i -> %i audit rows)", async (before, rows) => {
             arrange(job(IdentitySyncJobKind.Suspension, { attempts: before }));
-            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 1 });
             jest.spyOn(logger, "error").mockImplementation(() => undefined);
             await service.processDue(9);
             expect(audit.record).toHaveBeenCalledTimes(rows);
@@ -301,6 +301,72 @@ describe("identity sync engine (per job kind)", () => {
 
         it.each(KINDS)("should fall back to the kind %s when the job has no reason", async (kind) => {
             expect(await sent(null, kind)).toBe(kind);
+        });
+    });
+
+    describe("blank Identity-bound reason", () => {
+        const sentFor = async (reason: string | null, kind: IdentitySyncJobKind): Promise<string> => {
+            identity.setUserStatus.mockClear();
+            arrange(job(kind, { reason }));
+            await service.processDue(9);
+            return identity.setUserStatus.mock.calls[0]?.[2] as string;
+        };
+
+        it.each(KINDS)("should send the kind %s when the stored reason is whitespace only (Identity answers a blank reason with a non-retryable 400)", async (kind) => {
+            expect(await sentFor("   ", kind)).toBe(kind);
+            expect(await sentFor("\u3000\u3000\u3000", kind)).toBe(kind);
+            expect(await sentFor("", kind)).toBe(kind);
+        });
+
+        it("should send the kind when the clamp leaves only whitespace (500 leading spaces then text)", async () => {
+            expect(await sentFor(`${" ".repeat(500)}real text`, IdentitySyncJobKind.Suspension)).toBe("suspension");
+        });
+    });
+
+    describe("permanent Identity answers (400, 403, 422)", () => {
+        it.each(KINDS.flatMap((kind) => ["HTTP_400", "HTTP_403", "HTTP_422"].map((code) => [kind, code] as const)))("should fail the %s job and the profile on %s, page with the kind and code, and never retry", async (kind, code) => {
+            const { update, setProfile } = arrange(job(kind, { attempts: 2 }));
+            identity.setUserStatus.mockResolvedValue({ outcome: "permanent", errorCode: code, attemptsMade: 1 });
+            const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
+            await service.processDue(9);
+            expect(update).toHaveBeenCalledWith(9, { status: "failed", attempts: 3, last_error_code: code }, trx);
+            expect(setProfile).toHaveBeenCalledWith(1, IdentitySyncStatus.Failed, trx);
+            expect(audit.record).toHaveBeenCalledWith(trx, expect.objectContaining({ action: "identity_sync.failed", metadata: { jobId: 9 } }));
+            expect(error).toHaveBeenCalledWith("IdentitySyncTransitionRejected", { code, kind, jobId: 9, profileId: 1 });
+            // The failed job is never picked up again.
+            arrange(job(kind, { status: IdentitySyncJobStatus.Failed }));
+            identity.setUserStatus.mockClear();
+            await service.processDue(9);
+            expect(identity.setUserStatus).not.toHaveBeenCalled();
+        });
+    });
+
+    describe("attempts accounting", () => {
+        it("should record the calls actually made, not the requested inline count", async () => {
+            const { update } = arrange(job(IdentitySyncJobKind.Suspension, { attempts: 0 }));
+            identity.setUserStatus.mockResolvedValue({ outcome: "applied", attemptsMade: 1 });
+            await service.syncNow(9, admin, 3);
+            expect(update).toHaveBeenCalledWith(9, expect.objectContaining({ status: "succeeded", attempts: 1 }), trx);
+        });
+
+        it("should add the calls made to a transient failure so the backoff index starts at the real count", async () => {
+            const { update } = arrange(job(IdentitySyncJobKind.Suspension, { attempts: 0 }));
+            identity.setUserStatus.mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 3 });
+            jest.spyOn(logger, "error").mockImplementation(() => undefined);
+            await service.syncNow(9, admin, 3);
+            expect(update).toHaveBeenCalledWith(9, expect.objectContaining({ attempts: 3, consecutive_failures: 1 }), trx);
+        });
+    });
+
+    describe("job settled before the inline attempt", () => {
+        it.each(KINDS)("should answer from the profile (200) for a %s job the worker already succeeded, not as lock contention", async (kind) => {
+            arrange(job(kind, { status: IdentitySyncJobStatus.Succeeded }));
+            jest.spyOn(syncRepo, "findPendingSyncJob").mockResolvedValue(undefined);
+            jest.spyOn(syncRepo, "findProfileForSync").mockResolvedValue(profile({ identitySyncStatus: IdentitySyncStatus.Synced }));
+            const report = await service.syncNow(9, admin, 3);
+            expect(report).toMatchObject({ status: 200 });
+            expect(report.identitySync).toBeUndefined();
+            expect(identity.setUserStatus).not.toHaveBeenCalled();
         });
     });
 });

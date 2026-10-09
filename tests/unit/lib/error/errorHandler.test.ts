@@ -160,6 +160,15 @@ describe("lib/error/errorHandler", () => {
         expect(error.stack?.split("\n")[1]).toMatch(/^\s+at /);
     });
 
+    it("should log a declared IdentityUnavailable 503 as a warn handled_error without a stack", async () => {
+        const res = await request(harness(() => { throw new AppError("IdentityUnavailable", 503, "Suspension applied locally; session revocation is pending"); })).get("/t");
+        expect(res.status).toBe(503);
+        expect(logs.lines().some((entry) => entry.message === "unhandled_error")).toBe(false);
+        const line = logs.lines().find((entry) => entry.message === "handled_error");
+        expect(line).toMatchObject({ level: "warn", status: 503, code: "IdentityUnavailable", requestId: REQUEST_ID });
+        expect(line?.error).toBeUndefined();
+    });
+
     it("should log a database error without its message or the rejected value when an unknown error is a pg error (F7)", async () => {
         await request(
             harness(() => {

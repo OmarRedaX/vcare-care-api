@@ -34,3 +34,23 @@ export function NoControlCharacters(policy: ControlCharacterPolicy): PropertyDec
         },
     });
 }
+
+/**
+ * Rejects empty and whitespace-only text (U+3000, U+00A0 and U+FEFF count as whitespace, like `\s`). Text forwarded to Identity
+ * must pass this: Identity answers a blank reason with a non-retryable 400.
+ */
+export function NotBlank(): PropertyDecorator {
+    return (target, propertyKey) => registerDecorator({
+        name: "notBlank",
+        target: target.constructor,
+        propertyName: String(propertyKey),
+        validator: {
+            validate(value: unknown): boolean {
+                return typeof value === "string" && /\S/.test(value);
+            },
+            defaultMessage(): string {
+                return "must not be blank";
+            },
+        },
+    });
+}

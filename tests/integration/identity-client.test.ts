@@ -16,7 +16,7 @@ describe("Identity client with real Redis", () => {
     });
     afterAll(async () => { await flushByPrefix(["identity:user:"]); await client.close(); await fake.close(); await closeRedis(); });
     it("writes status, caches only display fields for 300 seconds, and serves cache on failure", async () => {
-        expect(await client.setUserStatus(42, "active", "synthetic reason", 1, "integration-r")).toEqual({ outcome: "applied" });
+        expect(await client.setUserStatus(42, "active", "synthetic reason", 1, "integration-r")).toEqual({ outcome: "applied", attemptsMade: 1 });
         expect((await client.getUsersBatch([42], "integration-r")).users.get(42)?.status).toBe("active");
         expect(await redis.ttl("identity:user:42")).toBeGreaterThan(0);
         expect(await redis.ttl("identity:user:42")).toBeLessThanOrEqual(300);
@@ -27,7 +27,7 @@ describe("Identity client with real Redis", () => {
     it("stops on provider 409 and degrades when the provider is down", async () => {
         fake.options.forceConflict = true;
         expect(await client.setUserStatus(42, "rejected", "synthetic reason", 1, "integration-r"))
-            .toEqual({ outcome: "rejected-transition" });
+            .toEqual({ outcome: "rejected-transition", attemptsMade: 1 });
         fake.options.forceConflict = false;
         fake.options.down = true;
         const result = await client.getUsersBatch([42, 999], "integration-r");

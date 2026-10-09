@@ -212,7 +212,7 @@ describe("verification service rules", () => {
         jest.spyOn(syncRepo, "findPendingSyncJob").mockResolvedValue(job);
         jest.spyOn(syncRepo, "findProfileForSync").mockResolvedValue(profile(VerificationStatus.Submitted, { identitySyncStatus: IdentitySyncStatus.Pending }));
         jest.spyOn(syncRepo, "updateSyncJob").mockResolvedValue(undefined);
-        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 1 });
         await expect(service.finishSubmit(actor, { jobId: 9 })).resolves.toEqual({ status: 202, identitySync: "pending" });
         expect(identity.getUsersBatch).not.toHaveBeenCalled();
         await expect(service.finishSubmit(actor, { jobId: null })).resolves.toBeNull();

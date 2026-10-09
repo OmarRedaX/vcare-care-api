@@ -43,8 +43,8 @@ describe("identity sync engine (verification jobs)", () => {
         jest.spyOn(syncRepo, "findPendingSyncJob").mockResolvedValue(job);
         jest.spyOn(syncRepo, "findProfileForSync").mockResolvedValue(profile(VerificationStatus.Approved, { identitySyncStatus: IdentitySyncStatus.Pending }));
         const updateJob = jest.spyOn(syncRepo, "updateSyncJob").mockResolvedValue(undefined);
-        if (outcome === "transient") jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome, errorCode: "HTTP_503" });
-        else jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome });
+        if (outcome === "transient") jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome, errorCode: "HTTP_503", attemptsMade: 1 });
+        else jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome, attemptsMade: 1 });
         const before = Date.now();
         await identitySync.processDue(9);
         if (outcome !== "transient") expect(updateJob).toHaveBeenCalledWith(9, expect.objectContaining({ status: jobStatus }), expect.anything());
@@ -80,7 +80,7 @@ describe("identity sync engine (verification jobs)", () => {
         jest.spyOn(syncRepo, "findProfileForSync").mockResolvedValue(profile(VerificationStatus.Approved, { identitySyncStatus: IdentitySyncStatus.Pending }));
         jest.spyOn(syncRepo, "updateSyncJob").mockResolvedValue(undefined);
         const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
-        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "rejected-transition" });
+        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "rejected-transition", attemptsMade: 1 });
         await identitySync.processDue(9);
         expect(error).toHaveBeenCalledWith("IdentitySyncTransitionRejected", { code: "InvalidStatusTransition", kind: "verification", jobId: 9, profileId: 1 });
     });
@@ -94,7 +94,7 @@ describe("identity sync engine (verification jobs)", () => {
         jest.spyOn(syncRepo, "findProfileForSync").mockResolvedValue(profile(VerificationStatus.Approved, { identitySyncStatus: IdentitySyncStatus.Pending }));
         jest.spyOn(syncRepo, "updateSyncJob").mockResolvedValue(undefined);
         const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
-        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503" });
+        jest.mocked(identity.setUserStatus).mockResolvedValue({ outcome: "transient", errorCode: "HTTP_503", attemptsMade: 1 });
         await identitySync.processDue(9);
         expect(error).toHaveBeenCalledWith("IdentityApprovalSyncPending", { kind: "verification", jobId: 9, profileId: 1 });
     });

@@ -38,7 +38,7 @@ flags (`consultations` module, behind a port), the local suspension *guards* (al
 
 | # | Decision (owner, 2026-10-09 — not reopened) | Where it lands |
 |---|---|---|
-| D1 | Suspend stays **503 `IdentityUnavailable`** until Identity confirms; unbounded durable retry; page after 3 consecutive failures | §3.2, §5.3 |
+| D1 | Suspend stays **503 `IdentityUnavailable`** until Identity confirms; unbounded durable retry **for transient failures only**; page after 3 consecutive failures. Identity answers `400`/`403`/`422` are **permanent** (owner decision, review 2026-10-09): job and profile `failed`, page, no retry, for every job kind | §3.2, §5.3 |
 | D2 | Reinstate is **200 / 202** retry-report-pending; ticket alert after 15 min unsynced; Identity 409 → `failed` + page | §3.3, §5.3 |
 | D3 | Reuse `IDENTITY_SYNC_POLL_SECONDS` (10), `IDENTITY_SYNC_RETRY_CAP_SECONDS` (60), `IDENTITY_SYNC_ALERT_AFTER_SECONDS` (900) | §5.3 |
 | D4 | Bodies and audit action names exactly as the contract; entity `doctor_profile` | §3, §7 |
@@ -171,7 +171,7 @@ optional `siblings: Record<string, unknown>` option (merged next to `data`; gene
 #### 3.3.1 Service algorithm (`AdminDoctorsService.reinstate`)
 
 1. **Decision transaction**: lock the profile by user id (`FOR UPDATE`). Absent → `NotFound`. `suspendedAt === null` → no-op
-   (no write/audit/job/call): read the profile's latest job (`findLatestSyncJob(profileId)`, `ORDER BY id DESC LIMIT 1`, served by `idx_identity_sync_jobs_doctor_profile_id_created_at`); if it is `kind='reinstatement'` and `identitySyncStatus` is `pending`/`failed` → `202 { identitySync: <that status> }`, otherwise `200`. `identitySyncStatus !== 'synced'` → `InvalidTransition` (409): the suspension never reached
+   (no write/audit/job/call): read the profile's latest job (`findLatestSyncJob(profileId)`, `ORDER BY created_at DESC, id DESC LIMIT 1`, served by `idx_identity_sync_jobs_doctor_profile_id_created_at`); if it is `kind='reinstatement'` and `identitySyncStatus` is `pending`/`failed` → `202 { identitySync: <that status> }`, otherwise `200`. `identitySyncStatus !== 'synced'` → `InvalidTransition` (409): the suspension never reached
    Identity (`pending`/`failed`), so an `active` request would be rejected by Identity or race a live suspension job.
    Otherwise `supersedeOpen`, `clearSuspension(profile.id, trx)` (`suspended_at/by/reason = NULL`, `identity_sync_status = 'pending'`),
    `enqueue({ kind: reinstatement, targetStatus: "active", … })`, audit `doctor.reinstated`. Flagged consultations stay flagged; the port is **not** called.
@@ -220,8 +220,8 @@ DI: `TOKENS.AdminDoctorsService`, `AdminDoctorsController`, `SuspensionImpactPro
 | BR1 | Only an `approved` doctor with `identity_sync_status='synced'` and `suspended_at IS NULL` can be suspended; otherwise `409 InvalidTransition` and no write | decision transaction under `FOR UPDATE` (service); BR14 explains why `synced` |
 | BR2 | Suspension commits `suspended_at/by/reason`, `identity_sync_status='pending'`, the flag call, the job and the audit rows **atomically**; from that commit Care blocks bookings (`isBookable`) and all doctor actions (`doctor_not_suspended`) | one transaction; guards already live in `doctors`/`schedules`/`verification` |
 | BR3 | A suspension is reported complete (`200`) only when Identity confirmed; otherwise `503 IdentityUnavailable` + `suspension: applied-locally, session-revocation-pending` | service outcome + controller mapping; integration test |
-| BR4 | Suspension retries are unbounded for transient failures (network, timeout, 429, 5xx, one 401 token refresh) and survive restarts | shared engine: no attempt cap; job row in Postgres |
-| BR5 | A `409 InvalidStatusTransition` from Identity is never retried: job `failed`, `identity_sync_status='failed'`, local state kept, page `IdentitySyncTransitionRejected` | engine (`rejected-transition` branch) |
+| BR4 | Suspension retries are unbounded for transient failures (network, timeout, 404, 429, 5xx, a 401 after the one token refresh, a malformed 200) and survive restarts | shared engine: no attempt cap; job row in Postgres |
+| BR5 | A `409 InvalidStatusTransition` from Identity, or a `400`/`403`/`422` (outcome `permanent`, `last_error_code=HTTP_<n>`), is never retried: job `failed`, `identity_sync_status='failed'`, local state kept, page `IdentitySyncTransitionRejected` | engine (`rejected-transition` branch) |
 | BR6 | `IdentitySuspensionSyncFailing` pages when a suspension job reaches 3 consecutive failed engine attempts (and every 10th after) | engine policy for `kind='suspension'` |
 | BR7 | Suspending an already-suspended doctor is a no-op (no job, no audit, no Identity call): `200` when `synced`, the same `503` when `pending`/`failed` (S6) | decision transaction |
 | BR8 | Blind retries are safe: a retry after `503` finds the doctor suspended (BR7) and neither duplicates the job, the audit rows, nor the Identity call; a retry after `202` finds the doctor not suspended (BR13) | state preconditions; `Idempotency-Key` is an extra layer, not the guarantee |
@@ -317,7 +317,7 @@ A crash or DB error after Identity answered `applied` leaves the job `pending`; 
 | Attempt cap | none | **none (unbounded)** | none |
 | Backoff | `backoffMs(attempts, random, IDENTITY_SYNC_RETRY_CAP_SECONDS·1000)` = 200 ms·2ⁿ ±20 %, cap 60 s | same | same |
 | Transient alert | `IdentityApprovalSyncPending` (error log, ticket) once, by the first attempt that finds the job older than `IDENTITY_SYNC_ALERT_AFTER_SECONDS` | **none time-based**; `IdentitySuspensionSyncFailing` (error log, **page**) when the new `consecutive_failures` is 3 and again at 13, 23, … `{ jobId, profileId, consecutiveFailures, lastErrorCode }` | `IdentityReinstatementSyncPending` (error log, ticket) once, same rule as verification, 900 s |
-| Identity 409 | job/profile `failed`, `IdentitySyncTransitionRejected` | same (**page**); local suspension kept | same; local reinstatement kept (profile unsuspended, unbookable) |
+| Identity 409, 400, 403, 422 | job/profile `failed`, `IdentitySyncTransitionRejected` `{ code, kind, jobId, profileId }` | same (**page**); local suspension kept | same; local reinstatement kept (profile unsuspended, unbookable) |
 | Caller response | 200 / 202 | 200 / 503 | 200 / 202 |
 
 "Consecutive failures" counts engine attempts (one inline phase = 1, each worker tick = 1) — the existing counter semantics, so verification is

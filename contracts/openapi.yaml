@@ -1485,11 +1485,15 @@ paths:
         2. `PATCH /internal/users/{id}/status` on Identity → `suspended` (Identity revokes all refresh tokens), inline attempts
            for about 6 s, then a durable retry job with backoff capped at 60 s and no attempt limit for transient failures
            (network, timeout, 429, 5xx, one token refresh on 401). Alert `IdentitySuspensionSyncFailing` after 3 consecutive
-           failures. A `409 InvalidStatusTransition` from Identity is not transient: retries stop, the local suspension stays,
-           `identity_sync_status='failed'`, and on-call is paged immediately (`IdentitySyncTransitionRejected`).
+           failures. A `409 InvalidStatusTransition` from Identity, or an Identity `400`, `403` or `422` (the request itself is refused), is
+           not transient: retries stop, the local suspension stays, `identity_sync_status='failed'`, and on-call is paged immediately
+           (`IdentitySyncTransitionRejected`).
         3. **200 only when Identity confirmed.** Otherwise **503 `IdentityUnavailable`** with
            `suspension: "applied-locally, session-revocation-pending"` (`data.identitySyncStatus` is `pending` or `failed`).
            This policy must not degrade. Reinstatement is a separate operation (`reinstateDoctor`, Case 4).
+        Rate limit 30/min per admin user (shared with `reinstateDoctor`). `Idempotency-Key` is optional: the same key with a different
+        body is `422 IdempotencyConflict`, a duplicate while the first request is in flight is `409 Conflict` with `Retry-After: 1`;
+        a `503` is never stored, so a retry re-executes and meets the no-op rule above.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1501,6 +1505,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/DoctorUserIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       requestBody:
         required: true
         content:
@@ -1532,7 +1537,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/InvalidTransition'
+          $ref: '#/components/responses/DoctorTransitionConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -1557,9 +1564,12 @@ paths:
            each, backoff).
         3. Identity confirmed → `identity_sync_status='synced'`, **200**. Still failing → local state kept, **202** with
            `identitySync: "pending"`; the durable job keeps retrying and alerts after 15 minutes unsynced.
-        4. A `409 InvalidStatusTransition` from Identity is non-retryable: `identity_sync_status='failed'`, the on-call is
-           paged, **202** with `identitySync: "failed"`.
+        4. A `409 InvalidStatusTransition` from Identity, or an Identity `400`, `403` or `422`, is non-retryable:
+           `identity_sync_status='failed'`, the on-call is paged, **202** with `identitySync: "failed"`.
         The doctor stays unbookable until `suspended_at IS NULL` **and** `synced`. Retry policy: retry, report pending.
+        Rate limit 30/min per admin user (shared with `suspendDoctor`). `Idempotency-Key` is optional: the same key with a different
+        body is `422 IdempotencyConflict`, a duplicate while the first request is in flight is `409 Conflict` with `Retry-After: 1`;
+        a stored `202` replays.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1571,6 +1581,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/DoctorUserIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       requestBody:
         required: true
         content:
@@ -1620,7 +1631,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/InvalidTransition'
+          $ref: '#/components/responses/DoctorTransitionConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -3610,6 +3623,23 @@ components:
             error:
               code: RoomNotOpen
               message: The session room is not open
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    DoctorTransitionConflict:
+      description: '`InvalidTransition` — the doctor cannot change from the current state (suspend: not approved and synced; reinstate: suspended but not synced). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: InvalidTransition
+              message: The doctor cannot change from the current state
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     InvalidTransition:
       description: '`InvalidTransition` — lifecycle transition not allowed (including any change to a terminal state).'

@@ -73,11 +73,14 @@ export class IdentitySyncService {
             const pending = await findPendingSyncJob(initial.doctor_profile_id, this.db);
             if (!job || job.status !== IdentitySyncJobStatus.Pending || pending?.id !== jobId) {
                 if (job?.status === IdentitySyncJobStatus.Pending) await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Superseded }, this.db);
-                return;
+                // Settled or superseded while we waited (e.g. the worker already confirmed it): the lock WAS ours, so the caller reads the profile instead of reporting contention.
+                return true;
             }
             // Worker path: another worker may have just recorded a transient failure and scheduled the next attempt. Honour that backoff.
             if (dueOnly && job.next_attempt_at.getTime() > this.timing.now()) return true;
-            const reason = truncateCodePoints(job.reason ?? job.kind, IDENTITY_REASON_MAX_CODE_POINTS);
+            // Identity rejects a blank reason (400, never retryable): a blank stored text, or one that is blank after the clamp, falls back to the kind.
+            const clamped = truncateCodePoints(job.reason ?? "", IDENTITY_REASON_MAX_CODE_POINTS);
+            const reason = /\S/.test(clamped) ? clamped : job.kind;
             const outcome = await this.identity.setUserStatus(job.doctor_user_id, job.target_status, reason, job.actor_user_id, job.request_id ?? this.requestId(), attempts);
             await this.db.transaction(async (trx) => {
                 const current = await findProfileForSync(job.doctor_profile_id, trx, true);
@@ -86,19 +89,21 @@ export class IdentitySyncService {
                 const currentPending = await findPendingSyncJob(current.id, trx);
                 if (currentPending?.id !== jobId) { await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Superseded }, trx); return; }
                 if (outcome.outcome === "applied") {
-                    await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Succeeded, succeeded_at: new Date(this.timing.now()), attempts: currentJob.attempts + attempts, consecutive_failures: 0 }, trx);
+                    await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Succeeded, succeeded_at: new Date(this.timing.now()), attempts: currentJob.attempts + outcome.attemptsMade, consecutive_failures: 0 }, trx);
                     await setProfileIdentitySync(current.id, IdentitySyncStatus.Synced, trx);
                     await this.audit.record(trx, { actor: auditActor, action: IdentitySyncAuditAction.Synced, entityType: IDENTITY_SYNC_PROFILE_ENTITY, entityId: current.id, metadata: { jobId } });
-                } else if (outcome.outcome === "rejected-transition") {
-                    await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Failed, attempts: currentJob.attempts + attempts, last_error_code: "InvalidStatusTransition" }, trx);
+                } else if (outcome.outcome === "rejected-transition" || outcome.outcome === "permanent") {
+                    // Terminal: 409 InvalidStatusTransition, or Identity refused the request itself (400/403/422). Retrying cannot fix either; page, keep the local state.
+                    const code = outcome.outcome === "permanent" ? outcome.errorCode : "InvalidStatusTransition";
+                    await updateSyncJob(jobId, { status: IdentitySyncJobStatus.Failed, attempts: currentJob.attempts + outcome.attemptsMade, last_error_code: code }, trx);
                     await setProfileIdentitySync(current.id, IdentitySyncStatus.Failed, trx);
                     await this.audit.record(trx, { actor: auditActor, action: IdentitySyncAuditAction.Failed, entityType: IDENTITY_SYNC_PROFILE_ENTITY, entityId: current.id, metadata: { jobId } });
-                    logger.error("IdentitySyncTransitionRejected", { code: "InvalidStatusTransition", kind: currentJob.kind, jobId, profileId: current.id });
+                    logger.error("IdentitySyncTransitionRejected", { code, kind: currentJob.kind, jobId, profileId: current.id });
                 } else {
                     const nowMs = this.timing.now();
                     const delay = backoffMs(currentJob.attempts, () => this.timing.random(), this.env.IDENTITY_SYNC_RETRY_CAP_SECONDS * 1000);
                     const consecutiveFailures = currentJob.consecutive_failures + 1;
-                    await updateSyncJob(jobId, { attempts: currentJob.attempts + attempts, consecutive_failures: consecutiveFailures, last_error_code: outcome.errorCode,
+                    await updateSyncJob(jobId, { attempts: currentJob.attempts + outcome.attemptsMade, consecutive_failures: consecutiveFailures, last_error_code: outcome.errorCode,
                         next_attempt_at: new Date(nowMs + delay), updated_at: new Date(nowMs) }, trx);
                     if (currentJob.attempts === 0) await this.audit.record(trx, { actor: auditActor, action: IdentitySyncAuditAction.Pending, entityType: IDENTITY_SYNC_PROFILE_ENTITY, entityId: current.id, metadata: { jobId } });
                     const alert = this.policies[currentJob.kind].alertOnTransient({ job: currentJob, consecutiveFailures, lastErrorCode: outcome.errorCode, nowMs });

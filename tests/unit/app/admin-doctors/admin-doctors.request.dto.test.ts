@@ -22,6 +22,12 @@ describe.each([["SuspendDoctorDto", SuspendDoctorDto], ["ReinstateDoctorDto", Re
         expect(error.details.map((detail) => detail.field)).toContain("reason");
     });
 
+    it.each(["   ", "\u3000\u3000\u3000", "\u00a0\u00a0\u00a0", " \ufeff  "])("should reject a whitespace-only reason %j (Identity answers a blank reason with a non-retryable 400)", async (reason) => {
+        const error = await failure(() => validateBody(Dto, { reason }));
+        expect(error.code).toBe("ValidationFailed");
+        expect(error.details.map((detail) => detail.field)).toContain("reason");
+    });
+
     it("should reject a reason of 2001 characters", async () => {
         expect((await failure(() => validateBody(Dto, { reason: "r".repeat(2001) }))).code).toBe("ValidationFailed");
     });

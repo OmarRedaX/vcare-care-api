@@ -236,7 +236,7 @@ describe("admin-doctors (integration: real routes, Postgres, Redis and sync engi
             const before = await snapshot();
             for (const [path, body] of [
                 [url("abc"), { reason: REASON }], [url(0), { reason: REASON }], [url(-4), { reason: REASON }], [url("1.5"), { reason: REASON }],
-                [url(DOCTOR), {}], [url(DOCTOR), { reason: "ab" }], [url(DOCTOR), { reason: "r".repeat(2001) }], [url(DOCTOR), { reason: "bad\u0007reason" }],
+                [url(DOCTOR), {}], [url(DOCTOR), { reason: "ab" }], [url(DOCTOR), { reason: "   " }], [url(DOCTOR), { reason: "\u3000\u3000\u3000" }], [url(DOCTOR), { reason: "r".repeat(2001) }], [url(DOCTOR), { reason: "bad\u0007reason" }],
                 [url(DOCTOR), { reason: 12345 }], [url(DOCTOR), { reason: REASON, extra: true }], [url(DOCTOR), undefined],
             ] as const) {
                 const res = await call("patch", path, "admin", body);
@@ -397,6 +397,33 @@ describe("admin-doctors (integration: real routes, Postgres, Redis and sync engi
             expect(blocked.status).toBe(409); expectErrorEnvelope(blocked.body, "InvalidTransition");
             await expectUntouched(before);
             expect(await me()).toEqual(expect.objectContaining({ isSuspended: true, isBookable: false }));
+        });
+
+        it.each([400, 403, 422])("should treat an Identity %i as permanent: 503 failed, job and profile failed, one page with the code, local suspension kept, no retry", async (code) => {
+            identityServer.options.statusFailures = 10;
+            identityServer.options.statusFailureCode = code;
+            const capture = captureLogs();
+            let res: request.Response;
+            try { res = await suspend(); } finally { capture.restore(); }
+            expect(res.status).toBe(503); expectErrorEnvelope(res.body, "IdentityUnavailable");
+            expect(res.body.data.identitySyncStatus).toBe("failed");
+            const job = (await jobsOf())[0];
+            expect(job).toMatchObject({ status: "failed", last_error_code: `HTTP_${code}`, attempts: 1 });
+            expect(capture.lines().filter((line) => line.message === "IdentitySyncTransitionRejected")).toEqual([
+                expect.objectContaining({ level: "error", kind: "suspension", jobId: Number(job?.id), code: `HTTP_${code}` })]);
+            expect(patches()).toHaveLength(1);
+            const profile = await profileRow();
+            expect(profile.identity_sync_status).toBe("failed"); expect(profile.suspended_at).not.toBeNull();
+            await tick(); await tick();
+            expect(patches()).toHaveLength(1);
+        });
+
+        it("should keep treating an Identity 404 as transient: the job stays pending and retries", async () => {
+            identityServer.options.statusFailures = 1_000;
+            identityServer.options.statusFailureCode = 404;
+            const res = await suspend();
+            expect(res.status).toBe(503); expect(res.body.data.identitySyncStatus).toBe("pending");
+            expect((await jobsOf())[0]).toMatchObject({ status: "pending", last_error_code: "HTTP_404" });
         });
 
         it.each([
@@ -678,6 +705,20 @@ describe("admin-doctors (integration: real routes, Postgres, Redis and sync engi
             const retry = await reinstate();
             expect(retry.status).toBe(202); expect(retry.body).toMatchObject({ identitySync: "failed", data: { identitySyncStatus: "failed" } });
             await expectUntouched(before);
+        });
+
+        it("should answer 202 failed and page once when Identity refuses the reinstatement itself (403), without retrying", async () => {
+            identityServer.options.statusFailures = 10;
+            identityServer.options.statusFailureCode = 403;
+            const capture = captureLogs();
+            let res: request.Response;
+            try { res = await reinstate(); } finally { capture.restore(); }
+            expect(res.status).toBe(202);
+            expect(res.body).toMatchObject({ identitySync: "failed", data: { identitySyncStatus: "failed" } });
+            expect((await jobsOf())[1]).toMatchObject({ kind: "reinstatement", status: "failed", last_error_code: "HTTP_403" });
+            expect(capture.lines().filter((line) => line.message === "IdentitySyncTransitionRejected")).toHaveLength(1);
+            await tick(); await tick();
+            expect(patches()).toHaveLength(1);
         });
 
         it("should log IdentityReinstatementSyncPending once, only after the 15 minute window of unsynced time", async () => {

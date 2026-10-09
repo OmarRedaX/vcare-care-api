@@ -114,8 +114,8 @@ All admin routes: admin, token status `active`, 120/min per user, `no-store`. `a
 ## admin-doctors
 | Method | Path | Roles | Ownership | Audit | Case | Responses |
 |---|---|---|---|---|---|---|
-| PATCH | `/api/admin/doctors/{doctorUserId}/suspend` | admin | none | admin-action | **3 must-not-degrade** | 200 only when Identity confirmed (or already suspended: no-op) · 409 `InvalidTransition` (not approved+synced) · 503 `IdentityUnavailable` + `suspension: "applied-locally, session-revocation-pending"` |
-| PATCH | `/api/admin/doctors/{doctorUserId}/reinstate` (planned, ADR 0012) | admin | none | admin-action | **4 retry-report-pending** | 200 when Identity confirmed (or not suspended: no-op) · 202 `identitySync: pending\|failed` · 409 `InvalidTransition` (suspension not synced) · 404 |
+| PATCH | `/api/admin/doctors/{doctorUserId}/suspend` | admin | none | admin-action | **3 must-not-degrade** | 200 only when Identity confirmed (or already suspended and `synced`: no-op; an unsynced no-op re-reports the same 503) · 409 `InvalidTransition` (not approved+synced) · 422 `IdempotencyConflict` · 503 `IdentityUnavailable` + `suspension: "applied-locally, session-revocation-pending"` |
+| PATCH | `/api/admin/doctors/{doctorUserId}/reinstate` (live, ADR 0012) | admin | none | admin-action | **4 retry-report-pending** | 200 when Identity confirmed (or not suspended with no unsynced reinstatement: no-op) · 202 `identitySync: pending\|failed` (also the no-op re-report while the latest reinstatement is unsynced) · 409 `InvalidTransition` (suspension not synced) · 422 `IdempotencyConflict` · 404 |
 
 ## patients
 | Method | Path | Roles | Ownership | Audit | Notes |

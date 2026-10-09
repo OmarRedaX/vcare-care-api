@@ -57,6 +57,9 @@ function mapClientError(error: unknown): AppError | undefined {
  * The ONLY producer of error bodies. Never leaks stacks, SQL, request data, or the message of a
  * non-`AppError` error.
  */
+/** 5xx codes that are designed, documented responses. */
+const DECLARED_SERVER_ERRORS: ReadonlySet<string> = new Set(["IdentityUnavailable"]);
+
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
     if (res.headersSent) {
         logger.error("error_after_headers_sent", {
@@ -72,7 +75,10 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     let appError: AppError;
     if (err instanceof AppError) {
         appError = err;
-        if (appError.status >= 500) {
+        if (appError.status >= 500 && DECLARED_SERVER_ERRORS.has(appError.code)) {
+            // A response the contract declares (e.g. `SuspensionPending`), not a bug: no stack, and not what `unhandled_error` alerts watch.
+            logger.warn("handled_error", { requestId: req.requestId, route: routeLabel(req), status: appError.status, code: appError.code });
+        } else if (appError.status >= 500) {
             logger.error("unhandled_error", {
                 requestId: req.requestId,
                 route: routeLabel(req),

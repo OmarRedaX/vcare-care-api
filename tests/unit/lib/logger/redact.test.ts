@@ -35,6 +35,7 @@ const EXPECTED_KEYS = [
     "headline",
     "bio",
     "reviewNote",
+    "suspensionReason",
     "quarantineKey",
     "fields",
     "url",

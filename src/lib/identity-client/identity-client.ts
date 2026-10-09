@@ -8,6 +8,9 @@ import { CachedUserDto, StatusEnvelopeDto, UsersEnvelopeDto } from "./identity.d
 import { ServiceTokenCache } from "./service-token-cache";
 import type { BatchResult, HydratedUser, IdentityClientOptions, IdentityStatus, StatusResult } from "./types";
 
+/** `setUserStatus` answers that are terminal. 404, 401 (after the one token refresh), 429, 5xx, network errors and malformed 200s stay transient. */
+const PERMANENT_STATUS_CODES: ReadonlySet<string> = new Set(["HTTP_400", "HTTP_403", "HTTP_422"]);
+
 export class IdentityClient {
     private readonly options: Required<Pick<IdentityClientOptions, "now" | "sleep" | "random">> & IdentityClientOptions;
     private readonly pool: Pool;
@@ -25,7 +28,9 @@ export class IdentityClient {
 
     async setUserStatus(userId: number, status: IdentityStatus, reason: string, actorUserId: number, requestId: string, attempts = 3): Promise<StatusResult> {
         let last = "NetworkError";
+        let attemptsMade = 0;
         for (let attempt = 0; attempt < Math.max(1, attempts); attempt++) {
+            attemptsMade = attempt + 1;
             if (attempt > 0) await this.options.sleep(backoffMs(attempt - 1, this.options.random));
             try {
                 const response = await this.authorizedRequest("PATCH", `/internal/users/${userId}/status`, requestId,
@@ -35,20 +40,22 @@ export class IdentityClient {
                         const envelope = await validateBody(StatusEnvelopeDto, response.body, { unknownMembers: "strip" });
                         if (envelope.data.id !== userId || envelope.data.status !== status || !Number.isFinite(Date.parse(envelope.data.updatedAt))) {
                             last = "MalformedResponse";
-                        } else return { outcome: "applied" };
+                        } else return { outcome: "applied", attemptsMade };
                     } catch { last = "MalformedResponse"; }
                 } else if (response.statusCode === 409) {
                     // The provider owns this transition; malformed error bodies are not a safe rejection signal.
                     const payload = response.body;
                     if (typeof payload === "object" && payload !== null && "error" in payload &&
                         typeof payload.error === "object" && payload.error !== null && "code" in payload.error &&
-                        payload.error.code === "InvalidStatusTransition") return { outcome: "rejected-transition" };
+                        payload.error.code === "InvalidStatusTransition") return { outcome: "rejected-transition", attemptsMade };
                     last = "MalformedResponse";
                 } else last = `HTTP_${response.statusCode}`;
             } catch (error) { last = this.errorCode(error); }
             if (last.startsWith("HTTP_") && ![404, 429, 500, 502, 503, 504].includes(Number(last.slice(5)))) break;
         }
-        return { outcome: "transient", errorCode: last };
+        // Identity answered "this request can never succeed" (validation, forbidden, unprocessable): retrying cannot fix it.
+        if (PERMANENT_STATUS_CODES.has(last)) return { outcome: "permanent", errorCode: last, attemptsMade };
+        return { outcome: "transient", errorCode: last, attemptsMade };
     }
 
     async getUsersBatch(ids: number[], requestId: string): Promise<BatchResult> {

@@ -64,6 +64,11 @@ export class FakeIdentityServer {
                 send(400, { success: false, error: { code: "ValidationFailed", message: "Request validation failed", details: [{ field: "reason", issue: "must be at most 500 characters" }] } });
                 return;
             }
+            // Mirrors Identity's InternalStatusChangeDto `@Matches(/\S/)`: a blank reason is a 400, never a status change.
+            if (!/\S/.test(body.reason)) {
+                send(400, { success: false, error: { code: "ValidationFailed", message: "Request validation failed", details: [{ field: "reason", issue: "must not be blank" }] } });
+                return;
+            }
             if (this.options.forceConflict) { send(409, { success: false, error: { code: "InvalidStatusTransition" } }); return; }
             const allowed = user.status === body.status ||
                 (user.status === "pending" && (body.status === "active" || body.status === "rejected")) ||

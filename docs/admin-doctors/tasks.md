@@ -3,7 +3,7 @@ title: admin-doctors — Tasks
 owner: care-team
 service: care-service
 module: admin-doctors
-status: in-progress
+status: done
 last_verified: 2026-10-09
 tags: [tasks, admin-doctors, identity-sync, suspension, reinstatement]
 related: [admin-doctors-spec, admin-doctors-brainstorm, adr-0021-identity-sync-engine-module]

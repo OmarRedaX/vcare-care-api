@@ -42,7 +42,9 @@ service; letting `admin-doctors` call `VerificationService` would invert the dep
    `integration.md` / `resilience.md`: there is no commit-to-insert window to sweep).
 7. Due jobs are listed **suspension first** (`ORDER BY (kind = 'suspension') DESC, next_attempt_at, id`) so a black-hole
    outage that makes a tick slow never queues the security-critical kind behind the others.
-8. The reason text is never written to audit metadata or logs (audit carries `reasonLength`); this refines, without
+8. **Permanent Identity answers end the job.** `IdentityClient.setUserStatus` returns `permanent` for HTTP `400`, `403` and `422` (the request itself is refused; retrying cannot fix it) and the engine treats it like the `409 InvalidStatusTransition` rejection: job and profile `failed`, `last_error_code=HTTP_<n>`, `IdentitySyncTransitionRejected` page with `kind` and `code`, no further attempt, local state kept. `404`, `429`, `5xx`, network errors, a `401` after the one token refresh and a malformed `200` stay transient (the runbook documents Identity's internal-users module not being deployed yet as a `404`). Applies to all three kinds (owner decision 2026-10-09, after code review). `attempts` records the calls actually made (`attemptsMade`).
+9. **The Identity-bound reason is never blank:** Care's request DTOs reject whitespace-only reasons (`@NotBlank`), and the engine falls back to the job kind when the stored reason is blank or blank after the 500 code point clamp, because Identity answers a blank reason with `400`.
+10. The reason text is never written to audit metadata or logs (audit carries `reasonLength`); this refines, without
    rewriting, ADR 0012's "history lives in `audit_logs`": who/when is in `audit_logs`, the text is in the profile and job rows.
 
 No new dependency, no new environment variable, no migration (the table and its `CHECK` constraints already allow all three kinds).

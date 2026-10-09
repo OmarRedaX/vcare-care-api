@@ -71,9 +71,8 @@ describe("admin-doctors contract (Cases 3 and 4)", () => {
         expect(schemaBlock("SuspendDoctor")).toContain("maxLength: 2000");
     });
 
-    // Gap found while writing the tests: both routes run `idempotency({ required: false })` (spec 3.1) and the spec promises 422
-    // IdempotencyConflict and a stored-202 replay, but neither operation declares the Idempotency-Key parameter or the 422/409 responses.
-    test.failing.each([[SUSPEND], [REINSTATE]])("should declare the optional Idempotency-Key and its 422/409 responses on %s", (path) => {
+    // Both routes run `idempotency({ required: false })` (spec 3.1): the contract declares the optional header and the 422 / 409 responses.
+    it.each([[SUSPEND], [REINSTATE]])("should declare the optional Idempotency-Key and its 422/409 responses on %s", (path) => {
         const block = contractOperationBlock(path, "patch");
         expect(block).toContain("#/components/parameters/IdempotencyKeyOptional");
         expect(contractResponseCodes(path, "patch")).toEqual(expect.arrayContaining(["409", "422"]));
