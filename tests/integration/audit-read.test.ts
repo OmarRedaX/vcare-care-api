@@ -478,9 +478,8 @@ describe("audit read: GET /api/audit-logs (integration: real routes, Postgres as
             expect(ids(res)).toEqual([1]);
         });
 
-        // Spec 3.1 cross-field table lists both conditions and says "details sorted by field". The as-built service throws at the
-        // first one (entityType) and never evaluates the window, so the from detail is missing. Known minor deviation, see report.
-        it.failing("should report both the entityType and the from details when entityId lacks entityType and from is later than to", async () => {
+        // Spec 3.1: both cross-field conditions are reported at once, sorted by field.
+        it("should report both the entityType and the from details when entityId lacks entityType and from is later than to", async () => {
             const res = await get(`${URL_PATH}?entityId=5&from=2026-04-02T00:00:00Z&to=2026-04-01T00:00:00Z`);
             expect(res.status).toBe(400);
             expect(res.body.error.details).toEqual([
@@ -801,9 +800,8 @@ describe("audit read: GET /api/audit-logs (integration: real routes, Postgres as
             expect(res.body.error.details).toEqual([expect.objectContaining({ field: "cursor" })]);
         });
 
-        // Product finding: AUDIT_CURSOR_TIMESTAMP_PATTERN is shape-only, so a validly signed `t` that is not a real instant reaches
-        // `?::timestamptz` and Postgres raises 22008 -> 500. Needs the signing key (or a bug in the signer) to reach, hence low severity.
-        it.failing("should return 400 for every shape a signer could emit that Postgres cannot parse", async () => {
+        // A validly signed `t` that is not a real instant is rejected by the cursor validator (it would otherwise raise 22008 -> 500).
+        it("should return 400 for every shape a signer could emit that Postgres cannot parse", async () => {
             // Shaped like a position but not a real instant: must be a 400, never a 500 from the database.
             await expectCursor400(signed({ ...decodeCursor(good), t: "2026-13-45T25:61:61.000000Z" }));
             await expectCursor400(signed({ ...decodeCursor(good), t: "0000-01-01T00:00:00.000000Z" }));

@@ -2,21 +2,24 @@ import type { Knex } from "knex";
 import { inject, injectable } from "tsyringe";
 import type { Env } from "../../../lib/config/types";
 import { TOKENS } from "../../../lib/di/tokens";
+import type { ErrorDetail } from "../../../lib/error/types";
+import { isAppError } from "../../../lib/error/AppError";
 import { ValidationFailed } from "../../../lib/error/errors";
 import { DEFAULT_PAGE_LIMIT } from "../../../lib/http/pagination/page";
 import { decodeSignedCursor, encodeSignedCursor } from "../../../lib/http/pagination/signed-cursor";
 import { parseIsoDateTimeWithOffset } from "../../../pkg/utils/iso-datetime";
 import { AUDIT_CURSOR_TIMESTAMP_PATTERN, AUDIT_CURSOR_TO_PATTERN } from "../constants";
 import { listAuditLogs } from "../repository/audit.repo";
-import type { AuditClock, AuditCursorPayload, AuditListQuery, AuditLogPage } from "../types";
+import type { AuditClock, AuditCursorPayload, AuditListQuery, AuditLogPage, AuditWindow } from "../types";
 import { resolveAuditWindow } from "../window";
 
-const ENTITY_TYPE_REQUIRED = ValidationFailed.withDetails([{ field: "entityType", issue: "is required when entityId is given" }]);
+const ENTITY_TYPE_REQUIRED: ErrorDetail = { field: "entityType", issue: "is required when entityId is given" };
 
 function toCursorPayload(payload: unknown): AuditCursorPayload | undefined {
     if (typeof payload !== "object" || payload === null || !("t" in payload) || !("id" in payload) || !("to" in payload)) return undefined;
     const { t, id, to } = payload;
-    if (typeof t !== "string" || !AUDIT_CURSOR_TIMESTAMP_PATTERN.test(t)) return undefined;
+    // Shape (microsecond precision) AND a real instant: Postgres would otherwise raise 22008 -> 500 for a validly signed impossible `t`.
+    if (typeof t !== "string" || !AUDIT_CURSOR_TIMESTAMP_PATTERN.test(t) || parseIsoDateTimeWithOffset(t) === undefined) return undefined;
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) return undefined;
     if (typeof to !== "string" || !AUDIT_CURSOR_TO_PATTERN.test(to) || parseIsoDateTimeWithOffset(to) === undefined) return undefined;
     return { t, id, to };
@@ -34,9 +37,18 @@ export class AuditService {
     async list(query: AuditListQuery): Promise<AuditLogPage> {
         const secret = this.env.SERVICE_CLIENT_SECRET;
         const cursor = query.cursor === undefined ? undefined : decodeSignedCursor(query.cursor, secret, toCursorPayload);
-        if (query.entityId !== undefined && query.entityType === undefined) throw ENTITY_TYPE_REQUIRED;
-        const window = resolveAuditWindow(() => this.clock.now(), parseIsoDateTimeWithOffset(query.from), parseIsoDateTimeWithOffset(query.to),
-            cursor === undefined ? undefined : parseIsoDateTimeWithOffset(cursor.to));
+        // Every cross-field problem is reported at once, sorted by field (spec 3.1).
+        const details: ErrorDetail[] = [];
+        if (query.entityId !== undefined && query.entityType === undefined) details.push(ENTITY_TYPE_REQUIRED);
+        let window: AuditWindow | undefined;
+        try {
+            window = resolveAuditWindow(() => this.clock.now(), parseIsoDateTimeWithOffset(query.from), parseIsoDateTimeWithOffset(query.to),
+                cursor === undefined ? undefined : parseIsoDateTimeWithOffset(cursor.to));
+        } catch (error) {
+            if (!isAppError(error) || error.code !== "ValidationFailed") throw error;
+            details.push(...error.details);
+        }
+        if (details.length > 0 || window === undefined) throw ValidationFailed.withDetails(details.sort((a, b) => a.field.localeCompare(b.field)));
         const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
         if (window.empty) return { items: [], meta: { nextCursor: null, hasMore: false, count: 0 } };
         const rows = await listAuditLogs({ from: window.from, to: window.to, actorUserId: query.actorUserId, action: query.action, entityType: query.entityType, entityId: query.entityId,

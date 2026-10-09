@@ -30,8 +30,6 @@ Spec: [spec.md](./spec.md) v1.0.0. Build-order tags in parentheses.
 - [x] (controller) `AuditController`
 - [x] (routes) `routes.ts` (noStore, guard, authorize, rate limit)
 - [x] (mount) `src/routes.ts`
-- [~] (tests) <- /write-tests (spec 9): written and green; kept `[~]` only because two `it.failing` tests pin open product deviations in `tests/integration/audit-read.test.ts` (flip to `[x]` and make them plain `it` once fixed):
-  1. `entityId` without `entityType` plus `from > to` returns only the `entityType` detail (spec 3.1 lists both, sorted by field);
-  2. a validly signed cursor whose `t` is shaped right but is not a real instant (`2026-13-45T25:61:61.000000Z`) reaches `?::timestamptz` and answers `500` instead of `400` (`AUDIT_CURSOR_TIMESTAMP_PATTERN` is shape-only; needs the signing key to reach).
+- [x] (tests) <- /write-tests (spec 9): written and green; the two product findings it pinned (all cross-field details at once; validly signed cursor with an impossible `t` answers 400) are fixed
 - [ ] (manual-qa) <- /manual-qa
 - [x] (docs) service card, INDEX, checkpoint; `architecture/*` deltas (data-model indexes, api row) left to /update-docs
