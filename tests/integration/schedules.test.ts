@@ -820,7 +820,10 @@ describe("schedules (integration: real routes, Postgres and Redis)", () => {
             await ownerDb("working_hours").insert({ doctor_profile_id: 1, weekday: 1, start_time: "09:00", end_time: "10:00" });
             await expect(ownerDb("working_hours").insert({ doctor_profile_id: 9999, weekday: 1, start_time: "09:00", end_time: "10:00" }))
                 .rejects.toMatchObject({ code: "23503", constraint: "fk_working_hours_doctor_profile_id" });
-            await expect(ownerDb("doctor_profiles").where("id", 1).del()).rejects.toMatchObject({ code: "23001" });
+            await expect(ownerDb("doctor_profiles").where("id", 1).del()).rejects.toMatchObject({
+                code: expect.stringMatching(/^(23001|23503)$/), // restrict_violation or foreign_key_violation, by PG version
+                constraint: expect.stringMatching(/^fk_.+_doctor_profile_id$/), // whichever child table PG checks first
+            });
         });
     });
 

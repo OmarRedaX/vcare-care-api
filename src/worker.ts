@@ -65,9 +65,6 @@ function main(): void | Promise<void> {
 
     const runner = new LoopRunner(loops, { logger });
 
-    runner.start();
-    logger.info("worker_started", { loops: loops.map((loop) => loop.name) });
-
     let stopping = false;
     const stop = (reason: string, exitCode: 0 | 1): void => {
         if (stopping) {
@@ -107,6 +104,11 @@ function main(): void | Promise<void> {
         logger.error("uncaught_error", { error: reason });
         stop("uncaught_error", 1);
     });
+
+    // Handlers are registered before `worker_started` is logged: a supervisor (or a test) that signals on seeing the
+    // line must never hit the default SIGTERM action.
+    runner.start();
+    logger.info("worker_started", { loops: loops.map((loop) => loop.name) });
 }
 
 runMain(main);
