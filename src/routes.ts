@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { buildAdminDoctorsRouter } from "./app/admin-doctors/routes";
+import { buildAuditRouter } from "./app/audit/routes";
 import { buildDoctorsRouter } from "./app/doctors/routes";
 import { buildSchedulesRouter } from "./app/schedules/routes";
 import { buildSpecialtiesRouter } from "./app/specialties/routes";
@@ -15,5 +16,6 @@ export function buildPublicRoutes(): Router {
     router.use(buildVerificationRouter());
     // After the doctors/schedules routers and before any future `GET /doctors/:doctorUserId` discovery router.
     router.use(buildAdminDoctorsRouter());
+    router.use(buildAuditRouter());
     return router;
 }

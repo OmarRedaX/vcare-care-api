@@ -1,3 +1,5 @@
+import { AuditController } from "./app/audit/controller/audit.controller";
+import { AuditService } from "./app/audit/service/audit.service";
 import { AdminDoctorsController } from "./app/admin-doctors/controller/admin-doctors.controller";
 import { AdminDoctorsService } from "./app/admin-doctors/service/admin-doctors.service";
 import { NoopSuspensionImpactProvider } from "./app/admin-doctors/service/noop-suspension-impact.provider";
@@ -54,4 +56,7 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.SuspensionImpactProvider, NoopSuspensionImpactProvider);
     container.registerSingleton(TOKENS.AdminDoctorsService, AdminDoctorsService);
     container.registerSingleton(TOKENS.AdminDoctorsController, AdminDoctorsController);
+    container.registerInstance(TOKENS.AuditClock, { now: () => Date.now() });
+    container.registerSingleton(TOKENS.AuditService, AuditService);
+    container.registerSingleton(TOKENS.AuditController, AuditController);
 }

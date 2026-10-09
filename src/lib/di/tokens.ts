@@ -28,6 +28,10 @@ export const TOKENS = {
     SyncTiming: Symbol.for("SyncTiming"),
     VerificationService: Symbol.for("VerificationService"),
     VerificationController: Symbol.for("VerificationController"),
+    AuditService: Symbol.for("AuditService"),
+    AuditController: Symbol.for("AuditController"),
+    /** Clock of the audit read window (`{ now(): number }`); tests bind a fake. */
+    AuditClock: Symbol.for("AuditClock"),
     AdminDoctorsService: Symbol.for("AdminDoctorsService"),
     AdminDoctorsController: Symbol.for("AdminDoctorsController"),
     /** Port: future non-terminal consultations a suspension flags for follow-up (default no-op; `consultations` rebinds). */

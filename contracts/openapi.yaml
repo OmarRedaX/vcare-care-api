@@ -2756,9 +2756,15 @@ paths:
       tags: [audit]
       summary: Read the audit log (metadata only, never clinical content)
       description: |
-        Newest first. Reading the audit log is not itself a clinical read because entries carry no clinical text.
-        `audit_logs` is partitioned by month, so every query is time-bounded: `to` defaults to now and `from` defaults to
-        30 days before `to`. `from` later than `to` → `400 ValidationFailed`. Both bounds are ISO-8601 with offset.
+        Newest first (`createdAt DESC, id DESC`). Reading the audit log is not itself a clinical read because entries carry no
+        clinical text, so it writes no audit row. `audit_logs` is partitioned by month, so every query is time-bounded: the
+        window is `createdAt >= from AND createdAt < to` (`from` inclusive, `to` exclusive); `to` defaults to now and `from`
+        defaults to 30 days before `to`. `from` later than `to` → `400 ValidationFailed` (`details[].field = "from"`);
+        `from` equal to `to` is an empty page. Both bounds are ISO-8601 with offset; a `+` in an offset must be URL-encoded
+        as `%2B` (a raw `+` is decoded to a space and fails with `400`). `entityId` requires `entityType` (else `400`,
+        `details[].field = "entityType"`). The effective `to` is carried inside `meta.nextCursor`, so later pages keep the
+        same window while the clock advances. A malformed, tampered or stale cursor → `400`. Unknown query keys → `400`.
+        The response is `Cache-Control: no-store`.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -2779,6 +2785,7 @@ paths:
           required: false
           schema:
             type: string
+            minLength: 1
             maxLength: 64
             examples: [consultation.cancelled]
         - name: entityType
@@ -2786,6 +2793,7 @@ paths:
           required: false
           schema:
             type: string
+            minLength: 1
             maxLength: 64
             examples: [consultation]
         - name: entityId
@@ -2798,21 +2806,27 @@ paths:
         - name: from
           in: query
           required: false
+          description: Inclusive lower bound. ISO-8601 date-time with a UTC offset (`Z` or `±HH:MM`).
           schema:
             type: string
             format: date-time
+            maxLength: 40
         - name: to
           in: query
           required: false
+          description: Exclusive upper bound. ISO-8601 date-time with a UTC offset (`Z` or `±HH:MM`).
           schema:
             type: string
             format: date-time
+            maxLength: 40
       responses:
         '200':
           description: A page of audit entries.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
           content:
             application/json:
               schema:
