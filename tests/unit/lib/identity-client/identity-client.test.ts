@@ -18,20 +18,34 @@ describe("IdentityClient", () => {
         expect(fake.calls.filter((call) => call.path === "/internal/auth/token")).toHaveLength(1);
         expect(fake.calls.every((call) => call.requestId === "request-1")).toBe(true);
         fake.options.forceUnauthorized = 1;
-        expect(await client.setUserStatus(1, "active", "review", 7, "request-2", 1)).toEqual({ outcome: "applied" });
+        expect(await client.setUserStatus(1, "active", "review", 7, "request-2", 1)).toEqual({ outcome: "applied", attemptsMade: 1 });
         expect(fake.calls.filter((call) => call.path === "/internal/auth/token")).toHaveLength(2);
     });
 
     it("distinguishes applied, rejected transition, and retryable errors", async () => {
         const client = make(url, { sleep: () => Promise.resolve(), random: () => 0 });
-        expect(await client.setUserStatus(1, "active", "review", 7, "r", 1)).toEqual({ outcome: "applied" });
+        expect(await client.setUserStatus(1, "active", "review", 7, "r", 1)).toEqual({ outcome: "applied", attemptsMade: 1 });
         fake.options.forceConflict = true;
-        expect(await client.setUserStatus(1, "rejected", "review", 7, "r")).toEqual({ outcome: "rejected-transition" });
+        expect(await client.setUserStatus(1, "rejected", "review", 7, "r")).toEqual({ outcome: "rejected-transition", attemptsMade: 1 });
         fake.options.forceConflict = false;
-        expect(await client.setUserStatus(99, "active", "review", 7, "r", 2)).toEqual({ outcome: "transient", errorCode: "HTTP_404" });
+        expect(await client.setUserStatus(99, "active", "review", 7, "r", 2)).toEqual({ outcome: "transient", errorCode: "HTTP_404", attemptsMade: 2 });
         expect(fake.calls.filter((call) => call.path === "/internal/users/99/status")).toHaveLength(2);
         fake.options.statusFailures = 2;
-        expect(await client.setUserStatus(1, "active", "review", 7, "r", 2)).toEqual({ outcome: "transient", errorCode: "HTTP_500" });
+        expect(await client.setUserStatus(1, "active", "review", 7, "r", 2)).toEqual({ outcome: "transient", errorCode: "HTTP_500", attemptsMade: 2 });
+    });
+
+    it.each([400, 403, 422])("treats HTTP %i as a permanent outcome after one call, never retried", async (code) => {
+        const client = make(url, { sleep: () => Promise.resolve() });
+        fake.options.statusFailures = 5;
+        fake.options.statusFailureCode = code;
+        expect(await client.setUserStatus(1, "active", "review", 7, "r", 3)).toEqual({ outcome: "permanent", errorCode: `HTTP_${code}`, attemptsMade: 1 });
+        expect(fake.calls.filter((call) => call.path === "/internal/users/1/status")).toHaveLength(1);
+    });
+
+    it("reports the calls actually made when a later attempt succeeds", async () => {
+        const client = make(url, { sleep: () => Promise.resolve() });
+        fake.options.statusFailures = 1;
+        expect(await client.setUserStatus(1, "active", "review", 7, "r", 3)).toEqual({ outcome: "applied", attemptsMade: 2 });
     });
 
     it("deduplicates and chunks, then degrades on provider failure", async () => {
@@ -59,7 +73,7 @@ describe("IdentityClient", () => {
         await client.setUserStatus(1, "active", "review", 7, "r", 1);
         expect(fake.calls.filter((call) => call.path === "/internal/auth/token")).toHaveLength(2);
         fake.options.statusFailures = 3;
-        expect(await client.setUserStatus(1, "active", "review", 7, "r")).toEqual({ outcome: "transient", errorCode: "HTTP_500" });
+        expect(await client.setUserStatus(1, "active", "review", 7, "r")).toEqual({ outcome: "transient", errorCode: "HTTP_500", attemptsMade: 3 });
         expect(delays).toEqual([160, 320]);
     });
 
@@ -67,11 +81,11 @@ describe("IdentityClient", () => {
         const client = make(url, { sleep: () => Promise.resolve() });
         fake.options.statusFailures = 2;
         fake.options.statusFailureCode = 429;
-        expect(await client.setUserStatus(1, "active", "review", 7, "r", 2)).toEqual({ outcome: "transient", errorCode: "HTTP_429" });
+        expect(await client.setUserStatus(1, "active", "review", 7, "r", 2)).toEqual({ outcome: "transient", errorCode: "HTTP_429", attemptsMade: 2 });
         fake.options.forceUnauthorized = 2;
-        expect(await client.setUserStatus(1, "active", "review", 7, "r", 1)).toEqual({ outcome: "transient", errorCode: "HTTP_401" });
+        expect(await client.setUserStatus(1, "active", "review", 7, "r", 1)).toEqual({ outcome: "transient", errorCode: "HTTP_401", attemptsMade: 1 });
         fake.options.malformed = true;
-        expect(await client.setUserStatus(1, "active", "review", 7, "r", 1)).toEqual({ outcome: "transient", errorCode: "MalformedResponse" });
+        expect(await client.setUserStatus(1, "active", "review", 7, "r", 1)).toEqual({ outcome: "transient", errorCode: "MalformedResponse", attemptsMade: 1 });
         fake.options.malformed = false;
         fake.options.slowMs = 2_100;
         expect((await client.setUserStatus(1, "active", "review", 7, "r", 1)).outcome).toBe("transient");

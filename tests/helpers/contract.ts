@@ -14,8 +14,8 @@ const LINES = CONTRACT.split(/\r?\n/);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Lines indented deeper than `indent` that follow the line equal to `header`. */
-function blockAfter(header: string, indent: number): string {
-    const start = LINES.indexOf(header);
+function blockAfter(header: string, indent: number, from = 0): string {
+    const start = LINES.indexOf(header, from);
     if (start < 0) {
         throw new Error(`"${header.trim()}" is missing from contracts/openapi.yaml`);
     }
@@ -31,7 +31,8 @@ export function schemaBlock(name: string): string {
     if (schemasStart < 0 || index < 0) {
         throw new Error(`schema ${name} is missing from contracts/openapi.yaml`);
     }
-    return blockAfter(LINES[index] ?? "", 4);
+    // `from` pins the lookup to the schemas section: a response and a schema may share a name (e.g. `SuspensionPending`).
+    return blockAfter(LINES[index] ?? "", 4, schemasStart);
 }
 
 /** The body of `components.responses.<name>`. */

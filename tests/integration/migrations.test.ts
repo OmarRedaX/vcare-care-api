@@ -14,6 +14,7 @@ import * as verificationQueueIndexMigration from "../../src/migrations/202610071
 import * as workingHoursMigration from "../../src/migrations/20261008120000_create_working_hours";
 import * as scheduleExceptionsMigration from "../../src/migrations/20261008120100_create_schedule_exceptions";
 import * as consultationTypesMigration from "../../src/migrations/20261008120200_create_consultation_types";
+import * as auditReadIndexesMigration from "../../src/migrations/20261009120000_add_audit_logs_read_indexes";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -349,6 +350,44 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             );
             expect(jobs.rows.map((row) => row["QUERY PLAN"]).join("\n")).toContain("idx_identity_sync_jobs_pending_next_attempt_at");
         });
+    });
+
+    it("should drop the three audit read indexes and their partition children on down and recreate them on up, idempotently (audit T-IDX4)", async () => {
+        const names = ["idx_audit_logs_actor_user_id_created_at", "idx_audit_logs_created_at_id", "idx_audit_logs_entity_type_entity_id_created_at"];
+        const present = async (): Promise<string[]> => {
+            const result = await migrator.raw<{ rows: Array<{ indexname: string }> }>(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'audit_logs' AND indexname = ANY(string_to_array(?, ',')) ORDER BY indexname",
+                [names.join(",")],
+            );
+            return result.rows.map((row) => row.indexname);
+        };
+        const children = async (): Promise<number> => {
+            const result = await migrator.raw<{ rows: Array<{ count: number }> }>(
+                `SELECT count(*)::int AS count FROM pg_inherits i JOIN pg_class parent ON parent.oid = i.inhparent
+                 WHERE parent.relname = ANY(string_to_array(?, ','))`,
+                [names.join(",")],
+            );
+            return result.rows[0]?.count ?? -1;
+        };
+        const before = await children();
+        expect(await present()).toEqual(names);
+        expect(before).toBeGreaterThanOrEqual(names.length * 4); // default + the three migration-created monthly partitions, per index
+        try {
+            await migrator.transaction((trx) => auditReadIndexesMigration.down(trx));
+            expect(await present()).toEqual([]);
+            expect(await children()).toBe(0);
+            await migrator.transaction((trx) => auditReadIndexesMigration.down(trx)); // a second down is a no-op
+        } finally {
+            await migrator.transaction((trx) => auditReadIndexesMigration.up(trx));
+        }
+        expect(await present()).toEqual(names);
+        expect(await children()).toBe(before);
+        await migrator.transaction((trx) => auditReadIndexesMigration.up(trx)); // IF NOT EXISTS: a second up changes nothing
+        expect(await children()).toBe(before);
+        const grants = await migrator.raw<{ rows: Array<{ can_select: boolean; can_update: boolean; can_delete: boolean }> }>(
+            "SELECT has_table_privilege('vcare_app','audit_logs','SELECT') AS can_select, has_table_privilege('vcare_app','audit_logs','UPDATE') AS can_update, has_table_privilege('vcare_app','audit_logs','DELETE') AS can_delete",
+        );
+        expect(grants.rows[0]).toEqual({ can_select: true, can_update: false, can_delete: false });
     });
 
     it("should report UTC when SHOW TIME ZONE runs on a pooled connection (F8)", async () => {

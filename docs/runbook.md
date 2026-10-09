@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [runbook, operations, on-call, care]
-related: [resilience, integration, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [resilience, integration, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # Runbook — care-service
@@ -15,7 +15,7 @@ Task-oriented doc for on-call. The foundation is built (2026-09-28): health prob
 under "Boot and shutdown log lines" are live. The access base is built (2026-10-02): user-token verification against
 Identity's JWKS, `authorize`, the boot route assertion, `audit_logs` with the `audit-partitions` worker loop, and the
 owner/app database roles — their alerts (`IdentityJwksStale`, `AuditPartitionMissing`, `AuditWriteFailures`) and
-tasks below are live. Verification is built (2026-10-08): the `identity-sync` and `upload-intent-purge` worker loops, the Case 1 alerts (`IdentityApprovalSyncPending`, `IdentitySyncTransitionRejected`), `UploadVerificationFailureSpike`, and the sync-job and upload-intent queries below are live. Other business alerts and the SQL for module tables are the intended shape once those modules exist.
+tasks below are live. Verification is built (2026-10-08): the `identity-sync` and `upload-intent-purge` worker loops, the Case 1 alerts (`IdentityApprovalSyncPending`, `IdentitySyncTransitionRejected`), `UploadVerificationFailureSpike`, and the sync-job and upload-intent queries below are live. Admin doctors is built (2026-10-09): suspension (Case 3) and reinstatement (Case 4) run through the same `identity-sync` loop, with the `IdentitySuspensionSyncFailing` and `IdentityReinstatementSyncPending` alerts; the declared `503 IdentityUnavailable` is logged as `warn handled_error` (not an `unhandled_error`). Other business alerts and the SQL for module tables are the intended shape once those modules exist.
 
 > **Clinical data never leaves the system.** Tickets, chat, and incident notes carry **ids, statuses, and
 > request ids only** — never complaint text, record contents, names, object keys, presigned URLs, or tokens. Admin DB access
@@ -34,9 +34,9 @@ tasks below are live. Verification is built (2026-10-08): the `identity-sync` an
 ## Alerts → actions
 | Alert | Severity | Trigger | Likely cause | First action |
 |---|---|---|---|---|
-| `IdentitySuspensionSyncFailing` | **page** | a Case 3 `identity_sync_jobs` row has 3 consecutive failed attempts | Identity internal listener down, network policy, expired service client secret | Confirm the doctor is locally suspended (bookings blocked). Check `GET http://<identity>:3100/internal/health/ready`, then Identity's on-call. Inspect the job (below). Do **not** tell the reporter sessions are revoked until the job succeeds. |
-| `IdentitySyncTransitionRejected` | **page** | Identity answered `409 InvalidStatusTransition` to a Case 1 or Case 3 status change; `identity_sync_status='failed'` | Drift: an ops/manual change made outside Care (Identity's admin API refuses doctor targets since hub ADR 0006), or an unexpected state | Log line `IdentitySyncTransitionRejected` (error, `jobId`, `profileId`). Retrying cannot fix it. Read both sides' state (Care: `doctor_profiles`; Identity: admin user view). Reconcile with the Identity owner, then requeue the job (below). For a suspension, ask Identity on-call to revoke the doctor's sessions manually meanwhile. |
-| `IdentityApprovalSyncPending` | ticket | a Case 1 job is unsynced for > 15 minutes | Identity degraded | Doctor stays unbookable (correct). Check Identity health; the `identity-sync` loop continues (one attempt per due job per tick). Log line `IdentityApprovalSyncPending` (error, `jobId`, `profileId`). If Identity answers `404` on `/internal/users/{id}/status`, its internal-users module is not deployed yet (known environment dependency): Care keeps retrying and nothing is wrong in Care. Requeue after recovery if `next_attempt_at` is far out, or run `node dist/worker.js --once identity-sync`. While the job is unsynced, admin approve/reject answer `409 Conflict` + `Retry-After: 5` by design. |
+| `IdentitySuspensionSyncFailing` | **page** | a Case 3 `identity_sync_jobs` row has 3 consecutive failed attempts (then every 10th) | Identity internal listener down, network policy, expired service client secret | Confirm the doctor is locally suspended (bookings blocked). Check `GET http://<identity>:3100/internal/health/ready`, then Identity's on-call. Inspect the job (below). Do **not** tell the reporter sessions are revoked until the job succeeds. |
+| `IdentitySyncTransitionRejected` | **page** | Identity refused a status change of any kind (Case 1 verification, Case 3 suspension, Case 4 reinstatement) for good: `409 InvalidStatusTransition`, or `400` / `403` / `422` (the request itself is refused; the log `code` is then `HTTP_400` / `HTTP_403` / `HTTP_422`); job and `identity_sync_status` are `failed` | Drift: an ops/manual change made outside Care (Identity's admin API refuses doctor targets since hub ADR 0006), or an unexpected state | Log line `IdentitySyncTransitionRejected` (error, `kind`, `code`, `jobId`, `profileId`). Retrying cannot fix it (a `400` usually means a contract or validation mismatch with Identity, a `403` a non-doctor target or a missing scope: read `last_error_code` on the job). A reinstatement leaves the profile unsuspended but unbookable. Read both sides' state (Care: `doctor_profiles`; Identity: admin user view). Reconcile with the Identity owner, then requeue the job (below). For a suspension, ask Identity on-call to revoke the doctor's sessions manually meanwhile. |
+| `IdentityApprovalSyncPending` | ticket | a Case 1 job is unsynced for > 15 minutes (a Case 4 reinstatement raises `IdentityReinstatementSyncPending` by the same rule) | Identity degraded | Doctor stays unbookable (correct). Check Identity health; the `identity-sync` loop continues (one attempt per due job per tick). Log line `IdentityApprovalSyncPending` (error, `jobId`, `profileId`). If Identity answers `404` on `/internal/users/{id}/status`, its internal-users module is not deployed yet (known environment dependency): Care keeps retrying and nothing is wrong in Care. Requeue after recovery if `next_attempt_at` is far out, or run `node dist/worker.js --once identity-sync`. While the job is unsynced, admin approve/reject answer `409 Conflict` + `Retry-After: 5` by design. |
 | `IdentityHydrationDegraded` | ticket | `identity_hydration_degraded` > 5 % of hydration calls over 10 min | Identity slow/down, token exchange failing | No user impact beyond missing names (`profileHydrated:false`). Check Identity health and `/internal/auth/token` errors. Never "fix" by failing search. |
 | `SlotComputationLatencyHigh` | ticket | slots endpoint p95 > 300 ms for 10 min | missing index use, cache stampede, a doctor with a huge busy set, DB saturation | `EXPLAIN` the busy-consultations overlap query (must use the GiST index of `excl_consultations_doctor_no_overlap`); check Redis hit rate for `slots:*`; check DB CPU/locks. |
 | `SearchLatencyHigh` | ticket | `GET /api/doctors` p95 > 400 ms for 10 min | `next-available:*` cache misses computed inline, a filter without index, hydration latency | Check `next-available` hit rate; `EXPLAIN` the search query; check Identity batch latency (hydration has a 2 s timeout and 1 retry). |
@@ -136,6 +136,28 @@ COMMIT;
 Then run `node dist/worker.js --once audit-partitions` (exit 0) and confirm `audit_default_partition_rows` is 0. Record only the
 row count and the month in the incident.
 
+### Build the audit read indexes on a large table
+Migration `20261009120000_add_audit_logs_read_indexes` builds three indexes non-concurrently: each `CREATE INDEX` takes a `SHARE`
+lock on every partition and blocks all audited writes for the build (`lock_timeout 3s` only bounds how long it waits for the lock).
+Fine while the table is small; when `audit_logs` holds more than about 5 M rows, do not run it as is. Ship a replacement migration with
+`config = { transaction: false }` (a new migration, never an edit of the old one) that, for each of the three indexes, runs as the owner:
+```sql
+CREATE INDEX idx_audit_logs_created_at_id ON ONLY audit_logs (created_at DESC, id DESC);        -- parent only, instant, invalid until attached
+-- per partition (incl. audit_logs_default), one at a time, outside a transaction:
+CREATE INDEX CONCURRENTLY audit_logs_y2026m10_created_at_id_idx ON audit_logs_y2026m10 (created_at DESC, id DESC);
+ALTER INDEX idx_audit_logs_created_at_id ATTACH PARTITION audit_logs_y2026m10_created_at_id_idx;
+```
+Repeat for `idx_audit_logs_actor_user_id_created_at (actor_user_id, created_at DESC, id DESC)` and
+`idx_audit_logs_entity_type_entity_id_created_at (entity_type, entity_id, created_at DESC, id DESC)`. The parent index becomes valid when
+every partition's index is attached (`SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_audit_logs_created_at_id'::regclass`). A failed
+`CONCURRENTLY` build leaves an invalid index: drop it and retry that partition. Partitions created later inherit the parent indexes.
+
+### Audit log pagination answers `400` on `cursor`
+`GET /api/audit-logs` and the verification queue sign their cursors with `SERVICE_CLIENT_SECRET`. After a rotation of that secret every
+outstanding cursor answers `400 ValidationFailed` (`field: cursor`); clients restart from page 1 (no data loss). Slow audit pages: confirm
+the request is time-bounded (default 30 days) and the three read indexes exist; an `action` or `entityType`-only filter on a wide window is the
+known slow shape (audit spec section 8). Log only the request id.
+
 ### Inspect an identity sync job
 ```sql
 SELECT id, kind, doctor_user_id, target_status, status, attempts, consecutive_failures,
@@ -159,9 +181,10 @@ Confirm with the query above and check the admin console shows the doctor as syn
 incident with the job id and request id only.
 
 ### Run a worker loop once
-`node dist/worker.js --once identity-sync` retries every due Case 1 job once; `--once upload-intent-purge` closes expired open intents (deleting their quarantine objects) and removes intent rows older than 7 days. Both need the worker's normal env (`DATABASE_URL`, Identity and storage variables), use their own pool, and exit 0 on success. `upload-intent-purge` exits 1 (`worker_once_incomplete`) when another worker holds its singleton lock or a storage delete failed; rerun after the cause clears.
+`node dist/worker.js --once identity-sync` retries every due job of any kind (Case 1, Case 3, Case 4) once, suspensions first; `--once upload-intent-purge` closes expired open intents (deleting their quarantine objects) and removes intent rows older than 7 days. Both need the worker's normal env (`DATABASE_URL`, Identity and storage variables), use their own pool, and exit 0 on success. `upload-intent-purge` exits 1 (`worker_once_incomplete`) when another worker holds its singleton lock or a storage delete failed; rerun after the cause clears.
 
 ### Move or cancel flagged consultations after a suspension
+Until the `consultations` module exists, suspension flags nothing (a no-op port returns `flaggedConsultationIds: []`); this task applies once it does.
 1. List the queue: `GET /api/consultations?needsAdminFollowup=true&scope=upcoming` as an admin (admin view has no clinical fields).
 2. For each consultation either reschedule to another doctor's flow (patient rebooks) or cancel on behalf:
    `PATCH /api/consultations/{id}/cancel` with `Idempotency-Key` and `{"reason":"Doctor unavailable"}`.

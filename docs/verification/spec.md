@@ -6,7 +6,7 @@ module: verification
 status: implemented
 version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [spec, verification, documents, identity-client, storage, worker, case-1, case-2]
 related: [verification-brainstorm, doctors-spec, file-handling, data-model, integration, resilience, adr-0004-cross-service-failure-policies, adr-0008-care-worker-component, adr-0013-verified-direct-upload-lifecycle, adr-0014-on-demand-download-urls, adr-0015-aws-sdk-storage-adapter, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
@@ -322,7 +322,8 @@ As built and verified 2026-10-08 on `feature/verification` (HEAD 85c9a4d): unit 
 - `upload_verification_failed` is emitted with the single label `reason=invalid_file` (missing object, size out of range, and unrecognized bytes are not distinguished). `upload_intent_expired` is emitted by the purge loop and `identity_sync_jobs_processed` by each identity-sync tick; `upload_intent_created` and `download_url_issued` are not emitted.
 - `UPLOAD_INTENT_PURGE_SECONDS` sets the `upload-intent-purge` interval. Orphaned final objects (a rolled-back step 9 whose best-effort delete failed) are not reconciled by a prefix scan; the bucket lifecycle and the `verification_orphan_cleanup_failed` log line are the backstops.
 - A locally suspended doctor can still save a draft with `POST /doctors/apply` and `submit=false` (200); `submit=true`, intent, complete and delete answer `403 Forbidden`. This follows the doctors spec (no suspension check on apply); the decision is open (see manual-qa.md).
-- The queue cursor is HMAC-signed with `SERVICE_CLIENT_SECRET`; rotating that secret invalidates outstanding cursors (they answer `400 ValidationFailed`).
+- The queue cursor is HMAC-signed with `SERVICE_CLIENT_SECRET`; rotating that secret invalidates outstanding cursors (they answer `400 ValidationFailed`). Since 2026-10-09 the shared `decodeSignedCursor` requires exactly two segments (`body.mac`); a cursor with extra `.` segments is `400` (the audit module shares the helper).
+- `ApplicationRejectDto.reason` uses `@NotBlank()` (a whitespace-only reason is `400`; Identity would answer a blank reason with a non-retryable `400`), and `ApplicationApproveDto.note`, when sent, is empty or has a non-whitespace character (see admin-doctors spec A2).
 
 **Known environment dependency.** Real Identity (`feature/internal`) serves only `/internal/auth/*` and health. `GET /internal/users` and `PATCH /internal/users/{id}/status` arrive with Identity's internal-users module, so Case 1 cannot reach `synced` against real Identity yet: Care keeps the decision, answers `202 identitySync:"pending"`, and the worker keeps retrying on `404` until a compliant API answers. Case 2 hydration degrades to `profileHydrated:false`. Manual QA used a contract-compliant shim (manual-qa.md → Re-run). Care needs no code change when the module lands.
 

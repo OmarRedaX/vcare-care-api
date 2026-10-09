@@ -99,8 +99,8 @@ not a policy check.
 | `GET /admin/applications` (live) | admin | none | — |
 | `GET /admin/applications/:id` (live) | admin | none | `verification.documents_viewed` (metadata only, no URL) |
 | `PATCH /admin/applications/:id/approve`, `/reject`, `/reopen` (live) | admin | none; approve/reject refused with `409 Conflict` + `Retry-After: 5` while `identity_sync_status` is `pending` | `verification.approved|rejected|reopened`, `identity_sync.pending|synced|failed` |
-| `PATCH /admin/doctors/:doctorUserId/suspend` | admin | none | admin-action |
-| `PATCH /admin/doctors/:doctorUserId/reinstate` (planned, ADR 0012) | admin | none | admin-action |
+| `PATCH /admin/doctors/:doctorUserId/suspend` (live, 2026-10-09) | admin (token `status=active`; a doctor, including the target, and a patient get `403 Forbidden`) | none; `doctorUserId` is the doctor's Identity user id; 30/min per admin, one bucket shared with reinstate | admin-action: `doctor.suspended`, `consultation.flagged_for_followup` (entity `consultation`), `identity_sync.*`; reason text never in audit metadata (`reasonLength` only) |
+| `PATCH /admin/doctors/:doctorUserId/reinstate` (live, 2026-10-09, ADR 0012) | admin | none; same limiter | admin-action: `doctor.reinstated`, `identity_sync.*` |
 | `GET /patients/me` | patient | self | clinical-read |
 | `PATCH /patients/me` | patient | self | clinical-write |
 | `GET /patients/:patientUserId`, `GET /patients/:patientUserId/records` | patient, doctor | `consulted-patient-or-self`: patient `:id = auth.userId`; doctor has a `completed` or current consultation with the patient; else `deny-not-found` | clinical-read |

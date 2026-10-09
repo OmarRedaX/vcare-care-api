@@ -12,8 +12,10 @@ export function encodeSignedCursor(payload: object, secret: string): string {
 
 /** Verifies the MAC (constant time) and hands the parsed payload to `validate`, which returns it typed or `undefined`. */
 export function decodeSignedCursor<T>(cursor: string, secret: string, validate: (payload: unknown) => T | undefined): T {
-    const [body, mac] = cursor.split(".");
-    if (!body || !mac) throw INVALID_CURSOR;
+    // Exactly `body.mac`: extra segments would give one position many valid spellings.
+    const parts = cursor.split(".");
+    const [body, mac] = parts;
+    if (parts.length !== 2 || !body || !mac) throw INVALID_CURSOR;
     const expected = createHmac("sha256", secret).update(body).digest();
     const supplied = Buffer.from(mac, "base64url");
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw INVALID_CURSOR;

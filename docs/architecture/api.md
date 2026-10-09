@@ -114,8 +114,8 @@ All admin routes: admin, token status `active`, 120/min per user, `no-store`. `a
 ## admin-doctors
 | Method | Path | Roles | Ownership | Audit | Case | Responses |
 |---|---|---|---|---|---|---|
-| PATCH | `/api/admin/doctors/{doctorUserId}/suspend` | admin | none | admin-action | **3 must-not-degrade** | 200 only when Identity confirmed (or already suspended: no-op) · 409 `InvalidTransition` (not approved+synced) · 503 `IdentityUnavailable` + `suspension: "applied-locally, session-revocation-pending"` |
-| PATCH | `/api/admin/doctors/{doctorUserId}/reinstate` (planned, ADR 0012) | admin | none | admin-action | **4 retry-report-pending** | 200 when Identity confirmed (or not suspended: no-op) · 202 `identitySync: pending\|failed` · 409 `InvalidTransition` (suspension not synced) · 404 |
+| PATCH | `/api/admin/doctors/{doctorUserId}/suspend` | admin | none | admin-action | **3 must-not-degrade** | 200 only when Identity confirmed (or already suspended and `synced`: no-op; an unsynced no-op re-reports the same 503) · 409 `InvalidTransition` (not approved+synced) · 422 `IdempotencyConflict` · 503 `IdentityUnavailable` + `suspension: "applied-locally, session-revocation-pending"` |
+| PATCH | `/api/admin/doctors/{doctorUserId}/reinstate` (live, ADR 0012) | admin | none | admin-action | **4 retry-report-pending** | 200 when Identity confirmed (or not suspended with no unsynced reinstatement: no-op) · 202 `identitySync: pending\|failed` (also the no-op re-report while the latest reinstatement is unsynced) · 409 `InvalidTransition` (suspension not synced) · 422 `IdempotencyConflict` · 404 |
 
 ## patients
 | Method | Path | Roles | Ownership | Audit | Notes |
@@ -164,7 +164,7 @@ All admin routes: admin, token status `active`, 120/min per user, `no-store`. `a
 ## audit
 | Method | Path | Roles | Ownership | Notes |
 |---|---|---|---|---|
-| GET | `/api/audit-logs` | admin | none | filters `actorUserId, action, entityType, entityId, from, to`; metadata only |
+| GET | `/api/audit-logs` | admin | none | newest first; filters `actorUserId, action, entityType, entityId` (exact match; `entityId` needs `entityType`), window `[from, to)` (defaults: `to` now, `from` 30 days earlier; `from > to` 400, `from == to` empty); signed cursor (`{t,id,from,to}`, exactly two segments) freezes both bounds, ms precision, tamper or a rotated secret -> 400 `cursor`; every cross-field problem is reported in one 400; 120/min per admin; `no-store`; metadata only, reading writes no audit row |
 
 ## internal (listener `:3101`, service token)
 | Method | Path | Auth | Scope | Notes |

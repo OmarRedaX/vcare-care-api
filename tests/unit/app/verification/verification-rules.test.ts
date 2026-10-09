@@ -1,6 +1,6 @@
 import { validateBody, validateParams, validateQuery } from "../../../../src/lib/validation/validate";
 import { detectFileType } from "../../../../src/pkg/utils/detect-file-type";
-import { ApplicationQueueQueryDto, ApplicationRejectDto, UploadIdParamsDto, UploadVerificationIntentRequestDto } from "../../../../src/app/verification/dto/verification.request.dto";
+import { ApplicationApproveDto, ApplicationQueueQueryDto, ApplicationRejectDto, UploadIdParamsDto, UploadVerificationIntentRequestDto } from "../../../../src/app/verification/dto/verification.request.dto";
 import { VerificationApplicationResponseDto } from "../../../../src/app/verification/dto/verification.response.dto";
 import { VerificationDocument } from "../../../../src/app/verification/entity/verification-document.entity";
 import { DoctorProfile } from "../../../../src/app/doctors/entity/doctor-profile.entity";
@@ -28,6 +28,9 @@ describe("verification DTO and file rules", () => {
     it("should count reason code points and reject control characters", async () => {
         await expect(validateBody(ApplicationRejectDto, { reason: "😀😀😀" })).resolves.toMatchObject({ reason: "😀😀😀" });
         await expect(validateBody(ApplicationRejectDto, { reason: "ab" })).rejects.toMatchObject({ code: "ValidationFailed" });
+        await expect(validateBody(ApplicationRejectDto, { reason: "   " })).rejects.toMatchObject({ code: "ValidationFailed" });
+        await expect(validateBody(ApplicationApproveDto, { note: "   " })).rejects.toMatchObject({ code: "ValidationFailed" });
+        await expect(validateBody(ApplicationApproveDto, { note: "" })).resolves.toBeDefined();
         await expect(validateBody(ApplicationRejectDto, { reason: "synthetic\u0000reason" })).rejects.toMatchObject({ code: "ValidationFailed" });
         await expect(validateBody(ApplicationRejectDto, { reason: "x".repeat(2001) })).rejects.toMatchObject({ code: "ValidationFailed" });
     });

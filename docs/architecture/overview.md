@@ -80,8 +80,10 @@ flowchart LR
 | Module | Owns | Key tables | Talks to |
 |---|---|---|---|
 | `specialties` | specialty catalog | `specialties` | — |
-| `doctors` | **Built:** own-profile onboarding, languages and specialty links, accepting toggle, local suspension check. **Planned:** search and suspension writes | `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built) | `SpecialtiesService` for linked specialty validation; identity-client (Case 2/3) and availability later |
-| `verification` | documents, application states, decisions | `verification_documents`, `upload_intents`, `identity_sync_jobs` (**built**, 2026-10-08) | identity-client (Cases 1, 2), storage (uploads, download URLs) |
+| `doctors` | **Built:** own-profile onboarding, languages and specialty links, accepting toggle, local suspension check. **Planned:** search | `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built) | `SpecialtiesService` for linked specialty validation; identity-client (Case 2/3) and availability later |
+| `verification` | documents, application states, decisions | `verification_documents`, `upload_intents` (**built**, 2026-10-08; `identity_sync_jobs` is written through `identity-sync`) | identity-client (Cases 1, 2), storage (uploads, download URLs) |
+| `admin-doctors` (built 2026-10-09) | admin suspend (Case 3) and reinstate (Case 4) of an approved doctor; writes `doctor_profiles.suspended_*` and the sync status they imply; consultation flag behind the `SuspensionImpactProvider` port (no-op until `consultations`) | none of its own (reuses `doctor_profiles`, `identity_sync_jobs`) | `identity-sync` service, `access` (`AuditRecorder`), `doctors` (profile mapper) |
+| `identity-sync` (built 2026-10-09, extracted from `verification`; ADR 0021) | the Identity status-sync engine: durable jobs, per-doctor advisory lock, kind policies, the `identity-sync` worker loop; no routes | `identity_sync_jobs` | identity-client (Cases 1, 3, 4); called by `verification`, `admin-doctors` and the worker |
 | `schedules` (built 2026-10-09) | working hours, exceptions, consultation types, conflict detection (behind the `ScheduleImpactProvider` port; no-op until `consultations`) | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
 | `consultations` | booking, reschedule, cancel, no-show, lists, calendar | `consultations` | `availability`, `doctors` (bookability), email, identity-client (Case 2) |
@@ -89,7 +91,7 @@ flowchart LR
 | `patients` | patient profile, clinical timeline | `patient_profiles` | `records`, `consultations` (relationship check) |
 | `records` | medical records, amendments, attachments | `medical_records`, `medical_record_amendments`, `record_attachments` | storage (uploads, download URLs), `consultations` |
 | `help-articles` | help center content | `help_articles` | — |
-| `audit` | append-only audit log and its read API | `audit_logs` | — (called by every module through `lib/audit`) |
+| `audit` (read API built 2026-10-09) | append-only audit log (written through `lib/audit`) and `GET /api/audit-logs`: admin-only, time-bounded `[from, to)`, keyset page with a signed cursor; no table of its own beyond three read indexes, no audit row for the read | `audit_logs` | — (written by every module through `lib/audit`; the read module calls nothing) |
 | `identity-client` (lib) | outbound Identity calls and their policies | — | identity-service |
 
 Cross-module calls go through **services**, never another module's repository.

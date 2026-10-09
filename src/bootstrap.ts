@@ -1,3 +1,8 @@
+import { AuditController } from "./app/audit/controller/audit.controller";
+import { AuditService } from "./app/audit/service/audit.service";
+import { AdminDoctorsController } from "./app/admin-doctors/controller/admin-doctors.controller";
+import { AdminDoctorsService } from "./app/admin-doctors/service/admin-doctors.service";
+import { NoopSuspensionImpactProvider } from "./app/admin-doctors/service/noop-suspension-impact.provider";
 import { HealthController } from "./app/health/controller/health.controller";
 import { DoctorsController } from "./app/doctors/controller/doctors.controller";
 import { DoctorsService } from "./app/doctors/service/doctors.service";
@@ -9,6 +14,8 @@ import { SchedulesService } from "./app/schedules/service/schedules.service";
 import { HealthService } from "./app/health/service/health.service";
 import { SpecialtiesController } from "./app/specialties/controller/specialties.controller";
 import { SpecialtiesService } from "./app/specialties/service/specialties.service";
+import { SYSTEM_SYNC_TIMING } from "./app/identity-sync/constants";
+import { IdentitySyncService } from "./app/identity-sync/service/identity-sync.service";
 import { VerificationController } from "./app/verification/controller/verification.controller";
 import { VerificationService } from "./app/verification/service/verification.service";
 import { IdentityClient } from "./lib/identity-client/identity-client";
@@ -41,6 +48,15 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.SchedulesController, SchedulesController);
     container.registerSingleton(TOKENS.DoctorsService, DoctorsService);
     container.registerSingleton(TOKENS.DoctorsController, DoctorsController);
+    container.registerInstance(TOKENS.SyncTiming, SYSTEM_SYNC_TIMING);
+    container.registerSingleton(TOKENS.IdentitySyncService, IdentitySyncService);
     container.registerSingleton(TOKENS.VerificationService, VerificationService);
     container.registerSingleton(TOKENS.VerificationController, VerificationController);
+    // Case 3/4 seam: default no-op port (`consultations` rebinds it); the service needs the sync engine registered above.
+    container.registerSingleton(TOKENS.SuspensionImpactProvider, NoopSuspensionImpactProvider);
+    container.registerSingleton(TOKENS.AdminDoctorsService, AdminDoctorsService);
+    container.registerSingleton(TOKENS.AdminDoctorsController, AdminDoctorsController);
+    container.registerInstance(TOKENS.AuditClock, { now: () => Date.now() });
+    container.registerSingleton(TOKENS.AuditService, AuditService);
+    container.registerSingleton(TOKENS.AuditController, AuditController);
 }

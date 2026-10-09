@@ -18,4 +18,11 @@ describe("signed cursor", () => {
         expect(() => decodeSignedCursor(cursor, "another-secret", validate)).toThrow(expect.objectContaining({ code: "ValidationFailed" }));
         expect(() => decodeSignedCursor(encodeSignedCursor({ id: "5" }, secret), secret, validate)).toThrow(expect.objectContaining({ code: "ValidationFailed" }));
     });
+
+    it("should reject a cursor with more than two dot segments even when body and MAC are valid", () => {
+        const cursor = encodeSignedCursor({ id: 5 }, secret);
+        for (const bad of [`${cursor}.x`, `${cursor}.`, `${cursor}..`]) {
+            expect(() => decodeSignedCursor(bad, secret, validate)).toThrow(expect.objectContaining({ code: "ValidationFailed" }));
+        }
+    });
 });

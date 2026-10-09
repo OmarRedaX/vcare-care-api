@@ -1476,30 +1476,36 @@ paths:
       summary: Suspend a doctor and revoke their sessions (Integration Case 3)
       description: |
         0. Precondition: only an approved, synced, not-suspended doctor can be suspended, else `409 InvalidTransition`.
-           Suspending an already-suspended doctor is a **200 no-op** that returns the current state (its
-           `identitySyncStatus` shows whether revocation is still pending).
+           An already-suspended doctor is a no-op: **200** when `identitySyncStatus='synced'`, otherwise **503
+           `IdentityUnavailable`** (`SuspensionPending`, `data.identitySyncStatus` `pending` or `failed`), because session
+           revocation is not confirmed.
         1. One transaction: `suspended_at`, `suspension_reason`, `identity_sync_status='pending'`; every future non-terminal
            consultation flagged `needs_admin_followup=true`; audit rows. From this commit Care blocks new bookings and all
            doctor actions.
         2. `PATCH /internal/users/{id}/status` on Identity → `suspended` (Identity revokes all refresh tokens), inline attempts
            for about 6 s, then a durable retry job with backoff capped at 60 s and no attempt limit for transient failures
            (network, timeout, 429, 5xx, one token refresh on 401). Alert `IdentitySuspensionSyncFailing` after 3 consecutive
-           failures. A `409 InvalidStatusTransition` from Identity is not transient: retries stop, the local suspension stays,
-           `identity_sync_status='failed'`, and on-call is paged immediately (`IdentitySyncTransitionRejected`).
+           failures. A `409 InvalidStatusTransition` from Identity, or an Identity `400`, `403` or `422` (the request itself is refused), is
+           not transient: retries stop, the local suspension stays, `identity_sync_status='failed'`, and on-call is paged immediately
+           (`IdentitySyncTransitionRejected`).
         3. **200 only when Identity confirmed.** Otherwise **503 `IdentityUnavailable`** with
            `suspension: "applied-locally, session-revocation-pending"` (`data.identitySyncStatus` is `pending` or `failed`).
            This policy must not degrade. Reinstatement is a separate operation (`reinstateDoctor`, Case 4).
+        Rate limit 30/min per admin user (shared with `reinstateDoctor`). `Idempotency-Key` is optional: the same key with a different
+        body is `422 IdempotencyConflict`, a duplicate while the first request is in flight is `409 Conflict` with `Retry-After: 1`;
+        a `503` is never stored, so a retry re-executes and meets the no-op rule above.
       security:
         - bearerUser: []
       x-roles: [admin]
       x-ownership: none
       x-audit: admin-action
-      x-audit-actions: [doctor.suspended, consultation.flagged_for_followup, identity_sync.synced]
+      x-audit-actions: [doctor.suspended, consultation.flagged_for_followup, identity_sync.pending, identity_sync.failed, identity_sync.synced]
       x-integration-case: 3
       x-failure-policy: must-not-degrade
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/DoctorUserIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       requestBody:
         required: true
         content:
@@ -1508,7 +1514,7 @@ paths:
               $ref: '#/components/schemas/SuspendDoctor'
       responses:
         '200':
-          description: Suspension applied locally and confirmed by Identity (sessions revoked).
+          description: Suspension applied locally and confirmed by Identity (sessions revoked), or the doctor was already suspended and `identitySyncStatus` is `synced` (no-op).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -1531,7 +1537,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/InvalidTransition'
+          $ref: '#/components/responses/DoctorTransitionConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -1546,8 +1554,9 @@ paths:
       summary: Reinstate a suspended doctor (Integration Case 4)
       description: |
         0. Precondition: the doctor is suspended (`suspended_at IS NOT NULL`) **and** `identity_sync_status='synced'`
-           (the suspension reached Identity), else `409 InvalidTransition`. A doctor who is not suspended is a **200
-           no-op** returning the current state.
+           (the suspension reached Identity), else `409 InvalidTransition`. A doctor who is not suspended is a no-op:
+           **200**, except **202** (`identitySync` `pending` or `failed`) while the latest `reinstatement` job is still
+           `pending` or `failed`, so a blind retry never reads as confirmation.
         1. One transaction: clear `suspended_at` and `suspension_reason`, `identity_sync_status='pending'`, audit row, and
            a durable `identity_sync_jobs` row (`kind='reinstatement'`, superseding an older open job). Consultations
            flagged `needs_admin_followup` at suspension **stay flagged**.
@@ -1555,9 +1564,12 @@ paths:
            each, backoff).
         3. Identity confirmed → `identity_sync_status='synced'`, **200**. Still failing → local state kept, **202** with
            `identitySync: "pending"`; the durable job keeps retrying and alerts after 15 minutes unsynced.
-        4. A `409 InvalidStatusTransition` from Identity is non-retryable: `identity_sync_status='failed'`, the on-call is
-           paged, **202** with `identitySync: "failed"`.
+        4. A `409 InvalidStatusTransition` from Identity, or an Identity `400`, `403` or `422`, is non-retryable:
+           `identity_sync_status='failed'`, the on-call is paged, **202** with `identitySync: "failed"`.
         The doctor stays unbookable until `suspended_at IS NULL` **and** `synced`. Retry policy: retry, report pending.
+        Rate limit 30/min per admin user (shared with `suspendDoctor`). `Idempotency-Key` is optional: the same key with a different
+        body is `422 IdempotencyConflict`, a duplicate while the first request is in flight is `409 Conflict` with `Retry-After: 1`;
+        a stored `202` replays.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -1569,6 +1581,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/DoctorUserIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       requestBody:
         required: true
         content:
@@ -1577,7 +1590,7 @@ paths:
               $ref: '#/components/schemas/ReinstateDoctor'
       responses:
         '200':
-          description: Doctor reinstated locally and confirmed by Identity (or already not suspended).
+          description: Doctor reinstated locally and confirmed by Identity, or already not suspended with no unsynced reinstatement (no-op).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -1592,7 +1605,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/ReinstatementResult'
         '202':
-          description: Reinstatement recorded locally; Identity unconfirmed (`pending`) or rejected the transition (`failed`). The doctor stays unbookable until synced.
+          description: Reinstatement recorded locally; Identity unconfirmed (`pending`) or rejected the transition (`failed`). Also the no-op re-report for a not-suspended doctor whose latest `reinstatement` job is still `pending` or `failed`. The doctor stays unbookable until synced.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -1618,7 +1631,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/InvalidTransition'
+          $ref: '#/components/responses/DoctorTransitionConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -2741,9 +2756,18 @@ paths:
       tags: [audit]
       summary: Read the audit log (metadata only, never clinical content)
       description: |
-        Newest first. Reading the audit log is not itself a clinical read because entries carry no clinical text.
-        `audit_logs` is partitioned by month, so every query is time-bounded: `to` defaults to now and `from` defaults to
-        30 days before `to`. `from` later than `to` → `400 ValidationFailed`. Both bounds are ISO-8601 with offset.
+        Newest first (`createdAt DESC, id DESC`). Reading the audit log is not itself a clinical read because entries carry no
+        clinical text, so it writes no audit row. `audit_logs` is partitioned by month, so every query is time-bounded: the
+        window is `createdAt >= from AND createdAt < to` (`from` inclusive, `to` exclusive); `to` defaults to now and `from`
+        defaults to 30 days before `to`. `from` later than `to` → `400 ValidationFailed` (`details[].field = "from"`);
+        `from` equal to `to` is an empty page. Both bounds are ISO-8601 with offset and are used at millisecond precision (finer
+        fractions are truncated); a `+` in an offset must be URL-encoded as `%2B` (a raw `+` is decoded to a space and fails with
+        `400`). The default `to` is read from the service clock, so a row stamped by a database clock running ahead of it can be
+        absent from the first page. `entityId` requires `entityType` (else `400`,
+        `details[].field = "entityType"`). The effective `from` and `to` are carried inside `meta.nextCursor`, so later pages keep the
+        same window while the clock advances (a `from` or `to` sent again wins). A malformed, tampered or no longer valid cursor
+        (for example after a secret rotation) → `400`. Unknown query keys → `400`.
+        The response is `Cache-Control: no-store`.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -2764,6 +2788,7 @@ paths:
           required: false
           schema:
             type: string
+            minLength: 1
             maxLength: 64
             examples: [consultation.cancelled]
         - name: entityType
@@ -2771,6 +2796,7 @@ paths:
           required: false
           schema:
             type: string
+            minLength: 1
             maxLength: 64
             examples: [consultation]
         - name: entityId
@@ -2783,21 +2809,27 @@ paths:
         - name: from
           in: query
           required: false
+          description: Inclusive lower bound. ISO-8601 date-time with a UTC offset (`Z` or `±HH:MM`).
           schema:
             type: string
             format: date-time
+            maxLength: 40
         - name: to
           in: query
           required: false
+          description: Exclusive upper bound. ISO-8601 date-time with a UTC offset (`Z` or `±HH:MM`).
           schema:
             type: string
             format: date-time
+            maxLength: 40
       responses:
         '200':
           description: A page of audit entries.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
           content:
             application/json:
               schema:
@@ -3609,6 +3641,23 @@ components:
               code: RoomNotOpen
               message: The session room is not open
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    DoctorTransitionConflict:
+      description: '`InvalidTransition` — the doctor cannot change from the current state (suspend: not approved and synced; reinstate: suspended but not synced). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: InvalidTransition
+              message: The doctor cannot change from the current state
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     InvalidTransition:
       description: '`InvalidTransition` — lifecycle transition not allowed (including any change to a terminal state).'
       headers:
@@ -3941,7 +3990,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/ErrorEnvelope'
         - type: object
-          required: [suspension]
+          required: [suspension, data]
           properties:
             suspension:
               type: string
@@ -3955,6 +4004,11 @@ components:
           message: Suspension applied locally; session revocation is pending
           requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
         suspension: applied-locally, session-revocation-pending
+        data:
+          doctorUserId: 42
+          suspendedAt: '2026-10-09T10:00:00Z'
+          identitySyncStatus: pending
+          flaggedConsultationIds: []
     ApprovalPendingSync:
       type: object
       description: 202 body for Case 1. The local decision and durable sync job were committed together; an older pending job was superseded. Identity remains unconfirmed (`pending`) or rejected the transition with 409 (`failed`).

@@ -37,6 +37,7 @@ export const REDACTED_KEYS: readonly string[] = [
     "headline",
     "bio",
     "reviewNote",
+    "suspensionReason",
     "quarantineKey",
     "fields",
     "url",
