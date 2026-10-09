@@ -220,8 +220,8 @@ key `SERVICE_CLIENT_SECRET` — the same key and helper the verification queue c
 ```
 - `t` is the last returned row's `created_at` at **full microsecond precision**, selected with
   `timestampCursorSelect(conn, "created_at", "cursor_timestamp")` (foundation fix #7), validated by
-  `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$`; `id` is a positive safe integer; `to` is the **effective** exclusive
-  upper bound of the first page in millisecond ISO form, validated by `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`
+  `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$`; `id` is a positive safe integer; `from` and `to` are the **effective** inclusive lower and exclusive
+  upper bounds of the first page in millisecond ISO form, validated by `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`
   and `parseIsoDateTimeWithOffset`.
 - Tamper handling: a bad shape, a bad MAC, a payload that fails validation, or a rotated `SERVICE_CLIENT_SECRET` →
   `400 ValidationFailed` with `details: [{ field: "cursor", issue: "is invalid" }]` (no `500`, no detail about which
@@ -467,7 +467,7 @@ Additive or clarifying edits to `contracts/openapi.yaml`, operation `listAuditLo
 - **C1 — description.** Replace the description with a precise one: window `created_at >= from AND created_at < to`
   (`from` inclusive, `to` exclusive); `to` defaults to now, `from` to 30 days before `to`; `from` later than `to` →
   `400 ValidationFailed` (`details[].field = "from"`); `from == to` is an empty page; `entityId` requires `entityType`
-  (`400`, `details[].field = "entityType"`); the effective `to` is carried inside `meta.nextCursor` so later pages keep the
+  (`400`, `details[].field = "entityType"`); the effective `from` and `to` are carried inside `meta.nextCursor` so later pages keep the
   same window; a malformed, tampered or no longer valid cursor (e.g. after a secret rotation) → `400`; a `+` in an offset must be URL-encoded as `%2B`; the response is
   `Cache-Control: no-store`.
 - **C2 — parameters.** `action` and `entityType`: add `minLength: 1` (an empty value is `400`, not "no filter"). `from` and
