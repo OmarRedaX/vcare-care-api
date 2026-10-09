@@ -1,17 +1,15 @@
 # admin-doctors - checkpoint (2026-10-09)
 
-Worktree E:\Full Stack Projects\Vcare\VCare\vcare-care-api-admin-doctors, branch feature/admin-doctors from origin/main 654a390
-(PR #30 schedules and #29 are already merged there; the brief said #30 was unmerged). node_modules is a junction to ../vcare-care-api.
-Why a worktree: another process moved the shared vcare-care-api checkout to fix/ci-integration-minio and committed 7a034a9 mid-session. Not mine; left alone.
-Nothing committed yet.
+Worktree E:\Full Stack Projects\Vcare\VCare\vcare-care-api-admin-doctors, branch feature/admin-doctors from origin/main 654a390.
+node_modules is a junction to ../vcare-care-api. Nothing committed by /develop; the orchestrator commits (engine extraction separately from the feature).
 
 ## Done
-- Context read: Care CLAUDE.md, contract suspend/reinstate/audit-logs, ADR 0012, verification service + identity-sync loop, identity-client.
-- /brainstorm: docs/admin-doctors/brainstorm.md. Owner decisions: suspend stays 503 (brief said 202; contract + CLAUDE.md win), retry reuses existing env, contract bodies and audit names, flag-only bookings.
-
-## Findings
-- identity-sync loop and VerificationService.processDueSyncJob only handle kind='verification'; attemptSync is private, so extraction is needed.
-- No audit module exists (no GET /audit-logs, no read indexes); consultations table does not exist.
+- /brainstorm, /construct-spec (spec v0.2.0 ready).
+- /develop (2026-10-09): contract edits (spec section 11), engine extraction to src/app/identity-sync (ADR 0021), pkg/utils/code-points, sendSuccess siblings,
+  admin-doctors module (constants, enums, errors, types, DTOs, repo, service, noop provider, policies, controller, routes, mount, DI tokens, bootstrap).
+  typecheck clean, lint clean, npm test 92 suites / 1557 tests green. Integration suites NOT run (no Postgres on :5434 here).
+- Docs: tasks.md, ADR 0021, service-card, INDEX.
 
 ## NEXT STEP
-/construct-spec admin-doctors (flow-spec-author), then audit (own brainstorm).
+/write-tests admin-doctors (spec section 9 plus test helpers), run the integration suite on real Postgres/Redis (verification.test.ts is only typechecked after its mechanical edits),
+then /manual-qa, /review-code, /update-docs (Appendix A deltas: integration.md, resilience.md, api.md, rbac.md, data-model.md, overview.md, runbook.md, system-design.md).

@@ -1476,8 +1476,9 @@ paths:
       summary: Suspend a doctor and revoke their sessions (Integration Case 3)
       description: |
         0. Precondition: only an approved, synced, not-suspended doctor can be suspended, else `409 InvalidTransition`.
-           Suspending an already-suspended doctor is a **200 no-op** that returns the current state (its
-           `identitySyncStatus` shows whether revocation is still pending).
+           An already-suspended doctor is a no-op: **200** when `identitySyncStatus='synced'`, otherwise **503
+           `IdentityUnavailable`** (`SuspensionPending`, `data.identitySyncStatus` `pending` or `failed`), because session
+           revocation is not confirmed.
         1. One transaction: `suspended_at`, `suspension_reason`, `identity_sync_status='pending'`; every future non-terminal
            consultation flagged `needs_admin_followup=true`; audit rows. From this commit Care blocks new bookings and all
            doctor actions.
@@ -1494,7 +1495,7 @@ paths:
       x-roles: [admin]
       x-ownership: none
       x-audit: admin-action
-      x-audit-actions: [doctor.suspended, consultation.flagged_for_followup, identity_sync.synced]
+      x-audit-actions: [doctor.suspended, consultation.flagged_for_followup, identity_sync.pending, identity_sync.failed, identity_sync.synced]
       x-integration-case: 3
       x-failure-policy: must-not-degrade
       parameters:
@@ -1508,7 +1509,7 @@ paths:
               $ref: '#/components/schemas/SuspendDoctor'
       responses:
         '200':
-          description: Suspension applied locally and confirmed by Identity (sessions revoked).
+          description: Suspension applied locally and confirmed by Identity (sessions revoked), or the doctor was already suspended and `identitySyncStatus` is `synced` (no-op).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -1546,8 +1547,9 @@ paths:
       summary: Reinstate a suspended doctor (Integration Case 4)
       description: |
         0. Precondition: the doctor is suspended (`suspended_at IS NOT NULL`) **and** `identity_sync_status='synced'`
-           (the suspension reached Identity), else `409 InvalidTransition`. A doctor who is not suspended is a **200
-           no-op** returning the current state.
+           (the suspension reached Identity), else `409 InvalidTransition`. A doctor who is not suspended is a no-op:
+           **200**, except **202** (`identitySync` `pending` or `failed`) while the latest `reinstatement` job is still
+           `pending` or `failed`, so a blind retry never reads as confirmation.
         1. One transaction: clear `suspended_at` and `suspension_reason`, `identity_sync_status='pending'`, audit row, and
            a durable `identity_sync_jobs` row (`kind='reinstatement'`, superseding an older open job). Consultations
            flagged `needs_admin_followup` at suspension **stay flagged**.
@@ -1577,7 +1579,7 @@ paths:
               $ref: '#/components/schemas/ReinstateDoctor'
       responses:
         '200':
-          description: Doctor reinstated locally and confirmed by Identity (or already not suspended).
+          description: Doctor reinstated locally and confirmed by Identity, or already not suspended with no unsynced reinstatement (no-op).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -1592,7 +1594,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/ReinstatementResult'
         '202':
-          description: Reinstatement recorded locally; Identity unconfirmed (`pending`) or rejected the transition (`failed`). The doctor stays unbookable until synced.
+          description: Reinstatement recorded locally; Identity unconfirmed (`pending`) or rejected the transition (`failed`). Also the no-op re-report for a not-suspended doctor whose latest `reinstatement` job is still `pending` or `failed`. The doctor stays unbookable until synced.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -3941,7 +3943,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/ErrorEnvelope'
         - type: object
-          required: [suspension]
+          required: [suspension, data]
           properties:
             suspension:
               type: string
@@ -3955,6 +3957,11 @@ components:
           message: Suspension applied locally; session revocation is pending
           requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
         suspension: applied-locally, session-revocation-pending
+        data:
+          doctorUserId: 42
+          suspendedAt: '2026-10-09T10:00:00Z'
+          identitySyncStatus: pending
+          flaggedConsultationIds: []
     ApprovalPendingSync:
       type: object
       description: 202 body for Case 1. The local decision and durable sync job were committed together; an older pending job was superseded. Identity remains unconfirmed (`pending`) or rejected the transition with 409 (`failed`).

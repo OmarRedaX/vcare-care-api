@@ -22,8 +22,16 @@ export const TOKENS = {
     SpecialtiesController: Symbol.for("SpecialtiesController"),
     DoctorsService: Symbol.for("DoctorsService"),
     DoctorsController: Symbol.for("DoctorsController"),
+    /** Shared Identity-sync engine (verification, suspension, reinstatement jobs); registered before its callers. */
+    IdentitySyncService: Symbol.for("IdentitySyncService"),
+    /** Clock and randomness of the sync engine; tests bind a fake. */
+    SyncTiming: Symbol.for("SyncTiming"),
     VerificationService: Symbol.for("VerificationService"),
     VerificationController: Symbol.for("VerificationController"),
+    AdminDoctorsService: Symbol.for("AdminDoctorsService"),
+    AdminDoctorsController: Symbol.for("AdminDoctorsController"),
+    /** Port: future non-terminal consultations a suspension flags for follow-up (default no-op; `consultations` rebinds). */
+    SuspensionImpactProvider: Symbol.for("SuspensionImpactProvider"),
     SchedulesService: Symbol.for("SchedulesService"),
     SchedulesController: Symbol.for("SchedulesController"),
     /** Port: future non-terminal consultations a schedule change strands (default no-op; `consultations` rebinds). */

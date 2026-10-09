@@ -13,6 +13,8 @@ export interface AppOptions {
 export interface SendSuccessOptions {
     status?: 200 | 201 | 202;
     meta?: Record<string, unknown>;
+    /** Top-level members rendered next to `data` (e.g. `identitySync` on the reinstate `202`). */
+    siblings?: Record<string, unknown>;
 }
 
 /** Express types `req.route` as `any`; this is the only part of it Care reads. */

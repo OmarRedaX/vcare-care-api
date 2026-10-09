@@ -1,5 +1,3 @@
-export const IDENTITY_SYNC_LOOP_NAME = "identity-sync";
-export const IDENTITY_SYNC_BATCH = 50;
 export const INTENT_PURGE_LOOP_NAME = "upload-intent-purge";
 export const INTENT_PURGE_BATCH = 500;
 export const INTENT_PURGE_LOCK_NAMESPACE = 1103;

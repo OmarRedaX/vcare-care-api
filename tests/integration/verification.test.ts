@@ -16,7 +16,9 @@ import { VerificationService } from "../../src/app/verification/service/verifica
 import { VerificationController } from "../../src/app/verification/controller/verification.controller";
 import { DoctorsService } from "../../src/app/doctors/service/doctors.service";
 import { DoctorsController } from "../../src/app/doctors/controller/doctors.controller";
-import { buildIdentitySyncLoop } from "../../src/app/verification/worker/identity-sync.loop";
+import { SYSTEM_SYNC_TIMING } from "../../src/app/identity-sync/constants";
+import { IdentitySyncService } from "../../src/app/identity-sync/service/identity-sync.service";
+import { buildIdentitySyncLoop } from "../../src/app/identity-sync/worker/identity-sync.loop";
 import { buildUploadIntentPurgeLoop } from "../../src/app/verification/worker/upload-intent-purge.loop";
 import { buildTestApps } from "../helpers/app";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
@@ -45,6 +47,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
     let identityServer: FakeIdentityServer;
     let identity: IdentityClient;
     let service: VerificationService;
+    let identitySync: IdentitySyncService;
     const storage = new InMemoryObjectStorage();
     const tokens: Record<string, string> = {};
     const previous: Array<{ token: symbol; value: unknown }> = [];
@@ -93,6 +96,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         container.registerInstance(TOKENS.UserTokenVerifier, wiring.verifier);
         container.registerInstance(TOKENS.IDENTITY_CLIENT, identity);
         container.registerInstance(TOKENS.STORAGE, storage);
+        identitySync = container.resolve<IdentitySyncService>(TOKENS.IdentitySyncService);
         service = container.resolve(VerificationService);
         container.registerInstance(TOKENS.VerificationService, service);
         container.registerSingleton(TOKENS.VerificationController, VerificationController);
@@ -228,7 +232,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         expect((await ownerDb("doctor_profiles").where("id", id).first()).identity_sync_status).toBe("pending");
         identityServer.options.down = false;
         await ownerDb("identity_sync_jobs").update({ next_attempt_at: new Date(Date.now() - 1000) });
-        const loop = buildIdentitySyncLoop({ service, logger, pollSeconds: 10 });
+        const loop = buildIdentitySyncLoop({ service: identitySync, logger, pollSeconds: 10 });
         await expect(loop.tick(new AbortController().signal)).resolves.toBe("done");
         expect((await ownerDb("identity_sync_jobs").first()).status).toBe("succeeded");
         expect((await ownerDb("doctor_profiles").where("id", id).first()).identity_sync_status).toBe("synced");
@@ -390,7 +394,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         expect(await ownerDb("identity_sync_jobs").where("status", "superseded")).toHaveLength(0);
         identityServer.options.down = false;
         await ownerDb("identity_sync_jobs").where("status", "pending").update({ next_attempt_at: new Date(Date.now() - 1000) });
-        await expect(buildIdentitySyncLoop({ service, logger, pollSeconds: 10 }).tick(new AbortController().signal)).resolves.toBe("done");
+        await expect(buildIdentitySyncLoop({ service: identitySync, logger, pollSeconds: 10 }).tick(new AbortController().signal)).resolves.toBe("done");
         expect(identityServer.users.get(DOCTOR)?.status).toBe("pending");
         const approved = await call("patch", admin(`/${id}/approve`), "admin", {});
         expect(approved.status).toBe(200);
@@ -406,7 +410,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         const job = await ownerDb("identity_sync_jobs").first();
         await ownerDb("identity_sync_jobs").where("id", job.id).update({ next_attempt_at: new Date(Date.now() - 1000) });
         identityServer.calls.length = 0;
-        await Promise.all([service.processDueSyncJob(Number(job.id)), service.processDueSyncJob(Number(job.id))]);
+        await Promise.all([identitySync.processDue(Number(job.id)), identitySync.processDue(Number(job.id))]);
         expect(identityServer.calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
         const after = await ownerDb("identity_sync_jobs").where("id", job.id).first();
         expect(after.status).toBe("pending"); expect(new Date(after.next_attempt_at).getTime()).toBeGreaterThan(Date.now());
@@ -457,9 +461,11 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         const advisoryLocks = (pool: Knex) => pool.raw<{ rows: Array<{ n: number }> }>("SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND a.application_name = 'care-test'");
         let pool: Knex;
         let small: VerificationService;
+        let smallSync: IdentitySyncService;
         beforeEach(() => {
             pool = createKnex({ url: getEnv().DATABASE_URL, poolMax, statementTimeoutMs: 10_000, applicationName: "care-test" });
-            small = new VerificationService(pool, container.resolve(TOKENS.AuditRecorder), storage, identity, getEnv());
+            smallSync = new IdentitySyncService(pool, container.resolve(TOKENS.AuditRecorder), identity, getEnv(), SYSTEM_SYNC_TIMING);
+            small = new VerificationService(pool, container.resolve(TOKENS.AuditRecorder), storage, identity, getEnv(), smallSync);
         });
         afterEach(async () => { await pool.destroy(); });
 
@@ -482,7 +488,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
             const job = await ownerDb("identity_sync_jobs").first();
             await ownerDb("identity_sync_jobs").where("id", job.id).update({ next_attempt_at: new Date(Date.now() - 1000) });
             identityServer.calls.length = 0;
-            const results = await Promise.allSettled([1, 2, 3, 4].map(() => small.processDueSyncJob(Number(job.id))).concat([small.queue({ status: VerificationStatus.Approved, limit: 5 }).then(() => undefined)]));
+            const results = await Promise.allSettled([1, 2, 3, 4].map(() => smallSync.processDue(Number(job.id))).concat([small.queue({ status: VerificationStatus.Approved, limit: 5 }).then(() => undefined)]));
             expect(results.every((r) => r.status === "fulfilled")).toBe(true);
             expect(identityServer.calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
             expect((await ownerDb("identity_sync_jobs").where("id", job.id).first()).status).toBe("succeeded");
