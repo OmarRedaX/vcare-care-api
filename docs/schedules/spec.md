@@ -3,10 +3,10 @@ title: schedules — Spec
 owner: care-team
 service: care-service
 module: schedules
-status: ready
-version: 1.0.0
+status: implemented
+version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [spec, schedules, working-hours, exceptions, consultation-types, pkg-slots, dst, conflicts, audit, migration]
 related: [schedules-brainstorm, doctors-spec, verification-spec, access-spec, scheduling-slots, data-model, api, rbac, adr-0002-slots-never-stored, adr-0010-next-available-lazy-cache-worker-refresh, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, adr-0019-luxon-for-doctor-timezone-validation]
 contracts: [contracts/openapi.yaml]
@@ -835,3 +835,25 @@ None.
 - `/update-docs doctors`: the as-built delta of §4.2 (5-query `getOwn`, D-R12, §10, new service methods) and the deferred timezone-change item.
 - **`docs/service-card.md`** is affected: owned data gains working hours, exceptions and consultation types; the endpoint family `/api/doctors/me/{working-hours,exceptions,consultation-types}` is live; no new dependency, env variable or cross-service call. Then the hub sync (never hand-copy).
 - ADRs: none needed (`luxon` is covered by ADR 0019; the ports are module-internal and recorded here).
+
+---
+
+## 14. As-built notes (2026-10-09, v1.1.0)
+
+The module is implemented as specified: eight routes, three migrations (`20261008120000`, `20261008120100`, `20261008120200`; DDL identical to section 2), `pkg/slots`, the three ports with no-op defaults, and the `isBookable` wiring. Contract edits C1-C6 are applied; the code and `contracts/openapi.yaml` agree on routes, status sets, `x-roles`, `x-ownership`, `x-account-state`, `x-audit-actions` and the `Idempotency-Key` presence (two POSTs only). No intentional divergence from sections 2-4, 6 and 7 was found.
+
+**Tests (2026-10-09).** Unit: 1541 tests in total across the repository (all green); the schedules share is `tests/unit/pkg/slots/*` (five files: `instant`, `intervals`, `local-date`, `local-time`, `resolve-open-intervals`, with the DST reference table), `tests/unit/app/schedules/*` (DTO, rules, response DTO, service, policies, routes, resolver, no-op defaults), `tests/unit/contract/schedules-contract.test.ts`, `tests/unit/lib/validation/date-decorator.test.ts`, and the doctors unit changes (five queries, `isBookable` from the view flag). Integration: `tests/integration/schedules.test.ts` has **116** tests (RBAC for all eight routes including the locally-suspended doctor, ownership, working-hours PUT race, exceptions, types, stub-provider and stub-listener flows, rate limits, grants and schema checks, EXPLAIN, log and audit hygiene, contract conformance); additions to `boot.test.ts`, `db-roles.test.ts` and `doctors.test.ts` (the `isBookable` flip). Targeted integration run (schedules, doctors, boot, db-roles): 226 green. The full integration run fails only on the MinIO storage-adapter suite (no MinIO locally) and the known `migrations` flake under load (passes alone).
+
+**Manual QA (2026-10-09).** [manual-qa.md](./manual-qa.md): **220 pass / 0 fail** against a real Care listener (`care_app`, real Postgres and Redis, fake JWKS Identity). Not verified end to end, by design or environment:
+- `409 ScheduleConflictsUnconfirmed` and the `schedule.conflicts_confirmed` audit row: the default `ScheduleImpactProvider` is a no-op until `consultations` exists, so these are covered only through the stub provider (unit and integration). The end-to-end test remains a task of the `consultations` spec (section 10).
+- The in-flight duplicate `Idempotency-Key` path (`409 Conflict` + `Retry-After: 1`): needs a deterministic race over HTTP.
+- The Redis-down fallback limiter.
+- Behaviour on a real Identity (fake JWKS only) and the production build (`dist/`).
+
+**Resolved - `resolveOpenIntervals` budget (review 20261009-1500, C3).** The cost was the uncached `IANAZone.isValidZone` in `assertValidZone` (it builds an `Intl.DateTimeFormat` per call), plus per-edge luxon ISO parsing and a redundant offset re-check. Fixed in `src/pkg/slots`: validated zone names are memoized in a module-level `Set` (only successes are added; invalid zones are still rejected), `localInstant` returns directly when the offsets at wall -/+ 1 day are equal (no transition in the window), and the local midnight comes from plain integer calendar arithmetic (`utcMidnightMs`, which also throws `RangeError` on a non-calendar date, so the earlier `NaN` minor finding is gone). Measured in jest on the dev machine (14 days x 3 shifts x 7 weekdays, best of 10 to 100 after warm-up): about 11 to 13 ms before, **3.4 to 4.3 ms** after (isolated run); under the full parallel unit suite it can read 6 to 8 ms (CPU contention; 1 failure in 9 full runs, 0 in 9 isolated runs). The 5 ms budget is unchanged and is verified by the opt-in benchmark `npm run test:bench` (`tests/bench/resolve-open-intervals.bench.test.ts`, best of 100, run alone: 3.07 to 3.30 ms in 4 runs; 3.4 to 4.3 ms in earlier isolated runs). A wall-clock assert flaked under the parallel suite, so `npm test` carries only deterministic guards: zone validation runs a constant number of times (not per `localInstant` call) and a < 50 ms regression guard. Also fixed (C1): year 0000 is rejected by `isCalendarDate`/`IsCalendarDate`/`parseDate` (Postgres `DATE` rejects it), so `fromDate`, `toDate` and a forged cursor now yield `400 ValidationFailed`.
+
+**Minor findings (no action taken, not blocking).**
+- `localInstant` now throws `RangeError` for a non-calendar date (resolved in the fix-review: the local midnight comes from `utcMidnightMs`, which validates).
+- Section 8 says the `listTypesPage` EXPLAIN uses `uq_consultation_types_doctor_profile_id_name`. As built, the planner may use that index or the primary key (a <= 20-row set filtered by profile), never a sequential scan; the integration test asserts "an index scan, not a seq scan" and does not pin the index name.
+
+**Doctors consequence.** `GET /api/doctors/me` and the `apply`/`PATCH` views now issue five queries and `isBookable` needs a live active consultation type (doctors spec v1.3.0, section 14). The doctors timezone-change impact on schedules is recorded as deferred there.

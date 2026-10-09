@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -82,7 +82,7 @@ flowchart LR
 | `specialties` | specialty catalog | `specialties` | — |
 | `doctors` | **Built:** own-profile onboarding, languages and specialty links, accepting toggle, local suspension check. **Planned:** search and suspension writes | `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built) | `SpecialtiesService` for linked specialty validation; identity-client (Case 2/3) and availability later |
 | `verification` | documents, application states, decisions | `verification_documents`, `upload_intents`, `identity_sync_jobs` (**built**, 2026-10-08) | identity-client (Cases 1, 2), storage (uploads, download URLs) |
-| `schedules` | working hours, exceptions, consultation types, conflict detection | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
+| `schedules` (built 2026-10-09) | working hours, exceptions, consultation types, conflict detection (behind the `ScheduleImpactProvider` port; no-op until `consultations`) | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
 | `consultations` | booking, reschedule, cancel, no-show, lists, calendar | `consultations` | `availability`, `doctors` (bookability), email, identity-client (Case 2) |
 | `sessions` | waiting room, join/start/complete, room tokens | `consultations` (session columns) | video, email |
@@ -118,7 +118,7 @@ src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, util
 - Controllers validate DTOs and call one service method; no business logic.
 - Services own transactions, domain rules, audit calls, and the choice of identity-client policy.
 - Repositories are exported functions with explicit column lists over Knex (see [ADR 0001](../adr/0001-no-orm-knex-raw-sql.md)).
-- `pkg/slots` holds the whole availability algorithm so the slot endpoint and booking re-validation share one implementation.
+- `pkg/slots` holds the whole availability algorithm so the slot endpoint and booking re-validation share one implementation. Built so far: the open-interval resolution (`resolveOpenIntervals`, DST, `24:00`), shipped by `schedules`; busy subtraction and slicing arrive with `availability` ([scheduling-slots.md](./scheduling-slots.md)).
 
 ## Request pipeline (public listener)
 

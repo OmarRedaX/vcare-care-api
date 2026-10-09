@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [api, schedules-spec, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # RBAC and Ownership
@@ -84,7 +84,7 @@ rateLimit(byUser)? → idempotency()? → handler`; every module `routes.ts` ret
 
 The local `suspended_at` check closes the up-to-15-minute window in which a suspended doctor's access token is
 still valid. It is a policy `AccessCheck` named `doctor_not_suspended` (`appliesTo: ["doctor"]`) supplied by the
-doctors module. It is live on `PATCH /doctors/me`; the other three onboarding routes stay readable or usable by a
+doctors module. It is live on `PATCH /doctors/me` and, since 2026-10-09, on all eight `schedules` routes (re-read under the profile row lock on writes); the other three onboarding routes stay readable or usable by a
 locally suspended doctor when their token state allows it. Later practising routes must add this check. Booking's check of the **target** doctor is a consultations service rule,
 not a policy check.
 
@@ -95,7 +95,7 @@ not a policy check.
 | `POST /specialties`, `PATCH /specialties/:id` | admin | none | admin-action |
 | `POST /doctors/apply`, `GET/PATCH /doctors/me`, `GET /doctors/me/application`, `DELETE /doctors/me/documents/:documentId` (live) | doctor (pending, active, or rejected) | self — profile by `auth.userId`; `PATCH /me` checks local suspension | `doctor.profile_created` / `doctor.profile_updated` on real writes |
 | `GET /doctors`, `GET /doctors/:doctorUserId`, `GET /doctors/:doctorUserId/slots` | patient, admin | none (patients see bookable doctors only) | — |
-| `GET/PUT /doctors/me/working-hours`, `GET/POST /doctors/me/exceptions`, `DELETE /doctors/me/exceptions/:id`, `GET/POST /doctors/me/consultation-types`, `PATCH /doctors/me/consultation-types/:id` | doctor (active, not suspended) | self; `:id` must belong to the caller's profile, else `deny-not-found` | admin-action when a block with conflicts is confirmed |
+| `GET/PUT /doctors/me/working-hours`, `GET/POST /doctors/me/exceptions`, `DELETE /doctors/me/exceptions/:id`, `GET/POST /doctors/me/consultation-types`, `PATCH /doctors/me/consultation-types/:id` | doctor (active, not suspended) | self; `:id` must belong to the caller's profile, else `404` (scoped repository queries; **live since 2026-10-09**) | every write audits in its transaction (`schedule.hours_replaced`, `schedule.exception_created`/`_deleted`, `consultation_type.created`/`_updated`, plus `schedule.conflicts_confirmed`); the three conflict-capable routes declare `audit: admin-action`. Rate limits: writes 30/min, reads 120/min per user. Patient and admin are `403` on every route |
 | `GET /admin/applications` (live) | admin | none | — |
 | `GET /admin/applications/:id` (live) | admin | none | `verification.documents_viewed` (metadata only, no URL) |
 | `PATCH /admin/applications/:id/approve`, `/reject`, `/reopen` (live) | admin | none; approve/reject refused with `409 Conflict` + `Retry-After: 5` while `identity_sync_status` is `pending` | `verification.approved|rejected|reopened`, `identity_sync.pending|synced|failed` |
