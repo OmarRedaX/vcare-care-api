@@ -450,9 +450,27 @@ describe("audit read: GET /api/audit-logs (integration: real routes, Postgres as
         it("should put the page-1 effective to into the nextCursor payload", async () => {
             await seedMany(3);
             const res = await get(`${URL_PATH}?limit=1`);
-            expect(decodeCursor(res.body.meta.nextCursor)).toEqual({ t: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/), id: 3, to: "2026-04-15T12:00:00.000Z" });
+            expect(decodeCursor(res.body.meta.nextCursor)).toEqual({ t: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/), id: 3, from: "2026-03-16T12:00:00.000Z", to: "2026-04-15T12:00:00.000Z" });
             const explicit = await get(`${URL_PATH}?limit=1&to=2026-04-15T14:00:00.9999%2B02:00`);
             expect(decodeCursor(explicit.body.meta.nextCursor).to).toBe("2026-04-15T12:00:00.999Z");
+        });
+
+        it("should keep an explicit from (90 days back) on page 2 and 3 when only the cursor is sent", async () => {
+            await seed([{ id: 1, at: "2026-02-14 12:00:00+00" }, { id: 2, at: "2026-02-20 12:00:00+00" }, { id: 3, at: "2026-04-10 12:00:00+00" }]);
+            const first = await get(`${URL_PATH}?limit=1&from=2026-01-15T12:00:00Z`);
+            expect(ids(first)).toEqual([3]);
+            const second = await get(`${URL_PATH}?limit=1&cursor=${encodeURIComponent(first.body.meta.nextCursor)}`);
+            expect(ids(second)).toEqual([2]);
+            const third = await get(`${URL_PATH}?limit=1&cursor=${encodeURIComponent(second.body.meta.nextCursor)}`);
+            expect(ids(third)).toEqual([1]); // 60 days old: outside the default 30 days, inside the frozen window
+            expect(third.body.meta.hasMore).toBe(false);
+        });
+
+        it("should report a bad cursor with the other cross-field problems, sorted by field", async () => {
+            const res = await get(`${URL_PATH}?cursor=bad.cursor&entityId=5&from=2026-04-02T00:00:00Z&to=2026-04-01T00:00:00Z`);
+            expect(res.status).toBe(400);
+            expect(res.body.error.details).toEqual([
+                { field: "cursor", issue: "is invalid" }, { field: "entityType", issue: "is required when entityId is given" }, { field: "from", issue: "must not be later than to" }]);
         });
 
         it("should let an explicit to on a later page override the frozen one", async () => {

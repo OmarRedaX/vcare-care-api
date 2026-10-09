@@ -15,6 +15,7 @@ const listMock = jest.spyOn(repo, "listAuditLogs");
 const SECRET = "unit-test-secret";
 const NOW = Date.parse("2026-04-15T12:00:00.000Z");
 const FROZEN_TO = "2026-04-15T12:00:00.000Z";
+const FROZEN_FROM = "2026-03-16T12:00:00.000Z";
 
 const entry = (id: number, createdAt = "2026-04-15T11:00:00.123Z"): AuditLog =>
     new AuditLog({ id, actorUserId: 303, actorRole: "admin", action: "doctor.approved", entityType: "doctor_profile", entityId: 21, requestId: null, metadata: {}, createdAt: new Date(createdAt) });
@@ -29,7 +30,7 @@ function setup() {
 }
 
 const cursor = (payload: unknown, secret = SECRET): string => encodeSignedCursor(payload as object, secret);
-const goodPayload: AuditCursorPayload = { t: "2026-04-10T10:00:00.123456Z", id: 77, to: FROZEN_TO };
+const goodPayload: AuditCursorPayload = { t: "2026-04-10T10:00:00.123456Z", id: 77, from: FROZEN_FROM, to: FROZEN_TO };
 const decode = (value: string | null): AuditCursorPayload => JSON.parse(Buffer.from((value ?? "").split(".")[0] ?? "", "base64url").toString("utf8")) as AuditCursorPayload;
 const failure = (promise: Promise<unknown>): Promise<unknown> => promise.then(() => undefined, (error: unknown) => error);
 const CURSOR_INVALID = { code: "ValidationFailed", status: 400, details: [{ field: "cursor", issue: "is invalid" }] };
@@ -74,6 +75,34 @@ describe("AuditService.list", () => {
         expect(listMock.mock.calls[0]?.[0].to.toISOString()).toBe("2026-04-12T00:00:00.000Z");
     });
 
+    it("should keep the cursor's frozen from when the request resends neither bound (window survives a 90-day from)", async () => {
+        const { service, now } = setup();
+        await service.list({ cursor: cursor({ ...goodPayload, from: "2026-01-15T12:00:00.000Z" }) });
+        expect(now).not.toHaveBeenCalled();
+        expect(listMock.mock.calls[0]?.[0].from.toISOString()).toBe("2026-01-15T12:00:00.000Z");
+    });
+
+    it("should let an explicit from win over the cursor's frozen one", async () => {
+        const { service } = setup();
+        await service.list({ cursor: cursor(goodPayload), from: "2026-04-01T00:00:00Z" });
+        expect(listMock.mock.calls[0]?.[0].from.toISOString()).toBe("2026-04-01T00:00:00.000Z");
+    });
+
+    it("should freeze an explicit from into the next cursor", async () => {
+        const { service } = setup();
+        listMock.mockResolvedValue([row(2), row(1)]);
+        const page = await service.list({ limit: 1, from: "2026-01-15T12:00:00Z" });
+        expect(decode(page.meta.nextCursor).from).toBe("2026-01-15T12:00:00.000Z");
+    });
+
+    it("should report a bad cursor together with the other cross-field details, sorted by field", async () => {
+        const { service } = setup();
+        const error = await failure(service.list({ cursor: "bad.cursor", entityId: 5, from: "2026-04-02T00:00:00Z", to: "2026-04-01T00:00:00Z" }));
+        expect(error).toMatchObject({ code: "ValidationFailed", details: [
+            { field: "cursor", issue: "is invalid" }, { field: "entityType", issue: "is required when entityId is given" }, { field: "from", issue: "must not be later than to" }] });
+        expect(listMock).not.toHaveBeenCalled();
+    });
+
     it("should not read the clock when only the cursor carries the window", async () => {
         const { service, now } = setup();
         await service.list({ cursor: cursor(goodPayload) });
@@ -101,7 +130,7 @@ describe("AuditService.list", () => {
         const page = await service.list({ limit: 2 });
         expect(page.items.map((item) => item.id)).toEqual([3, 2]);
         expect(page.meta).toMatchObject({ hasMore: true, count: 2 });
-        expect(decode(page.meta.nextCursor)).toEqual({ t: "2026-04-15T11:00:02.000002Z", id: 2, to: FROZEN_TO });
+        expect(decode(page.meta.nextCursor)).toEqual({ t: "2026-04-15T11:00:02.000002Z", id: 2, from: FROZEN_FROM, to: FROZEN_TO });
     });
 
     it("should freeze the effective to into the cursor when the request had none", async () => {
@@ -121,7 +150,7 @@ describe("AuditService.list", () => {
     it("should carry the cursor's frozen to into the next cursor on later pages", async () => {
         const { service, now } = setup();
         listMock.mockResolvedValue([row(2), row(1)]);
-        const page = await service.list({ limit: 1, cursor: cursor({ ...goodPayload, to: "2026-03-01T00:00:00.000Z" }) });
+        const page = await service.list({ limit: 1, cursor: cursor({ ...goodPayload, from: "2026-02-01T00:00:00.000Z", to: "2026-03-01T00:00:00.000Z" }) });
         expect(decode(page.meta.nextCursor).to).toBe("2026-03-01T00:00:00.000Z");
         expect(now).not.toHaveBeenCalled();
     });
@@ -210,8 +239,12 @@ describe("AuditService.list", () => {
             ["a string id", () => cursor({ ...goodPayload, id: "77" })],
             ["an unsafe integer id", () => cursor({ ...goodPayload, id: 2 ** 53 })],
             ["a missing to", () => cursor({ t: goodPayload.t, id: 77 })],
-            ["a missing id", () => cursor({ t: goodPayload.t, to: FROZEN_TO })],
-            ["a missing t", () => cursor({ id: 77, to: FROZEN_TO })],
+            ["a missing id", () => cursor({ t: goodPayload.t, from: FROZEN_FROM, to: FROZEN_TO })],
+            ["a missing t", () => cursor({ id: 77, from: FROZEN_FROM, to: FROZEN_TO })],
+            ["a missing from", () => cursor({ t: goodPayload.t, id: 77, to: FROZEN_TO })],
+            ["a from without milliseconds", () => cursor({ ...goodPayload, from: "2026-03-16T12:00:00Z" })],
+            ["a from that is not a valid instant", () => cursor({ ...goodPayload, from: "2026-13-45T00:00:00.000Z" })],
+            ["a body.mac.extra cursor (a third segment)", () => `${cursor(goodPayload)}.extra`],
             ["a to without milliseconds", () => cursor({ ...goodPayload, to: "2026-04-15T12:00:00Z" })],
             ["a to that is not a valid instant", () => cursor({ ...goodPayload, to: "2026-13-45T00:00:00.000Z" })],
             ["a to before 1970", () => cursor({ ...goodPayload, to: "1969-12-31T23:59:59.999Z" })],

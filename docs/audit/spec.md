@@ -37,7 +37,7 @@ precedent in [specialties/spec.md](../specialties/spec.md) and the signed cursor
 |---|---|
 | Route | `GET /api/audit-logs` (admin), newest first by `(created_at DESC, id DESC)` |
 | Filters | `actorUserId`, `action`, `entityType`, `entityId`, `from`, `to` (whitelisted; unknown query keys are `400`) |
-| Window | always time-bounded: `[from, to)`, defaults `to = now`, `from = to - 30 days`; the effective `to` is frozen into the cursor |
+| Window | always time-bounded: `[from, to)`, defaults `to = now`, `from = to - 30 days`; the effective `from` and `to` are frozen into the cursor |
 | Migration | `20261009120000_add_audit_logs_read_indexes` — the three read indexes on the partitioned parent |
 | Code | `src/app/audit/` (read module), `IsIsoDateTimeWithOffset` decorator in `lib/validation`, pure `parseIsoDateTimeWithOffset` in `pkg/utils` |
 
@@ -216,7 +216,7 @@ arrive as JS numbers through the pool's global int8 parser (as in every other mo
 Opaque, produced with `encodeSignedCursor` and read with `decodeSignedCursor` (HMAC-SHA256, constant-time compare,
 key `SERVICE_CLIENT_SECRET` — the same key and helper the verification queue cursor uses). Payload:
 ```json
-{ "t": "2026-04-15T11:59:59.123456Z", "id": 4821, "to": "2026-04-15T12:00:00.000Z" }
+{ "t": "2026-04-15T11:59:59.123456Z", "id": 4821, "from": "2026-03-16T12:00:00.000Z", "to": "2026-04-15T12:00:00.000Z" }
 ```
 - `t` is the last returned row's `created_at` at **full microsecond precision**, selected with
   `timestampCursorSelect(conn, "created_at", "cursor_timestamp")` (foundation fix #7), validated by
@@ -239,8 +239,8 @@ key `SERVICE_CLIENT_SECRET` — the same key and helper the verification queue c
 |---|---|---|
 | R1 | Newest first: rows are ordered `created_at DESC, id DESC`; the keyset predicate is `(created_at, id) < (cursorTs, cursorId)`, so rows sharing a `created_at` (every row of one transaction does) are neither skipped nor duplicated across pages | repository SQL; cursor |
 | R2 | The window is `created_at >= from AND created_at < to` (**`from` inclusive, `to` exclusive**) | repository SQL |
-| R3 | Effective `to` = `query.to`, else `cursor.to`, else `clock.now()` (ms). Effective `from` = `query.from`, else effective `to` minus 30 days. `from > to` → `400` (`field: "from"`); `from == to` → `200` with an empty page (no SQL executed) | service `resolveAuditWindow` (pure) |
-| R4 | **The effective `to` is frozen into every `nextCursor`**, so a client that omits `to` sees the same window on every page while the wall clock advances; a row inserted after page 1 never appears on page 2. Page 1 is the only call that reads the clock | service; cursor payload `to` |
+| R3 | Effective `to` = `query.to`, else `cursor.to`, else `clock.now()` (ms). Effective `from` = `query.from`, else `cursor.from`, else effective `to` minus 30 days. The default `to` is the application clock while rows are stamped by the database `NOW()`: with clock skew a just-written row can be absent from page 1 (accepted, like R14). `from > to` → `400` (`field: "from"`); `from == to` → `200` with an empty page (no SQL executed) | service `resolveAuditWindow` (pure) |
+| R4 | **The effective `from` and `to` are frozen into every `nextCursor`**, so a client that omits them sees the same window on every page while the wall clock advances; a row inserted after page 1 never appears on page 2. Page 1 is the only call that reads the clock | service; cursor payload `from`, `to` |
 | R5 | `entityId` without `entityType` → `400` (`field: "entityType"`). Reason: no index serves an `entity_id`-only filter, and an unindexed rare-id scan over the window breaks the performance rules | DTO/service cross-field check |
 | R6 | No span cap: an explicit window of any size (even 1970..9999) is accepted. The scan is bounded by pruning, the keyset `LIMIT`, and the pool `statement_timeout`; see §8 | none (deliberate) |
 | R7 | The page is `limit + 1` rows; `hasMore = rows > limit`; `nextCursor` is set from the last **returned** row only when `hasMore`; `count` = returned items | `buildPage`-style logic in the service (signed variant) |
@@ -265,7 +265,7 @@ The route is on the public listener only; there is no `/internal` counterpart. F
 
 | Code | HTTP | When |
 |---|---|---|
-| `ValidationFailed` | 400 | unknown query key; `limit`/`actorUserId`/`entityId` not a strict integer in range; `action`/`entityType` empty, too long, or containing NUL; `from`/`to` not ISO-8601 with offset; `from` later than effective `to`; `entityId` without `entityType`; bad, tampered, or stale cursor. `details[]` carries `field` and `issue` (no rejected values) |
+| `ValidationFailed` | 400 | unknown query key; `limit`/`actorUserId`/`entityId` not a strict integer in range; `action`/`entityType` empty, too long, or containing NUL; `from`/`to` not ISO-8601 with offset; `from` later than effective `to`; `entityId` without `entityType`; malformed, tampered, or no longer valid cursor. `details[]` carries `field` and `issue` (no rejected values) |
 | `Unauthorized` / `TokenExpired` | 401 | missing, invalid, or expired bearer token |
 | `Forbidden` | 403 | role is not `admin`, or token status is not `active` (including `suspended`) |
 | `RateLimited` | 429 | the 121st request in 60 s by one admin (`Retry-After`) |
@@ -468,7 +468,7 @@ Additive or clarifying edits to `contracts/openapi.yaml`, operation `listAuditLo
   (`from` inclusive, `to` exclusive); `to` defaults to now, `from` to 30 days before `to`; `from` later than `to` →
   `400 ValidationFailed` (`details[].field = "from"`); `from == to` is an empty page; `entityId` requires `entityType`
   (`400`, `details[].field = "entityType"`); the effective `to` is carried inside `meta.nextCursor` so later pages keep the
-  same window; a tampered or stale cursor → `400`; a `+` in an offset must be URL-encoded as `%2B`; the response is
+  same window; a malformed, tampered or no longer valid cursor (e.g. after a secret rotation) → `400`; a `+` in an offset must be URL-encoded as `%2B`; the response is
   `Cache-Control: no-store`.
 - **C2 — parameters.** `action` and `entityType`: add `minLength: 1` (an empty value is `400`, not "no filter"). `from` and
   `to`: add `maxLength: 40` and a description "ISO-8601 date-time with a UTC offset (`Z` or `±HH:MM`)".
@@ -482,7 +482,7 @@ After applying: run `../vcare-hub/scripts/sync-from-spoke.sh`; hub copies are ne
 ### 11.2 Decisions
 | # | Decision | Why | Rejected |
 |---|---|---|---|
-| A1 | **Bounds `[from, to)`**; effective `to` is frozen into a signed cursor `{ t, id, to }` | an exclusive upper bound plus a frozen value makes page 2 independent of the clock; `from` inclusive matches "starting at" | inclusive `to` (a row at exactly `now` is ambiguous and `to` could not be frozen cleanly); re-reading the clock per page (unstable pages) |
+| A1 | **Bounds `[from, to)`**; effective `from` and `to` are frozen into a signed cursor `{ t, id, from, to }` | an exclusive upper bound plus a frozen value makes page 2 independent of the clock; `from` inclusive matches "starting at" | inclusive `to` (a row at exactly `now` is ambiguous and `to` could not be frozen cleanly); re-reading the clock per page (unstable pages) |
 | A2 | **No span cap** | the contract declares none; pruning + keyset `LIMIT` + `statement_timeout` bound cost; a cap would make a legitimate "all history of one entity" query impossible | a 31-/92-day cap (reintroduces a client-visible limit the contract lacks) |
 | A3 | **`entityId` requires `entityType`** (`400`) | no index serves `entity_id` alone; accepting it would scan the window unbounded by an index | accept and filter on the created_at index (slow, unpredictable); add a fourth `entity_id` index (insert cost for a query nobody needs) |
 | A4 | **Signed cursor reusing `signed-cursor` + `SERVICE_CLIENT_SECRET`**; no new env var | the plain `encodeCursor` carries exactly two values and cannot carry `to`; the signed helper is the existing precedent, tamper → `400` is its contract; rotating the secret just invalidates open cursors | a new `AUDIT_CURSOR_SECRET` (new env, no benefit); extending `encodeCursor` to three values (touches every module's cursor) |
@@ -498,7 +498,7 @@ src/app/audit/
   entity/audit-log.entity.ts            plain class, constructor(Partial)
   repository/audit.repo.ts              AUDIT_LOG_COLUMNS, toEntity, listAuditLogsQuery(params, conn) [exported for EXPLAIN], listAuditLogs
   service/audit.service.ts              @injectable; resolveAuditWindow, cursor encode/decode, one repo call; no transaction
-  window.ts         pure resolveAuditWindow(now, from, to, cursorTo) -> { from, to, empty }
+  window.ts         pure resolveAuditWindow(now, from, to, cursorTo, cursorFrom?) -> { from, to, empty }
   controller/audit.controller.ts        validateQuery -> service.list -> sendSuccess(data, { meta })
   dto/audit.request.dto.ts              ListAuditLogsQueryDto
   dto/audit.response.dto.ts             AuditLogResponseDto.from(entity)

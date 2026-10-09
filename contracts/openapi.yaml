@@ -2760,10 +2760,13 @@ paths:
         clinical text, so it writes no audit row. `audit_logs` is partitioned by month, so every query is time-bounded: the
         window is `createdAt >= from AND createdAt < to` (`from` inclusive, `to` exclusive); `to` defaults to now and `from`
         defaults to 30 days before `to`. `from` later than `to` → `400 ValidationFailed` (`details[].field = "from"`);
-        `from` equal to `to` is an empty page. Both bounds are ISO-8601 with offset; a `+` in an offset must be URL-encoded
-        as `%2B` (a raw `+` is decoded to a space and fails with `400`). `entityId` requires `entityType` (else `400`,
-        `details[].field = "entityType"`). The effective `to` is carried inside `meta.nextCursor`, so later pages keep the
-        same window while the clock advances. A malformed, tampered or stale cursor → `400`. Unknown query keys → `400`.
+        `from` equal to `to` is an empty page. Both bounds are ISO-8601 with offset and are used at millisecond precision (finer
+        fractions are truncated); a `+` in an offset must be URL-encoded as `%2B` (a raw `+` is decoded to a space and fails with
+        `400`). The default `to` is read from the service clock, so a row stamped by a database clock running ahead of it can be
+        absent from the first page. `entityId` requires `entityType` (else `400`,
+        `details[].field = "entityType"`). The effective `from` and `to` are carried inside `meta.nextCursor`, so later pages keep the
+        same window while the clock advances (a `from` or `to` sent again wins). A malformed, tampered or no longer valid cursor
+        (for example after a secret rotation) → `400`. Unknown query keys → `400`.
         The response is `Cache-Control: no-store`.
       security:
         - bearerUser: []

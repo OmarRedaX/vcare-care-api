@@ -4,6 +4,7 @@ import type { Knex } from "knex";
  * The three read indexes of GET /api/audit-logs (audit spec 2.1), deferred by access decision D1 until the read exists.
  * On the partitioned parent: built on every existing partition (incl. audit_logs_default) and inherited by future ones.
  * Non-concurrent (impossible on a partitioned parent): lock_timeout bounds the SHARE-lock stall on the insert path.
+ * On a large table (> 5 M rows) do NOT run this as is: follow docs/runbook.md -> "Build the audit read indexes on a large table".
  */
 export async function up(knex: Knex): Promise<void> {
     await knex.raw(`SET LOCAL lock_timeout = '3s';`);

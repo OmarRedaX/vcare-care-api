@@ -16,13 +16,14 @@ import { resolveAuditWindow } from "../window";
 const ENTITY_TYPE_REQUIRED: ErrorDetail = { field: "entityType", issue: "is required when entityId is given" };
 
 function toCursorPayload(payload: unknown): AuditCursorPayload | undefined {
-    if (typeof payload !== "object" || payload === null || !("t" in payload) || !("id" in payload) || !("to" in payload)) return undefined;
-    const { t, id, to } = payload;
+    if (typeof payload !== "object" || payload === null || !("t" in payload) || !("id" in payload) || !("to" in payload) || !("from" in payload)) return undefined;
+    const { t, id, from, to } = payload;
     // Shape (microsecond precision) AND a real instant: Postgres would otherwise raise 22008 -> 500 for a validly signed impossible `t`.
     if (typeof t !== "string" || !AUDIT_CURSOR_TIMESTAMP_PATTERN.test(t) || parseIsoDateTimeWithOffset(t) === undefined) return undefined;
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) return undefined;
+    if (typeof from !== "string" || !AUDIT_CURSOR_TO_PATTERN.test(from) || parseIsoDateTimeWithOffset(from) === undefined) return undefined;
     if (typeof to !== "string" || !AUDIT_CURSOR_TO_PATTERN.test(to) || parseIsoDateTimeWithOffset(to) === undefined) return undefined;
-    return { t, id, to };
+    return { t, id, from, to };
 }
 
 /** Read side of the audit trail: one admin page = one indexed, time-bounded statement. Writes no audit row (spec R9). */
@@ -36,14 +37,22 @@ export class AuditService {
 
     async list(query: AuditListQuery): Promise<AuditLogPage> {
         const secret = this.env.SERVICE_CLIENT_SECRET;
-        const cursor = query.cursor === undefined ? undefined : decodeSignedCursor(query.cursor, secret, toCursorPayload);
-        // Every cross-field problem is reported at once, sorted by field (spec 3.1).
+        // Every cross-field problem (cursor included) is reported at once, sorted by field (spec 3.1).
         const details: ErrorDetail[] = [];
+        let cursor: AuditCursorPayload | undefined;
+        if (query.cursor !== undefined) {
+            try {
+                cursor = decodeSignedCursor(query.cursor, secret, toCursorPayload);
+            } catch (error) {
+                if (!isAppError(error) || error.code !== "ValidationFailed") throw error;
+                details.push(...error.details);
+            }
+        }
         if (query.entityId !== undefined && query.entityType === undefined) details.push(ENTITY_TYPE_REQUIRED);
         let window: AuditWindow | undefined;
         try {
             window = resolveAuditWindow(() => this.clock.now(), parseIsoDateTimeWithOffset(query.from), parseIsoDateTimeWithOffset(query.to),
-                cursor === undefined ? undefined : parseIsoDateTimeWithOffset(cursor.to));
+                cursor === undefined ? undefined : parseIsoDateTimeWithOffset(cursor.to), cursor === undefined ? undefined : parseIsoDateTimeWithOffset(cursor.from));
         } catch (error) {
             if (!isAppError(error) || error.code !== "ValidationFailed") throw error;
             details.push(...error.details);
@@ -56,8 +65,8 @@ export class AuditService {
         const hasMore = rows.length > limit;
         const page = rows.slice(0, limit);
         const last = page[page.length - 1];
-        // The effective `to` is frozen into the cursor so later pages keep the window while the clock advances.
-        const nextCursor = hasMore && last !== undefined ? encodeSignedCursor({ t: last.cursorTimestamp, id: last.entry.id, to: window.to.toISOString() }, secret) : null;
+        // The effective window is frozen into the cursor so later pages keep it while the clock advances.
+        const nextCursor = hasMore && last !== undefined ? encodeSignedCursor({ t: last.cursorTimestamp, id: last.entry.id, from: window.from.toISOString(), to: window.to.toISOString() }, secret) : null;
         return { items: page.map((row) => row.entry), meta: { nextCursor, hasMore, count: page.length } };
     }
 }

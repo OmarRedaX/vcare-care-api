@@ -136,6 +136,22 @@ COMMIT;
 Then run `node dist/worker.js --once audit-partitions` (exit 0) and confirm `audit_default_partition_rows` is 0. Record only the
 row count and the month in the incident.
 
+### Build the audit read indexes on a large table
+Migration `20261009120000_add_audit_logs_read_indexes` builds three indexes non-concurrently: each `CREATE INDEX` takes a `SHARE`
+lock on every partition and blocks all audited writes for the build (`lock_timeout 3s` only bounds how long it waits for the lock).
+Fine while the table is small; when `audit_logs` holds more than about 5 M rows, do not run it as is. Ship a replacement migration with
+`config = { transaction: false }` (a new migration, never an edit of the old one) that, for each of the three indexes, runs as the owner:
+```sql
+CREATE INDEX idx_audit_logs_created_at_id ON ONLY audit_logs (created_at DESC, id DESC);        -- parent only, instant, invalid until attached
+-- per partition (incl. audit_logs_default), one at a time, outside a transaction:
+CREATE INDEX CONCURRENTLY audit_logs_y2026m10_created_at_id_idx ON audit_logs_y2026m10 (created_at DESC, id DESC);
+ALTER INDEX idx_audit_logs_created_at_id ATTACH PARTITION audit_logs_y2026m10_created_at_id_idx;
+```
+Repeat for `idx_audit_logs_actor_user_id_created_at (actor_user_id, created_at DESC, id DESC)` and
+`idx_audit_logs_entity_type_entity_id_created_at (entity_type, entity_id, created_at DESC, id DESC)`. The parent index becomes valid when
+every partition's index is attached (`SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_audit_logs_created_at_id'::regclass`). A failed
+`CONCURRENTLY` build leaves an invalid index: drop it and retry that partition. Partitions created later inherit the parent indexes.
+
 ### Inspect an identity sync job
 ```sql
 SELECT id, kind, doctor_user_id, target_status, status, attempts, consecutive_failures,

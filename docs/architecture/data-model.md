@@ -645,8 +645,10 @@ The three `chk_audit_logs_actor_user_id`, `chk_audit_logs_entity_id_positive`, a
 checks turn `lib/audit` validation rules into database guarantees (the recorder itself caps metadata at 2 KB, ≤ 20
 flat scalar keys, no redacted key names).
 
-**Read indexes — deferred to the `audit` module** (decision D1, access spec §14.1: indexes exist only for a query in
-code). Its migration creates them on the partitioned parent (they cascade to every partition, including the default):
+**Read indexes — built by the `audit` module** (migration `20261009120000_add_audit_logs_read_indexes`; decision D1, access spec §14.1: indexes exist only for a query in
+code). Created on the partitioned parent (they cascade to every partition, including the default, and to partitions attached later). Non-concurrent: on a table
+larger than about 5 M rows use the runbook procedure "Build the audit read indexes on a large table" instead. Every `GET /api/audit-logs` query is bounded by
+`created_at >= from AND created_at < to` with application-computed bound parameters, so monthly partitions are pruned at plan time:
 ```sql
 -- GET /audit-logs?entityType=&entityId= newest first
 CREATE INDEX idx_audit_logs_entity_type_entity_id_created_at ON audit_logs (entity_type, entity_id, created_at DESC, id DESC);

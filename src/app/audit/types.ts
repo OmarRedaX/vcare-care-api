@@ -19,7 +19,7 @@ export interface ListAuditLogsParams {
     from: Date; to: Date; actorUserId?: number; action?: string; entityType?: string; entityId?: number;
     after?: AuditKeysetPosition; fetchLimit: number;
 }
-export interface AuditCursorPayload { t: string; id: number; to: string }
+export interface AuditCursorPayload { t: string; id: number; from: string; to: string }
 export interface AuditWindow { from: Date; to: Date; empty: boolean }
 export interface AuditClock { now(): number }
 
