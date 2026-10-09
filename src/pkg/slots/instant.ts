@@ -1,5 +1,5 @@
-import { DateTime, IANAZone } from "luxon";
-import { addDays, assertValidZone } from "./local-date";
+import { IANAZone } from "luxon";
+import { addDays, assertValidZone, utcMidnightMs } from "./local-date";
 import type { InstantEdge } from "./types";
 
 const MINUTE_MS = 60_000;
@@ -37,14 +37,18 @@ export function localInstant(date: string, minute: number, timezone: string, edg
     }
     const wallDate = minute === 1440 ? addDays(date, 1) : date;
     const wallMinute = minute === 1440 ? 0 : minute;
-    const midnight = DateTime.fromISO(wallDate, { zone: "utc" }).toMillis();
+    const midnight = utcMidnightMs(wallDate);
     const wall = midnight + wallMinute * MINUTE_MS;
 
     const zone = IANAZone.create(timezone);
     const before = zone.offset(wall - DAY_MS);
     const after = zone.offset(wall + DAY_MS);
+    if (before === after) {
+        // No transition inside wall +/- 1 day and |offset| < 24 h, so `wall - offset` lies in that window with the same offset.
+        return wall - before * MINUTE_MS;
+    }
     const candidates: number[] = [];
-    for (const offset of before === after ? [before] : [before, after]) {
+    for (const offset of [before, after]) {
         const instant = wall - offset * MINUTE_MS;
         if (zone.offset(instant) === offset && !candidates.includes(instant)) {
             candidates.push(instant);
