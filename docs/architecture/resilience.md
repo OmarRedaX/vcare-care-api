@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
-related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement]
+related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec]
 ---
 
 # Resilience
@@ -59,13 +59,14 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 |---|---|---|
 | 1 | 3 | durable job, alert after 15 min unsynced |
 | 2 | 2 (1 retry) | degrade |
-| 3 | as many as fit in ~6 s | durable job, no attempt cap, backoff capped at 60 s, alert after 3 consecutive failures |
-| 4 (reinstatement) | 3 | durable job (`kind='reinstatement'`), alert after 15 min unsynced ([ADR 0012](../adr/0012-doctor-reinstatement.md)) |
+| 3 | 3 (about 6 s worst case, 2 s per attempt) | durable job, no attempt cap, backoff capped at 60 s, alert after 3 consecutive failures |
+| 4 (reinstatement) | 3 | durable job (`kind='reinstatement'`), alert `IdentityReinstatementSyncPending` after 15 min unsynced ([ADR 0012](../adr/0012-doctor-reinstatement.md)); built 2026-10-09 |
 | contacts lookup (notifications) | 1 per outbox batch | outbox row stays `pending` with backoff — delivery delayed only |
 
-**Non-retryable answers:** Identity `409 InvalidStatusTransition` stops Case 1 and Case 3 retries immediately,
-sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises `IdentitySyncTransitionRejected`
-(a page for Case 3). Retrying cannot fix drift; an operator reconciles and requeues ([runbook.md](../runbook.md)).
+**Non-retryable answers:** Identity `409 InvalidStatusTransition`, and also `400`, `403` and `422` (the request itself is
+refused; `last_error_code=HTTP_<n>`), stop the retries of every kind immediately, set `identity_sync_status='failed'` (and
+the job `status='failed'`), and raise `IdentitySyncTransitionRejected` (a page for Case 3). `404`, `429`, `5xx`, network
+errors, a `401` after the one token refresh and a malformed `200` stay transient ([ADR 0021](../adr/0021-identity-sync-engine-module.md)). Retrying cannot fix drift; an operator reconciles and requeues ([runbook.md](../runbook.md)).
 
 ## Case 2 — cache and degrade
 - Read-through Redis `identity:user:<id>`, TTL 300 s (`HYDRATION_CACHE_TTL_SECONDS`); only misses call Identity.
@@ -75,19 +76,19 @@ sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises
   response still renders without names.
 - Hydration never runs on the booking path.
 
-## Cases 1 and 3 — durable retry jobs (`identity_sync_jobs`)
-- **Case 1 (built, verification 2026-10-08):** the job row is inserted in the decision transaction itself (including
-  when the inline attempt then succeeds), so there is no crash window and no sweeper. **Case 3/4 (planned):** the job
-  is inserted when inline attempts are exhausted; a sweeper covers the crash window (profiles with
-  `identity_sync_status='pending'` and no open job older than 60 s get a job).
-- The retrier loop runs in `care-worker` ([ADR 0008](../adr/0008-care-worker-component.md)) and polls `status='pending' AND next_attempt_at <= now()`. As built for
-  Case 1 it is a plain read: a session-scoped per-doctor advisory lock (shared with the inline path) plus a re-check of
+## Cases 1, 3 and 4 — durable retry jobs (`identity_sync_jobs`)
+- **All three kinds (Case 1 built 2026-10-08; Cases 3 and 4 built 2026-10-09):** the job row is inserted in the decision
+  transaction itself (including when the inline attempt then succeeds), so there is no crash window and no sweeper. One
+  engine (`identity-sync` module, [ADR 0021](../adr/0021-identity-sync-engine-module.md)) and one worker loop serve all
+  kinds; the loop does not branch on kind, the per-kind rules live in `sync-policy.ts`.
+- The retrier loop runs in `care-worker` ([ADR 0008](../adr/0008-care-worker-component.md)) and polls `status='pending' AND next_attempt_at <= now` (the engine's injected clock), `suspension` jobs first so a slow tick never queues the security-critical kind behind the others. It is a plain read: a session-scoped per-doctor advisory lock (shared with the inline path) plus a re-check of
   the job and its `next_attempt_at` inside the lock mean two workers never send for one doctor at once and never retry
   before a backoff elapses (a double-send would be harmless anyway, Identity's PATCH is idempotent). Worker retries make one attempt per job per tick and build no response view.
 - On success: job `succeeded`, `doctor_profiles.identity_sync_status='synced'`, audit `identity_sync.synced`
   (actor role `system`), caches invalidated (a newly synced approved doctor becomes searchable).
 - On transient failure: `attempts++`, `consecutive_failures++`, `next_attempt_at = now + min(backoff, cap)`
-  (as built `IDENTITY_SYNC_RETRY_CAP_SECONDS=60` for Case 1; Case 3 cap 60 s).
+  (`IDENTITY_SYNC_RETRY_CAP_SECONDS=60`, all kinds). `attempts` counts the Identity calls actually made. Suspension has no attempt cap and no time-based alert; verification and reinstatement raise a ticket once after `IDENTITY_SYNC_ALERT_AFTER_SECONDS` (900 s).
+- The Identity-bound `reason` is clamped to 500 code points and is never blank (DTO `NotBlank`; the engine falls back to the job kind).
 - A newer decision for the same doctor supersedes the open job (`superseded`) in the same transaction.
 - Jobs survive restarts because they live in Postgres, not in memory.
 
@@ -95,8 +96,9 @@ sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises
 | Alert | Threshold | Severity |
 |---|---|---|
 | `IdentitySuspensionSyncFailing` | a Case 3 job with `consecutive_failures >= 3` | page |
-| `IdentitySyncTransitionRejected` | any job moved to `failed` (Identity 409) | page |
+| `IdentitySyncTransitionRejected` | any job moved to `failed` (Identity 409, 400, 403 or 422) | page |
 | `IdentityApprovalSyncPending` | a Case 1 job pending > 15 min | ticket |
+| `IdentityReinstatementSyncPending` | a Case 4 job pending > 15 min | ticket |
 | `IdentityHydrationDegraded` | degraded outcomes > 5 % of hydration calls over 10 min | ticket |
 | `SlotComputationLatencyHigh` | slots p95 > 300 ms for 10 min | ticket |
 | `SearchLatencyHigh` | search p95 > 400 ms for 10 min | ticket |
@@ -104,7 +106,7 @@ sets `identity_sync_status='failed'` (and the job `status='failed'`), and raises
 | `AuditWriteFailures` | any audit insert failure | page |
 | `HealthCheckFailing` | `/api/health/ready` 503 for 2 min | page |
 
-**As built for Case 1 (verification, 2026-10-08):** `IdentitySyncTransitionRejected` is an `error` log line (`IdentitySyncTransitionRejected`, with `jobId` and `profileId`, no reason or body) written when the job and profile move to `failed`; `IdentityApprovalSyncPending` is an `error` log line written once, by the first retry attempt that crosses `IDENTITY_SYNC_ALERT_AFTER_SECONDS` (900 s) after the job was created. Alert rules match those log events; a metric is not emitted. `UploadVerificationFailureSpike` is described in [file-handling.md](./file-handling.md) and [deployment.md](./deployment.md).
+**As built for Case 1 (verification, 2026-10-08):** `IdentitySyncTransitionRejected` is an `error` log line (`IdentitySyncTransitionRejected`, with `jobId` and `profileId`, no reason or body) written when the job and profile move to `failed`; `IdentityApprovalSyncPending` is an `error` log line written once, by the first retry attempt that crosses `IDENTITY_SYNC_ALERT_AFTER_SECONDS` (900 s) after the job was created. **Admin-doctors (2026-10-09)** reuses the engine: every alert line now carries `kind`; `IdentityReinstatementSyncPending` follows the Case 1 rule; `IdentitySuspensionSyncFailing` (`error` log `{ kind, jobId, profileId, consecutiveFailures, lastErrorCode }`) is written when `consecutive_failures` reaches 3 and again at 13, 23, ... (one engine attempt = one count; with the 10 s poll the first page lands about 20-30 s after the suspension). The declared `503 IdentityUnavailable` response is logged as `warn handled_error` (status and code, no stack), never `unhandled_error`, so it does not trip `unhandled_error` rules. Alert rules match those log events; a metric is not emitted (the counters `doctor_suspension_total{outcome}` and `doctor_reinstatement_total{outcome}` exist for dashboards). `UploadVerificationFailureSpike` is described in [file-handling.md](./file-handling.md) and [deployment.md](./deployment.md).
 
 Runtime alerts added 2026-09-15 (`OutboxLagHigh`, `OutboxDeadJobs`, `DbReplicaLagHigh`, `WorkerHeartbeatStale`,
 `AuditPartitionMissing`, `IdentityReinstatementSyncPending`, `RateLimiterDegraded`, `AvailabilityBudgetBurn`):

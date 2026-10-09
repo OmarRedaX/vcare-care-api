@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [runbook, operations, on-call, care]
-related: [resilience, integration, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [resilience, integration, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # Runbook — care-service
@@ -15,7 +15,7 @@ Task-oriented doc for on-call. The foundation is built (2026-09-28): health prob
 under "Boot and shutdown log lines" are live. The access base is built (2026-10-02): user-token verification against
 Identity's JWKS, `authorize`, the boot route assertion, `audit_logs` with the `audit-partitions` worker loop, and the
 owner/app database roles — their alerts (`IdentityJwksStale`, `AuditPartitionMissing`, `AuditWriteFailures`) and
-tasks below are live. Verification is built (2026-10-08): the `identity-sync` and `upload-intent-purge` worker loops, the Case 1 alerts (`IdentityApprovalSyncPending`, `IdentitySyncTransitionRejected`), `UploadVerificationFailureSpike`, and the sync-job and upload-intent queries below are live. Other business alerts and the SQL for module tables are the intended shape once those modules exist.
+tasks below are live. Verification is built (2026-10-08): the `identity-sync` and `upload-intent-purge` worker loops, the Case 1 alerts (`IdentityApprovalSyncPending`, `IdentitySyncTransitionRejected`), `UploadVerificationFailureSpike`, and the sync-job and upload-intent queries below are live. Admin doctors is built (2026-10-09): suspension (Case 3) and reinstatement (Case 4) run through the same `identity-sync` loop, with the `IdentitySuspensionSyncFailing` and `IdentityReinstatementSyncPending` alerts; the declared `503 IdentityUnavailable` is logged as `warn handled_error` (not an `unhandled_error`). Other business alerts and the SQL for module tables are the intended shape once those modules exist.
 
 > **Clinical data never leaves the system.** Tickets, chat, and incident notes carry **ids, statuses, and
 > request ids only** — never complaint text, record contents, names, object keys, presigned URLs, or tokens. Admin DB access
@@ -162,6 +162,7 @@ incident with the job id and request id only.
 `node dist/worker.js --once identity-sync` retries every due job of any kind (Case 1, Case 3, Case 4) once, suspensions first; `--once upload-intent-purge` closes expired open intents (deleting their quarantine objects) and removes intent rows older than 7 days. Both need the worker's normal env (`DATABASE_URL`, Identity and storage variables), use their own pool, and exit 0 on success. `upload-intent-purge` exits 1 (`worker_once_incomplete`) when another worker holds its singleton lock or a storage delete failed; rerun after the cause clears.
 
 ### Move or cancel flagged consultations after a suspension
+Until the `consultations` module exists, suspension flags nothing (a no-op port returns `flaggedConsultationIds: []`); this task applies once it does.
 1. List the queue: `GET /api/consultations?needsAdminFollowup=true&scope=upcoming` as an admin (admin view has no clinical fields).
 2. For each consultation either reschedule to another doctor's flow (patient rebooks) or cancel on behalf:
    `PATCH /api/consultations/{id}/cancel` with `Idempotency-Key` and `{"reason":"Doctor unavailable"}`.

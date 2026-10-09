@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [integration, identity, service-token, case-1, case-2, case-3, case-4, notifications]
-related: [resilience, rbac, runbook, adr-0004-cross-service-failure-policies, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, future, hub-adr-0006-doctor-account-status-via-care-only, hub-adr-0009-doctor-reinstatement-via-care, hub-adr-0010-notification-contact-lookup]
+related: [resilience, rbac, runbook, adr-0004-cross-service-failure-policies, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec, future, hub-adr-0006-doctor-account-status-via-care-only, hub-adr-0009-doctor-reinstatement-via-care, hub-adr-0010-notification-contact-lookup]
 ---
 
 # Cross-Service Integration (Care → Identity)
@@ -125,12 +125,14 @@ sequenceDiagram
     participant DB as Care DB
     participant ID as Identity
     A->>C: PATCH /admin/doctors/204/suspend {reason}
-    alt already suspended
+    alt already suspended and synced
         C-->>A: 200 no-op (current state)
+    else already suspended, sync pending or failed
+        C-->>A: 503 IdentityUnavailable (no-op re-report, same body)
     else not approved + synced
         C-->>A: 409 InvalidTransition
     end
-    C->>DB: BEGIN; suspended_at, suspension_reason, identity_sync_status='pending';<br/>flag future booked/waiting consultations needs_admin_followup;<br/>audit doctor.suspended; COMMIT
+    C->>DB: BEGIN; suspended_at, suspension_reason, identity_sync_status='pending';<br/>flag future booked/waiting consultations (no-op port today) needs_admin_followup;<br/>INSERT identity_sync_jobs (kind=suspension); audit doctor.suspended; COMMIT
     Note over C: from here no bookings and no doctor actions in Care
     loop inline attempts for ~6 s
         C->>ID: PATCH /internal/users/204/status {status: suspended, reason, actorUserId}
@@ -139,10 +141,10 @@ sequenceDiagram
         C->>DB: identity_sync_status='synced'
         C-->>A: 200 SuspensionResult
     else transient failures
-        C->>DB: INSERT identity_sync_jobs (kind=suspension) — retried forever, backoff ≤ 60 s
+        C->>DB: job stays pending — retried forever by the identity-sync loop, backoff ≤ 60 s
         C-->>A: 503 IdentityUnavailable, suspension: "applied-locally, session-revocation-pending"
         Note over C: alert IdentitySuspensionSyncFailing (page) after 3 consecutive failures
-    else 409 InvalidStatusTransition
+    else 409 InvalidStatusTransition, or 400 / 403 / 422
         C->>DB: identity_sync_status='failed'; stop retrying; keep local suspension
         C-->>A: 503 IdentityUnavailable (data.identitySyncStatus=failed)
         Note over C: page on-call immediately (IdentitySyncTransitionRejected)
@@ -150,11 +152,12 @@ sequenceDiagram
 ```
 - **Never report a suspension as complete before Identity confirms.** The admin UI must show that sessions are not
   yet revoked while the response is 503.
-- "Until it succeeds" covers transient failures only (network, timeout, 429, 5xx, one 401 token refresh).
+- "Until it succeeds" covers transient failures only (network, timeout, 404, 429, 5xx, one 401 token refresh, a malformed 200). An Identity `409 InvalidStatusTransition`, `400`, `403` or `422` is permanent (the request itself is refused): job and profile `failed`, page, no retry, local suspension kept.
+- **As built (admin-doctors, 2026-10-09; [ADR 0021](../adr/0021-identity-sync-engine-module.md), [admin-doctors spec](../admin-doctors/spec.md)):** the `suspension` job row is inserted in the decision transaction (no sweeper, no crash window). The shared `identity-sync` engine serves all three kinds from one loop and lists suspension jobs first. A suspend on an already-suspended doctor answers `200` only when `identity_sync_status='synced'`, otherwise the same `503` (a blind retry never reads as confirmation). Suspend while a reinstatement is unsynced is `409 InvalidTransition`. The Identity-bound `reason` is clamped to 500 code points and never blank (`NotBlank` DTOs; the engine falls back to the job kind). The declared `503` is logged as `warn handled_error`, not `unhandled_error`. The consultation flag sits behind a no-op port until `consultations` exists.
 
 ## Case 4 — Reinstatement restores the account (retry, report pending)
 [ADR 0012](../adr/0012-doctor-reinstatement.md), hub ADR 0009. **Provider change first:** Identity's internal status
-route must accept `suspended → active` (today it refuses it).
+route must accept `suspended → active`; it does for doctor targets (Identity ADR 0025). **Built 2026-10-09 (`admin-doctors`).**
 
 ```mermaid
 sequenceDiagram
@@ -163,12 +166,14 @@ sequenceDiagram
     participant DB as Care DB
     participant ID as Identity
     A->>C: PATCH /admin/doctors/204/reinstate {reason}
-    alt not suspended (already active and synced)
+    alt not suspended, no unsynced reinstatement
         C-->>A: 200 no-op
+    else not suspended, latest reinstatement job pending or failed
+        C-->>A: 202 { identitySync: "pending" or "failed" } (no-op re-report)
     else suspension not synced
         C-->>A: 409 InvalidTransition
     end
-    C->>DB: BEGIN; suspended_at=NULL, suspension_reason=NULL, identity_sync_status='pending';<br/>audit doctor.reinstated; COMMIT (follow-up flags stay)
+    C->>DB: BEGIN; suspended_at=NULL, suspension_reason=NULL, identity_sync_status='pending';<br/>INSERT identity_sync_jobs (kind=reinstatement); audit doctor.reinstated; COMMIT (follow-up flags stay)
     Note over C: doctor still unbookable (sync pending)
     loop up to 3 attempts, 2 s timeout, backoff
         C->>ID: PATCH /internal/users/204/status {status: active, reason, actorUserId}
@@ -177,15 +182,17 @@ sequenceDiagram
         C->>DB: identity_sync_status='synced'; invalidate caches
         C-->>A: 200
     else transient failures exhausted
-        C->>DB: INSERT identity_sync_jobs (kind=reinstatement)
+        C->>DB: job stays pending (identity-sync loop retries)
         C-->>A: 202 { identitySync: "pending" }
         Note over C: alert IdentityReinstatementSyncPending after 15 min
-    else 409 InvalidStatusTransition
+    else 409 InvalidStatusTransition, or 400 / 403 / 422
         C->>DB: identity_sync_status='failed'
         C-->>A: 202 { identitySync: "failed" }
         Note over C: page (IdentitySyncTransitionRejected)
     end
 ```
+
+The `202` carries `identitySync` as a top-level sibling of `data` (unlike Case 1). Reinstate never returns `503`.
 
 ## Notification contact lookup (degrade by delay)
 Hub ADR 0010, [ADR 0011](../adr/0011-notification-outbox-and-reminders.md). **Provider change first.**
@@ -196,16 +203,16 @@ stay `pending` with backoff; users receive the email later. Unknown or non-activ
 listener never calls this endpoint and its service token never requests the scope.
 
 ## Failure policy table
-| | Case 1 | Case 2 | Case 3 |
+| | Case 1 | Case 2 | Case 3 (Case 4 differs as noted) |
 |---|---|---|---|
 | Endpoint | `PATCH /internal/users/:id/status` → `active`/`rejected`/`pending` | `GET /internal/users?ids=` | `PATCH /internal/users/:id/status` → `suspended` |
 | Criticality | required for the doctor to work | cosmetic | security-critical |
 | Policy (`x-failure-policy`) | `retry-report-pending` | `degrade` | `must-not-degrade` |
 | Local effect first | decision + `pending` committed | none | suspension + flags committed |
 | Per-attempt timeout | 2 s | 2 s | 2 s |
-| Inline attempts | 3 | 2 (1 retry) | ~6 s |
+| Inline attempts | 3 | 2 (1 retry) | 3 (~6 s worst case); Case 4: 3 |
 | After inline failure | 202 `identitySync: pending`; durable job | cache or null fields; 200 | 503 `IdentityUnavailable`; durable job, no attempt cap |
-| Non-retryable Identity 409 | `failed`, alert, 202 `identitySync: failed` | n/a | `failed`, page immediately, 503 |
+| Non-retryable Identity answer (409, 400, 403, 422) | `failed`, alert, 202 `identitySync: failed` | n/a | `failed`, page immediately, 503 (Case 4: 202 `failed`, page) |
 | Alert | after 15 min unsynced | degraded ratio | after 3 consecutive failures (page) |
 | Gate | bookable only when approved **and** synced | — | "complete" only when confirmed |
 
@@ -215,7 +222,7 @@ Rationale and rejected alternatives: [ADR 0004](../adr/0004-cross-service-failur
 The former known gap (a doctor status change made directly in Identity not reaching Care) is **closed** by hub
 ADR 0006 (`../vcare-hub/adr/0006-doctor-account-status-via-care-only.md`, 2026-09-15): Identity's
 `PATCH /api/users/:id/status` refuses doctor targets with `403 Forbidden`, so every doctor account-status change
-is requested by Care through Cases 1 and 3, and `doctor_profiles.suspended_at` / `identity_sync_status` always move
+is requested by Care through Cases 1, 3 and 4, and `doctor_profiles.suspended_at` / `identity_sync_status` always move
 with it. No Care contract change is required.
 
 - Care still excludes non-active doctors from search using fresh Case 2 `status` as defence in depth.

@@ -3,12 +3,12 @@ title: admin-doctors — Spec
 owner: care-team
 service: care-service
 module: admin-doctors
-status: ready
-version: 0.2.0
+status: implemented
+version: 1.0.0
 diataxis: reference
 last_verified: 2026-10-09
 tags: [spec, admin-doctors, suspension, reinstatement, identity-sync, case-3, case-4, worker, audit]
-related: [admin-doctors-brainstorm, verification-spec, doctors-spec, schedules-spec, integration, resilience, runbook, adr-0004-cross-service-failure-policies, adr-0012-doctor-reinstatement, adr-0017-generic-helpers-and-transaction-scoping]
+related: [admin-doctors-brainstorm, admin-doctors-tasks, admin-doctors-manual-qa, adr-0021-identity-sync-engine-module, verification-spec, doctors-spec, schedules-spec, integration, resilience, runbook, adr-0004-cross-service-failure-policies, adr-0012-doctor-reinstatement, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -73,8 +73,8 @@ Column writes per transition (all through the repository functions of §3.5):
 | suspend (commit) | `suspended_at = now()`, `suspended_by = admin`, `suspension_reason = reason`, `identity_sync_status = 'pending'`, `updated_at` | older pending → `superseded`; new row `kind='suspension'`, `target_status='suspended'`, `reason`, `actor_user_id = admin`, `request_id`, `status='pending'`, `next_attempt_at = now` |
 | reinstate (commit) | `suspended_at/by/reason = NULL`, `identity_sync_status = 'pending'`, `updated_at` | same, `kind='reinstatement'`, `target_status='active'` |
 | Identity confirms | `identity_sync_status = 'synced'` | `succeeded`, `succeeded_at`, `consecutive_failures = 0` |
-| Identity 409 | `identity_sync_status = 'failed'` | `failed`, `last_error_code='InvalidStatusTransition'` |
-| transient | — | `attempts += n`, `consecutive_failures += 1`, `last_error_code`, `next_attempt_at` |
+| Identity 409 / 400 / 403 / 422 | `identity_sync_status = 'failed'` | `failed`, `last_error_code='InvalidStatusTransition'` or `HTTP_<n>` |
+| transient | — | `attempts += attemptsMade`, `consecutive_failures += 1`, `last_error_code`, `next_attempt_at` |
 
 `suspended_by` is cleared on reinstate so no stale actor remains; history lives in `audit_logs` (who/when) and the job
 rows (reason).
@@ -116,7 +116,7 @@ Request (`SuspendDoctorDto`, unknown properties rejected, body required):
 | Field | Rule |
 |---|---|
 | path `doctorUserId` | `@ToInt() @IsInt() @Min(1)` (`DoctorUserIdParamsDto`) |
-| `reason` | `@IsString() @CodePointLength(3, 2000) @NoControlCharacters("all")` |
+| `reason` | `@IsString() @CodePointLength(3, 2000) @NoControlCharacters("all") @NotBlank()` (whitespace-only is `400`, see §12) |
 
 Responses:
 
@@ -124,8 +124,8 @@ Responses:
 |---|---|---|
 | `200` | `{ success: true, data: SuspensionResult }` — `{ doctorUserId, suspendedAt, identitySyncStatus: "synced", flaggedConsultationIds }` | Suspension committed **and** Identity confirmed; **or** the doctor was already suspended **and** `identity_sync_status='synced'` (no-op, §3.2.1) |
 | `503` | `SuspensionPending`: `{ success: false, error: { code: "IdentityUnavailable", message: "Suspension applied locally; session revocation is pending", details: [], requestId }, suspension: "applied-locally, session-revocation-pending", data: SuspensionResult }` with `data.identitySyncStatus` `pending` or `failed` | Committed locally, Identity not (yet) confirmed; also returned for an already-suspended doctor whose sync is `pending`/`failed` (S6). `data` is **always** present (required after the contract edit) |
-| `400` `ValidationFailed` | envelope | bad path id, missing/short/long reason, control characters, unknown property |
-| `401` `Unauthorized` / `TokenExpired`, `403` `Forbidden`, `404` `NotFound` (no live profile for `doctorUserId`), `409` `InvalidTransition`, `429` `RateLimited`, `500` `InternalError` | envelope | as in §6 |
+| `400` `ValidationFailed` | envelope | bad path id, missing/short/long/blank reason, control characters, unknown property |
+| `401` `Unauthorized` / `TokenExpired`, `403` `Forbidden`, `404` `NotFound` (no live profile for `doctorUserId`), `409` `InvalidTransition` (or `Conflict` + `Retry-After: 1`, in-flight duplicate key), `422` `IdempotencyConflict`, `429` `RateLimited`, `500` `InternalError` | envelope | as in §6 |
 
 `flaggedConsultationIds` comes from the port (§3.4): `[]` today. `suspendedAt` is the committed `suspended_at`.
 Controller maps the service outcome: `confirmed` → `sendSuccess(200, SuspensionResultResponseDto.from(view))`; otherwise
@@ -301,9 +301,9 @@ Intentional behavior changes inside the extraction (each has its own test): (a) 
 
 | Identity outcome | Job | Profile `identity_sync_status` | Audit (actor: admin when inline, `system` from the worker) | Log |
 |---|---|---|---|---|
-| `applied` | `succeeded`, `succeeded_at`, `consecutive_failures=0`, `attempts += n` | `synced` | `identity_sync.synced` `{ jobId }` | — |
-| `rejected-transition` (409) | `failed`, `last_error_code='InvalidStatusTransition'`, `attempts += n` | `failed` | `identity_sync.failed` `{ jobId }` | `error` `IdentitySyncTransitionRejected` `{ code, kind, jobId, profileId }` |
-| `transient` | `attempts += n`, `consecutive_failures += 1`, `last_error_code`, `next_attempt_at = now + backoffMs(attempts_before, random, cap)` | unchanged (`pending`) | `identity_sync.pending` `{ jobId }` only when `attempts_before = 0` | kind policy alerts (§5.3) |
+| `applied` | `succeeded`, `succeeded_at`, `consecutive_failures=0`, `attempts += attemptsMade` | `synced` | `identity_sync.synced` `{ jobId }` | — |
+| `rejected-transition` (409) or `permanent` (400, 403, 422) | `failed`, `last_error_code='InvalidStatusTransition'` or `HTTP_<n>`, `attempts += attemptsMade` | `failed` | `identity_sync.failed` `{ jobId }` | `error` `IdentitySyncTransitionRejected` `{ code, kind, jobId, profileId }` |
+| `transient` | `attempts += attemptsMade`, `consecutive_failures += 1`, `last_error_code`, `next_attempt_at = now + backoffMs(attempts_before, random, cap)` | unchanged (`pending`) | `identity_sync.pending` `{ jobId }` only when `attempts_before = 0` | kind policy alerts (§5.3) |
 
 A crash or DB error after Identity answered `applied` leaves the job `pending`; the worker repeats the idempotent Identity call
 (`same status → 200 no-op`) and converges. `last_error_code` stores the HTTP status or error class, never a body.
@@ -329,7 +329,7 @@ follow the existing ticket/page rule in `resilience.md`).
 
 | Code | HTTP | When (this module) |
 |---|---|---|
-| `ValidationFailed` | 400 | bad `doctorUserId`; `reason` missing, < 3 or > 2000 code points, control characters; unknown property |
+| `ValidationFailed` | 400 | bad `doctorUserId`; `reason` missing, < 3 or > 2000 code points, control characters, whitespace-only; unknown property |
 | `Unauthorized` / `TokenExpired` | 401 | missing, invalid or expired bearer token |
 | `Forbidden` | 403 | caller is not `admin`, or the admin token's account state is not `active` |
 | `NotFound` | 404 | no live `doctor_profiles` row for `doctorUserId` (also: the id belongs to a non-doctor or a soft-deleted profile) |
@@ -456,7 +456,24 @@ Edit `contracts/openapi.yaml` before any code:
 ### Platform changes required (/system-design)
 None. The alert names used here already exist in the hub observability table; Identity's 500-character `reason` limit is unchanged.
 
-## Appendix A — documentation deltas for `/update-docs`
+## 12. As-built notes (2026-10-09, `feature/admin-doctors` HEAD f8e4fa6)
+
+As built and verified 2026-10-09: `npm test` 103 suites / 1824 tests green, DB integration green (`tests/integration/admin-doctors.test.ts` 67 tests), manual QA 155 pass / 0 fail ([manual-qa.md](./manual-qa.md)), code review clean (review file removed). Where this section differs from §1-§11, **this section is the as-built behavior**; the sections above are kept as the design record (version 1.0.0 supersedes 0.2.0). `contracts/openapi.yaml` already matches and `/update-docs` made no contract change.
+
+| # | As built | Design text it refines |
+|---|---|---|
+| A1 | **Permanent Identity answers end the job (owner decision after review, 2026-10-09).** `IdentityClient.setUserStatus` returns outcome `permanent` for HTTP `400`, `403`, `422`; the engine treats it exactly like the `409` rejection: job and profile `failed`, `last_error_code=HTTP_<n>`, `IdentitySyncTransitionRejected` page `{ code, kind, jobId, profileId }`, no further attempt, local state kept. Applies to all three kinds. `404`, `429`, `5xx`, network errors, a `401` after the one token refresh and a malformed `200` stay transient. Suspend then answers `503` with `data.identitySyncStatus='failed'`, reinstate `202 identitySync:"failed"`. | D1, BR4, BR5, §5.2, §5.3 |
+| A2 | **Reasons are never blank.** `SuspendDoctorDto`, `ReinstateDoctorDto` and verification's `ApplicationRejectDto` use `@NotBlank()` (`src/lib/validation/string-decorators.ts`, `\S` test, so U+3000, U+00A0, U+FEFF count as whitespace); `ApplicationApproveDto.note`, when sent, is empty or has a non-whitespace character. The engine sends `job.kind` when the stored reason is blank or blank after the 500 code point clamp. Reason: Identity answers a blank reason with a non-retryable `400`. | §3.2 request table, S4, BR19 |
+| A3 | **`attempts` records Identity calls actually made.** `setUserStatus` returns `attemptsMade` on every outcome; the engine adds it to `identity_sync_jobs.attempts` (it was the requested count). The backoff index and the runbook "Inspect a job" column follow it. | §5.2 (`attempts += n`) |
+| A4 | **`syncNow` answers from the re-read profile.** When the lock callback finds the job already settled or superseded (e.g. the worker confirmed it first) it returns "lock was ours", so the inline caller reads the profile and answers `200`/confirmed instead of a false `503`/`202 pending`. Only a refused lock reports `locked:false` (pending). | §3.2.1 step 3, §5.1 `syncNow` row |
+| A5 | **Handled `503` is a `warn`.** `errorHandler` logs a declared 5xx (`IdentityUnavailable`) as `warn handled_error { requestId, route, status, code }` with no stack, not `error unhandled_error`; other 5xx are unchanged. Alert rules on `unhandled_error` therefore ignore the designed `SuspensionPending` response (and every blind-retry `503`). | §3.2, §7.3 |
+| A6 | **Redaction.** `suspensionReason` is a redacted log key. `reason` was deliberately NOT added (disputed in review): five operational log fields use that exact key for short non-PII enum values; the admin text is never logged under it (S2). | §7.3 |
+| A7 | **Contract wording.** The routes implement `Idempotency-Key` (optional), `422 IdempotencyConflict` and the in-flight `409 Conflict` + `Retry-After: 1`; the contract now declares them (`IdempotencyKeyOptional`, `422`, and the `DoctorTransitionConflict` response, which documents both `InvalidTransition` and the in-flight `Conflict`). The earlier open note in `tasks.md` is closed. | §3.1, §6 |
+| A8 | **Service surface.** `IdentitySyncService.findLatestJob(profileId, conn)` (wrapping the repository's `findLatestSyncJob`) is what `AdminDoctorsService` calls for the S6 reinstate no-op; `AdminDoctorsService` has no direct dependency on the identity-sync repository. `reinstatedAt` for a no-op is `timing.now()`. The engine stamps `updated_at` from `SyncTiming` on transient failures so the 15-minute alert follows the injected clock. | §3.3.1, §5.1 |
+| A9 | **S6 / S7 as decided and tested:** suspend on an already-suspended doctor is `200` only when `identity_sync_status='synced'`, else the same `503`; reinstate on a not-suspended doctor whose latest job is a `reinstatement` still `pending`/`failed` is `202`; suspend while a reinstatement is unsynced stays `409 InvalidTransition` (the profile is not suspended and not `synced`). | S6, S7, BR7, BR13 |
+| A10 | **Unverified against real Identity.** All tests and QA run against a contract-compliant fake; real Identity accepts `suspended -> active` for doctor targets (Identity ADR 0025) but its internal-users module may not be deployed (a `404` is transient and keeps retrying). The consultation flag is a no-op port (`flaggedConsultationIds = []`) until `consultations` exists. | §5, §3.4 |
+
+## Appendix A — documentation deltas for `/update-docs` (all applied 2026-10-09)
 
 `docs/service-card.md` **will need updating** (two live admin endpoints, new module `identity-sync`, Case 3/4 now built, suspension/reinstatement jobs; the hub copy is refreshed only by `../vcare-hub/scripts/sync-from-spoke.sh`).
 Also: new ADR `0021-identity-sync-engine-module.md` (shared engine, kind policy, `SyncTiming`; no new dependency); `architecture/integration.md` (Case 3/4: job inserted in the decision transaction, sweeper removed, 503 `failed` data, Q1 outcome), `architecture/resilience.md` (durable-jobs section, alert table: `IdentityReinstatementSyncPending`, suspension re-page rule), `architecture/api.md` and `rbac.md` (reinstate no longer "planned"), `architecture/data-model.md` (`identity_sync_jobs` owner module), `architecture/overview.md` (module map: `admin-doctors`, `identity-sync`), `runbook.md` (Case 3 and Case 4 alert rows, "Inspect a job" now covers all kinds, `--once identity-sync` retries every due job of any kind), `docs/INDEX.md`, `docs/system-design.md` router. ADR 0012's "history lives in `audit_logs`" is refined by S2 (reason text lives in job rows and `suspension_reason`, audit has `reasonLength`) — recorded in ADR 0021, ADR 0012 is not rewritten.

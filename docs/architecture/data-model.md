@@ -657,8 +657,8 @@ CREATE INDEX idx_audit_logs_created_at_id ON audit_logs (created_at DESC, id DES
 ```
 
 ## `identity_sync_jobs`
-Durable retry for Integration Cases 1, 3, and 4 (restarts do not lose them). Polled by `care-worker` (`identity-sync` loop). **Built** by verification (migration `20261007120200`) for `kind='verification'` only; the job row is inserted in the **decision transaction** (including the inline-success path), and the worker ignores `suspension` and `reinstatement` until those modules add their policies. `reason` is confidential (needed to retry) and never appears in responses, logs, or audit metadata.
-`kind` gains `'reinstatement'` with `target_status = 'active'` ([ADR 0012](../adr/0012-doctor-reinstatement.md)).
+Durable retry for Integration Cases 1, 3, and 4 (restarts do not lose them). Polled by `care-worker` (`identity-sync` loop). Table created by verification (migration `20261007120200`); the **`identity-sync` module** (ADR 0021) is its single writer for all three kinds (`verification`, `suspension`, `reinstatement`), while `verification` and `admin-doctors` enqueue through its service. The job row is inserted in the **decision transaction** (including the inline-success path); the worker loop serves every kind (suspension first). No migration was needed for `admin-doctors`. `reason` is confidential (needed to retry) and never appears in responses, logs, or audit metadata.
+`kind='reinstatement'` has `target_status = 'active'` ([ADR 0012](../adr/0012-doctor-reinstatement.md)); `reason` is the admin's full text (up to 2000), clamped to 500 code points only on the way to Identity.
 ```sql
 CREATE TABLE identity_sync_jobs (
     id                    BIGSERIAL PRIMARY KEY,
@@ -685,7 +685,7 @@ CREATE TABLE identity_sync_jobs (
             OR (kind = 'reinstatement' AND target_status = 'active')),
     CONSTRAINT chk_identity_sync_jobs_status CHECK (status IN ('pending', 'succeeded', 'failed', 'superseded'))
 );
--- Retrier poll: SELECT … WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at
+-- Retrier poll: SELECT … WHERE status='pending' AND next_attempt_at <= :now ORDER BY (kind='suspension') DESC, next_attempt_at, id
 --   LIMIT 50 (as built a plain read; a per-doctor session advisory lock and a re-check of next_attempt_at serialize workers, no SKIP LOCKED)
 CREATE INDEX idx_identity_sync_jobs_pending_next_attempt_at ON identity_sync_jobs (next_attempt_at) WHERE status = 'pending';
 -- At most one open job per doctor; a newer decision marks the older job 'superseded' in the same transaction.
@@ -695,7 +695,7 @@ CREATE INDEX idx_identity_sync_jobs_doctor_profile_id_created_at ON identity_syn
 -- Runbook: inspect jobs by doctor user id newest first
 CREATE INDEX idx_identity_sync_jobs_doctor_user_id_id ON identity_sync_jobs (doctor_user_id, id DESC);
 ```
-`status='failed'` is set only on a non-retryable Identity answer (`409 InvalidStatusTransition`); it mirrors
+`status='failed'` is set only on a non-retryable Identity answer (`409 InvalidStatusTransition`, or `400` / `403` / `422` with `last_error_code='HTTP_<n>'`); it mirrors
 `doctor_profiles.identity_sync_status='failed'` and is requeued by an operator after reconciliation.
 
 ## `notification_outbox`

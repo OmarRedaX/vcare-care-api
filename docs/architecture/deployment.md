@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
 ---
@@ -26,7 +26,7 @@ Sizing: [capacity.md](./capacity.md). Env vars: [infrastructure.md](./infrastruc
 All reach own Postgres and Redis; `care-api` and `care-worker` reach Identity's internal LB, and `care-api` its
 public JWKS. Only `care-migrate` holds the owner credential ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md);
 hub `deployment.md` → Release pipeline step 3).
-`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1 retrier, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **planned:** identity-sync sweeper and Cases 3/4 jobs · notification
+`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1, 3 and 4 retrier, suspension jobs first, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **planned:** notification
 outbox · reminder scan (1 min) · `next-available` refresh · `audit_logs` partition maintenance (daily) · outbox purge ·
 upload-intent purge (5 min; [file-handling.md](./file-handling.md), ADR 0013).
 
@@ -94,7 +94,7 @@ authenticated Care request is 401; the platform alert row lives in hub `architec
   contract changed 2026-09-15, implemented by the foundation (verified 2026-09-28); the old paths return 404.
 - ~~Add `PATCH /api/admin/doctors/{doctorUserId}/reinstate` (ADR 0012)~~ Contract landed 2026-10-08 (`reinstateDoctor`,
   200 / 202 `identitySync: pending|failed` / 404 / 409 `InvalidTransition`, `x-failure-policy: retry-report-pending`);
-  implementation pending the admin-doctors module.
+  implemented by the admin-doctors module (built 2026-10-09).
 - ~~`GET /api/audit-logs` requires/defaults a time range (ADR 0009).~~ Contract landed 2026-10-08 (`to` defaults to now,
   `from` to 30 days before `to`); implementation pending the audit module.
 - File handling (ADRs 0013, 0014): replace the two multipart upload operations with `…/uploads` + `…/complete`, add

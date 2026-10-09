@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [system-design, architecture, router, care]
-related: [overview, data-model, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
+related: [overview, data-model, adr-0021-identity-sync-engine-module, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
 
 # System Design — care-service
@@ -23,7 +23,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [architecture/consultation-lifecycle.md](./architecture/consultation-lifecycle.md) | understand statuses, transitions, windows, flows D/E/F | explanation |
 | [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records, lock, amendments, attachments, AI boundary | explanation |
 | [architecture/rbac.md](./architecture/rbac.md) | check permissions, per-route policies, viewer-aware DTOs | reference |
-| [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–4 (Case 1 and 2 built with verification) | explanation |
+| [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–4 (Cases 1 and 2 built with verification; Cases 3 and 4 built with admin-doctors) | explanation |
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts, retries, durable jobs, idempotency, alerts | explanation |
 | [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars, connection settings, logging, errors, health, boot and shutdown | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics and alerts | explanation |
@@ -54,6 +54,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0018](./adr/0018-db-role-split-explicit-grants-partition-function.md) | Owner/app database roles and explicit grants; audit partition maintenance |
 | [0019](./adr/0019-luxon-for-doctor-timezone-validation.md) | `luxon` validates doctor IANA timezones; canonical spelling is stored |
 | [0020](./adr/0020-local-s3-emulator-image.md) | Local/test S3 emulator: digest-pinned frozen community MinIO build |
+| [0021](./adr/0021-identity-sync-engine-module.md) | Identity-sync engine as its own module shared by verification, suspension and reinstatement (kind policies, injected clock, reason clamp, permanent Identity rejections) |
 
 `/system-design` 2026-09-15 (Care runtime, capacity, notifications, reinstatement) also produced hub ADR 0009
 (doctor reinstatement via Care) and hub ADR 0010 (notification contact lookup). The file-handling session

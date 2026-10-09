@@ -11,7 +11,7 @@ related: [admin-doctors-spec, admin-doctors-brainstorm, adr-0021-identity-sync-e
 
 # admin-doctors — Tasks
 
-Spec: [spec.md](./spec.md) v0.2.0 (Appendix B ordering). Build-order tags in parentheses.
+Spec: [spec.md](./spec.md) v1.0.0 (Appendix B ordering; section 12 holds the as-built notes). Build-order tags in parentheses.
 
 ## Legend
 - [ ] todo · [~] in progress · [x] done
@@ -32,6 +32,7 @@ Spec: [spec.md](./spec.md) v0.2.0 (Appendix B ordering). Build-order tags in par
 - [x] (controller) `AdminDoctorsController` + container registration
 - [x] (routes) `routes.ts` (no-store, guard, authorize, rate limit, idempotency)
 - [x] (mount) `src/routes.ts`
-- [x] (tests) admin-doctors and identity-sync unit + integration suites of spec 9 (`tests/integration/admin-doctors.test.ts` 67 tests; unit suites under `tests/unit/app/admin-doctors/`, `tests/unit/app/identity-sync/`, `tests/unit/contract/admin-doctors-contract.test.ts`), fake Identity server (`suspended -> active`, recorded PATCH bodies, 500 code point reason limit), `FakeClock`, `truncateCodePoints`, `siblings`; verification, schedules, doctors, boot, db-roles and worker-partitions integration re-run green. Open note: the contract operations do not declare `Idempotency-Key`, `422` or the in-flight `409` that the routes implement (tracked by a `test.failing` in `admin-doctors-contract.test.ts`)
+- [x] (tests) admin-doctors and identity-sync unit + integration suites of spec 9 (`tests/integration/admin-doctors.test.ts` 67 tests; unit suites under `tests/unit/app/admin-doctors/`, `tests/unit/app/identity-sync/`, `tests/unit/contract/admin-doctors-contract.test.ts`), fake Identity server (`suspended -> active`, recorded PATCH bodies, 500 code point reason limit), `FakeClock`, `truncateCodePoints`, `siblings`; verification, schedules, doctors, boot, db-roles and worker-partitions integration re-run green. Closed in review: the contract now declares `Idempotency-Key`, `422` and the in-flight `409` (`DoctorTransitionConflict`); the `test.failing` is gone
 - [x] (manual-qa) 155 CURL cases pass / 0 fail on two consecutive runs (fake Identity with runtime healthy/down/hang/conflict modes, real API + worker); results in `manual-qa.md`, repeatable via `scripts/curl-test-admin-doctors.sh`; unverified paths listed there
-- [~] (docs) service-card, INDEX and ADR 0021 done; `architecture/*`, `runbook.md` and `system-design.md` deltas of spec Appendix A are left to /update-docs
+- [x] (review) code review findings resolved and verified clean (2026-10-09, review file removed): `NotBlank` reasons, permanent Identity `400`/`403`/`422`, `attemptsMade`, `syncNow` from the re-read profile, handled-503 `warn`, `suspensionReason` redacted; `npm test` 103 suites / 1824 tests green, DB integration green
+- [x] (docs) spec v1.0.0 with as-built notes (section 12), `integration.md`, `resilience.md`, `api.md`, `rbac.md`, `data-model.md`, `overview.md`, `deployment.md`, `system-design.md`, `runbook.md`, `INDEX.md`, `service-card.md`, ADR 0021 reconciled by /update-docs 2026-10-09
