@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-10-09
 tags: [scheduling, slots, timezones, booking, caching, performance]
-related: [data-model, consultation-lifecycle, resilience, capacity, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh]
+related: [schedules-spec, data-model, consultation-lifecycle, resilience, capacity, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh]
 ---
 
 # Scheduling and Slot Computation
@@ -53,7 +53,27 @@ viewer's timezone.
 - Everything persisted is UTC (`TIMESTAMPTZ`); the wire carries ISO-8601 with offset.
 - Rendering uses the `timezone` query parameter, else the patient's profile timezone, else UTC. Consultations
   render in `patient_timezone` for the patient and the doctor's timezone for the doctor.
-- No `Date` arithmetic for schedules; luxon only. Timezones are validated with `IANAZone.isValidZone`.
+- No `Date` arithmetic for schedules; luxon only. Timezones are validated with `IANAZone.isValidZone`, memoized per name (valid names only) in `pkg/slots/local-date.ts`.
+
+## As built: `pkg/slots` after `schedules` (2026-10-09)
+The `schedules` module ships only the **open-interval resolution** part of the algorithm (steps 2-4 above) in `src/pkg/slots`
+(pure; imports only `luxon` and `pkg/utils`; no clock, no I/O). It does **not** subtract busy consultations or slice by duration:
+both stay with `availability` (steps 1, 5-7) and `consultations` (booking re-validation).
+
+| Function | Role |
+|---|---|
+| `resolveOpenIntervals({ timezone, weekly, exceptions, fromDate, toDate })` | one `OpenDay { date, intervals: UtcInterval[] }` per doctor-local date in `[fromDate, toDate]`; `day_off` empties the date, `custom_hours` replaces the weekday's hours, otherwise the merged weekly intervals; `RangeError` for an invalid zone, a reversed range, more than 400 dates, duplicate exception dates or a bad interval |
+| `localInstant(date, minute, timezone, edge)` | UTC instant of a doctor-local wall time; DST gap maps to the transition instant at both edges, overlap maps to the earlier instant for `start` and the later for `end`; `minute = 1440` is the next local midnight |
+| `mergeLocalIntervals` / `mergeUtcIntervals` | sort, merge overlapping and touching intervals, drop empty ones; cross-date merging is the caller's choice |
+| `parseTimeOfDay` / `formatTimeOfDay` / `addDays` / `localDateOf` / `isoWeekday` / `isCalendarDate` | wall-clock and calendar helpers on `YYYY-MM-DD` strings and minutes since midnight (luxon; no `Date` arithmetic) |
+
+Two in-process ports, both with no-op defaults registered in `bootstrap.ts`, are the seams for the next modules:
+- `ScheduleImpactProvider` (`findAffected`, `flagAffected`; inside the write's transaction): `consultations` binds it to find future non-terminal consultations that fall outside the new open intervals (using `resolveOpenIntervals`) and to flag them; the default returns `[]`, so a schedule write is never blocked until then.
+- `ScheduleChangeListener` (after commit; a failure is logged and never fails the write): `availability` binds it to invalidate `slots:*` / `next-available:*` and enqueue the coalesced refresh ([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)). The default does nothing.
+
+A third port, `ScheduleOwnerResolver`, only breaks the `doctors` / `schedules` construction cycle.
+
+**Resolved performance finding (2026-10-09).** `resolveOpenIntervals` (14 days x 3 shifts x 7 weekdays) took about 11 to 13 ms because `IANAZone.isValidZone` rebuilt an `Intl.DateTimeFormat` on every `assertValidZone` call. Validated zone names are now memoized in a pure module-level `Set` (successes only), `localInstant` skips the candidate re-check when there is no transition within a day, and the local midnight is computed arithmetically. Measured 3.4 to 4.3 ms in jest on the dev machine (isolated; up to 6 to 8 ms under full parallel suite load, hence the separate benchmark). The 5 ms budget is unchanged and is verified by `npm run test:bench` (opt-in, run alone: 3.07 to 3.30 ms best of 100); `npm test` keeps only deterministic guards (constant zone-validation count, < 50 ms regression guard).
 
 ## Booking re-validation
 The slot list shows what *looked* free. `POST /api/consultations` re-proves it in one transaction:

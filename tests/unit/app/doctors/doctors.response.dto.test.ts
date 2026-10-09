@@ -12,6 +12,7 @@ const view = (): DoctorProfileView => ({
         submittedAt: null, decidedAt: null, reviewedBy: null, reviewNote: null, suspendedAt: null, deletedAt: at,
         createdAt: at, updatedAt: at }),
     languages: ["en", "ar"], specialties: [{ id: 1, slug: "synthetic-one", name: "Synthetic One", isPrimary: true }],
+    hasActiveConsultationType: false,
 });
 
 describe("doctor response DTOs", () => {
@@ -41,5 +42,13 @@ describe("doctor response DTOs", () => {
             const data = view(); data.profile.verificationStatus = status;
             expect(VerificationApplicationResponseDto.from(data).missingRequirements).toEqual(["license_document", "id_document"]);
         }
+    });
+
+    it("should compute isBookable from the active consultation type flag of the view", () => {
+        const data = view();
+        data.profile.verificationStatus = VerificationStatus.Approved; data.profile.identitySyncStatus = IdentitySyncStatus.Synced;
+        expect(DoctorProfileOwnResponseDto.from(data).isBookable).toBe(false);
+        data.hasActiveConsultationType = true;
+        expect(DoctorProfileOwnResponseDto.from(data).isBookable).toBe(true);
     });
 });

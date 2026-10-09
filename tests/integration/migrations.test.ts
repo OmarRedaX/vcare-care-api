@@ -11,6 +11,9 @@ import * as uploadIntentsMigration from "../../src/migrations/20261007120000_cre
 import * as verificationDocumentsMigration from "../../src/migrations/20261007120100_create_verification_documents";
 import * as identitySyncJobsMigration from "../../src/migrations/20261007120200_create_identity_sync_jobs";
 import * as verificationQueueIndexMigration from "../../src/migrations/20261007120300_add_verification_queue_index";
+import * as workingHoursMigration from "../../src/migrations/20261008120000_create_working_hours";
+import * as scheduleExceptionsMigration from "../../src/migrations/20261008120100_create_schedule_exceptions";
+import * as consultationTypesMigration from "../../src/migrations/20261008120200_create_consultation_types";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -282,6 +285,10 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
     it("should round-trip doctor and verification migrations with their named indexes and grants", async () => {
         await truncateAll();
         try {
+            // The schedules tables reference doctor_profiles (ON DELETE RESTRICT): they go first and come back last.
+            await consultationTypesMigration.down(migrator);
+            await scheduleExceptionsMigration.down(migrator);
+            await workingHoursMigration.down(migrator);
             await verificationQueueIndexMigration.down(migrator);
             await identitySyncJobsMigration.down(migrator);
             await verificationDocumentsMigration.down(migrator);
@@ -299,6 +306,9 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await verificationDocumentsMigration.up(migrator);
             await identitySyncJobsMigration.up(migrator);
             await verificationQueueIndexMigration.up(migrator);
+            await workingHoursMigration.up(migrator);
+            await scheduleExceptionsMigration.up(migrator);
+            await consultationTypesMigration.up(migrator);
         }
         const result = await migrator.raw<{ rows: Array<{ name: string }> }>(
             "SELECT indexname AS name FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'",

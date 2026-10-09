@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -16,7 +16,7 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
 (see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
-`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE). `knex_migrations` records migration names without the file extension. Everything else below is the design the
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE). `knex_migrations` records migration names without the file extension. Everything else below is the design the
 remaining modules will build. Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
@@ -251,7 +251,13 @@ CREATE TABLE working_hours (
     deleted_at         TIMESTAMPTZ,
     CONSTRAINT fk_working_hours_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
     CONSTRAINT chk_working_hours_weekday CHECK (weekday BETWEEN 1 AND 7),
-    CONSTRAINT chk_working_hours_time_order CHECK (end_time > start_time)
+    CONSTRAINT chk_working_hours_time_order CHECK (end_time > start_time),
+    CONSTRAINT chk_working_hours_whole_minutes CHECK (EXTRACT(SECOND FROM start_time) = 0 AND EXTRACT(SECOND FROM end_time) = 0),
+    -- Safety net behind the service's overlap validation; half-open, so touching intervals (09:00-12:00, 12:00-14:00) are allowed. Needs btree_gist.
+    CONSTRAINT excl_working_hours_no_overlap EXCLUDE USING gist (
+        doctor_profile_id WITH =, weekday WITH =,
+        int4range((EXTRACT(EPOCH FROM start_time))::int, (EXTRACT(EPOCH FROM end_time))::int, '[)') WITH &&
+    ) WHERE (deleted_at IS NULL)
 );
 -- Slot computation query 2 and GET /doctors/me/working-hours:
 --   WHERE doctor_profile_id = $1 AND deleted_at IS NULL ORDER BY weekday, start_time
@@ -259,6 +265,7 @@ CREATE INDEX idx_working_hours_doctor_profile_id ON working_hours (doctor_profil
 ```
 Several rows per weekday model split shifts; overlap between a doctor's intervals on one weekday is rejected by
 the service (the set is replaced atomically by `PUT`, which soft-deletes the old rows in the same transaction).
+**Built** by schedules (migration `20261008120000`). As built, the database also enforces non-overlap: `excl_working_hours_no_overlap` (a safety net behind the service; a `23P01` can only follow a service bug and surfaces as `500`, the transaction rolls back) and `chk_working_hours_whole_minutes` (no seconds). `vcare_app` holds `SELECT, INSERT, UPDATE` and sequence `USAGE`; no `DELETE`/`TRUNCATE` (removal sets `deleted_at`).
 
 ## `schedule_exceptions`
 ```sql
@@ -277,13 +284,16 @@ CREATE TABLE schedule_exceptions (
     CONSTRAINT chk_schedule_exceptions_type CHECK (type IN ('day_off', 'custom_hours')),
     CONSTRAINT chk_schedule_exceptions_shape CHECK (
         (type = 'day_off' AND start_time IS NULL AND end_time IS NULL)
-     OR (type = 'custom_hours' AND start_time IS NOT NULL AND end_time IS NOT NULL AND end_time > start_time))
+     OR (type = 'custom_hours' AND start_time IS NOT NULL AND end_time IS NOT NULL AND end_time > start_time)),
+    CONSTRAINT chk_schedule_exceptions_whole_minutes CHECK (
+        (start_time IS NULL OR EXTRACT(SECOND FROM start_time) = 0) AND (end_time IS NULL OR EXTRACT(SECOND FROM end_time) = 0))
 );
 -- One live exception per doctor-local date; also the FK index. Serves slot computation query 3:
 --   WHERE doctor_profile_id = $1 AND date BETWEEN $fromDate - 1 AND $toDate + 1 AND deleted_at IS NULL
 -- and GET /doctors/me/exceptions keyset (date, id).
 CREATE UNIQUE INDEX uq_schedule_exceptions_doctor_profile_id_date ON schedule_exceptions (doctor_profile_id, date) WHERE deleted_at IS NULL;
 ```
+**Built** by schedules (migration `20261008120100`); same grants as `working_hours`. `reason` is free text, never logged or audited. The unique index is a partial unique **index** (the service maps `23505` by its name to `409 Conflict`).
 
 ## `consultation_types`
 ```sql
@@ -301,7 +311,8 @@ CREATE TABLE consultation_types (
     CONSTRAINT fk_consultation_types_doctor_profile_id FOREIGN KEY (doctor_profile_id) REFERENCES doctor_profiles(id) ON DELETE RESTRICT,
     CONSTRAINT chk_consultation_types_duration CHECK (duration_minutes BETWEEN 5 AND 240),
     CONSTRAINT chk_consultation_types_price CHECK (price >= 0),
-    CONSTRAINT chk_consultation_types_currency CHECK (currency ~ '^[A-Z]{3}$')
+    CONSTRAINT chk_consultation_types_currency CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT chk_consultation_types_name_length CHECK (char_length(name) >= 2)
 );
 -- Unique live name per doctor; leading column covers the FK. Serves GET /doctors/me/consultation-types and the
 -- per-page load WHERE doctor_profile_id = ANY($1) AND deleted_at IS NULL.
@@ -309,6 +320,7 @@ CREATE UNIQUE INDEX uq_consultation_types_doctor_profile_id_name ON consultation
 -- Domain rule 6 "at least one active type": EXISTS (… WHERE doctor_profile_id = dp.id AND is_active AND deleted_at IS NULL)
 CREATE INDEX idx_consultation_types_doctor_profile_id_active ON consultation_types (doctor_profile_id) WHERE is_active AND deleted_at IS NULL;
 ```
+**Built** by schedules (migration `20261008120200`); same grants. As built: `chk_consultation_types_name_length` (contract `minLength 2`) is added; names are unique case-sensitively per doctor among live rows; at most 20 live types per doctor (service rule, active or inactive); no route sets `deleted_at` (types are deactivated, never removed); the `isBookable` EXISTS term is served by `idx_consultation_types_doctor_profile_id_active`. `listTypesPage` EXPLAIN (integration test): the planner uses the primary key or the name index on a set of at most 20 rows per doctor, whichever it prefers, never a sequential scan (a deviation from the spec text, which named only the name index; see schedules spec section 14). The FK from `consultations.consultation_type_id` is added by the `consultations` migration.
 
 ## `consultations`
 ```sql

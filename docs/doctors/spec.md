@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 module: doctors
 status: implemented
-version: 1.2.0
+version: 1.3.0
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [spec, doctors, onboarding, profile, specialties, validation, rate-limit, idempotency, audit, migration]
 related: [doctors-brainstorm, specialties-spec, access-spec, foundation-spec, rbac, data-model, api, integration, adr-0004-cross-service-failure-policies, adr-0012-doctor-reinstatement, adr-0016-foundation-runtime-dependencies, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 contracts: [contracts/openapi.yaml]
@@ -204,7 +204,7 @@ Every status is declared by the contract for that operation. `409` on `apply` is
 (primary first, then name ASC, id ASC), consultationFee: { amount, currency }, defaultSlotMinutes, timezone,
 isAcceptingPatients, verificationStatus, reviewNote | null, identitySyncStatus, isSuspended, suspendedAt | null,
 isBookable, createdAt, updatedAt }`. `isSuspended = suspended_at !== null`. Timestamps are millisecond ISO strings with
-`Z`. `isBookable` is Domain rule 6 evaluated now (D-R12).
+`Z`. `isBookable` is Domain rule 6 evaluated now (D-R12; its consultation-type term is live since `schedules`, 2026-10-09, see §14).
 
 **Response `VerificationApplication`** for `GET /me/application` (D8): `{ id: profile id, doctorUserId, doctor:
 { displayName: null, avatarUrl: null, profileHydrated: false }, status, identitySyncStatus, specialties, yearsExperience,
@@ -404,7 +404,7 @@ export class DoctorsService {
 }
 ```
 **`getOwn`** (no transaction): `findProfileByUserId` → `NotFound` if absent → `listLanguages` ∥ `listSpecialtyLinks` →
-`specialties.findByIds(linkIds)` → view. Fixed 4 queries.
+`specialties.findByIds(linkIds)` → view. Fixed 4 queries (**5 since `schedules`, 2026-10-09**: `loadView` adds the active-consultation-type read, see §14).
 
 **`apply`** — validate, then one transaction (Knex handler form), conflict mapped outside it:
 1. `assertCurrencyAllowed(input.consultationFee.currency)` (`400 consultationFee.currency`); `primarySpecialtyId ∈
@@ -505,7 +505,7 @@ export function buildDoctorsPolicies(service): DoctorsPolicies => ({
 | D-R9 | A locally suspended doctor (`suspended_at IS NOT NULL`) gets `403 Forbidden` on `PATCH /me` even with a still-`active` token; a doctor whose token is `suspended` is `403` on every route | `doctor_not_suspended` check, `authorize` status step |
 | D-R10 | `consultationFee.amount` is an integer in `[0, 2147483647]`; `currency` is in `ALLOWED_CURRENCIES` else `400` with `details[].field="consultationFee.currency"` | DTO + service + `chk_doctor_profiles_fee/currency` |
 | D-R11 | `PATCH /me`: only provided members change; `{}` → `400 body: must contain at least one property`; `null` is accepted only for `bio`; `isAcceptingPatients=false` never cancels consultations | DTO + controller + service |
-| D-R12 | `isBookable` = `verification_status='approved' ∧ identity_sync_status='synced' ∧ suspended_at IS NULL ∧ is_accepting_patients ∧ has an active consultation type` (Domain rule 6). The consultation-type term is `false` until `schedules` exists, and no profile can be `approved` yet, so it is always `false` in this slice; the function is pure and unit-tested over its truth table | service (pure function) |
+| D-R12 | `isBookable` = `verification_status='approved' ∧ identity_sync_status='synced' ∧ suspended_at IS NULL ∧ is_accepting_patients ∧ has an active consultation type` (Domain rule 6). **As built (2026-10-09):** the consultation-type term is now computed by `schedules` (a live active type exists; see §14); it was a constant `false` in the original slice; the function is pure and unit-tested over its truth table | service (pure function) |
 | D-R13 | A create writes exactly one `doctor.profile_created` audit row; a real change (`apply` 200 or `PATCH`) writes exactly one `doctor.profile_updated` row with `changedFields` = sorted wire names; a no-op writes none; `metadata` never holds a value | service + `AuditRecorder`, same transaction |
 | D-R14 | A rolled-back write (any error, audit failure) leaves neither profile, child rows, nor audit row | one transaction (Knex handler form) |
 | D-R15 | Two concurrent first `apply` calls by one user → one row, no `500`: one `201` and one `200` (the loser's body applied over the winner's draft) | `uq_doctor_profiles_user_id` + one re-run |
@@ -635,7 +635,7 @@ doctor token.
   update — should throw NotFound when no profile · should audit only the changed wire names sorted · should treat the same language set in another order as
   unchanged · should keep the current primary when specialtyIds is given without a primary and it is still present, throw PrimarySpecialtyRequired when it is
   not, and require primarySpecialtyId alone to be a current link (D11) · should order replaceSpecialties as delete, clear-primary, insert, mark-primary.
-  getOwn — should throw NotFound · should issue exactly 4 queries. `isBookable` truth table (D-R12). `isLocallySuspended` true/false/absent profile.
+  getOwn — should throw NotFound · should issue exactly 4 queries (5 since `schedules`; see §14). `isBookable` truth table (D-R12). `isLocallySuspended` true/false/absent profile.
 - `app/doctors/doctors.policies.test.ts`: should declare roles `[doctor]`, owner self, and statuses pending/active/rejected per `x-roles` / `x-ownership` /
   `x-account-state` read from the contract (`contractOperationBlock`) · should attach `doctor_not_suspended` to `updateMe` only · should build without throwing.
 - `app/doctors/doctors.routes.test.ts`: should compose POST as [guard, authorize, rateLimit, idempotency, handler], PATCH as [guard, authorize, rateLimit, handler],
@@ -701,7 +701,7 @@ specialty and currency failures, idempotent replay, 429 on the 21st write, and l
 - Documents and uploads (`/doctors/me/documents*`, `lib/storage`, `upload_intents`), the application `documents` content, admin approve/reject/reopen, Case 1 → `verification`.
 - Suspend and reinstate, `suspended_at` writers, `identity_sync_jobs`, Cases 3 and 4 → the suspension module.
 - `GET /doctors`, `GET /doctors/{doctorUserId}`, `/slots`, Case 2 hydration, the search and queue indexes, the `next_available_at` cache and its invalidation → `availability`.
-- Working hours, exceptions, consultation types (so `isBookable`'s consultation-type term is a constant `false`) → `schedules`.
+- Working hours, exceptions, consultation types → `schedules` (delivered 2026-10-09; `isBookable`'s consultation-type term is now live, see §14).
 - `GET /internal/doctors/{userId}/summary` and the service guard.
 - Any Identity call and `lib/identity-client`; avatar or name storage.
 - A `DELETE` route, profile photos, ratings.
@@ -766,3 +766,6 @@ Applied in `/develop` step 0 (descriptions, extensions, and one `maximum`; no op
 - `GET /me/application` returns the contract's degraded `doctor` fields (`displayName` and `avatarUrl` null, `profileHydrated: false`), an empty `documents` array, and missing license/id requirements while the application is draft or rejected. `isBookable` uses the Domain-rule-6 function with the active-consultation-type term set to false until schedules exist.
 - The code review found no findings. The doctors unit/integration tests were green and the 2026-10-07 CURL QA recorded 37 HTTP cases plus one replay-data comparison, all passing (38 checks). No contract correction was needed for this built slice beyond C1–C3 already made in step 0.
 - **Superseded by verification (2026-10-08).** The dormant `submit` rule (D1, §3.7, `SubmitRequiresDocuments`) and the O4 allowance to edit a `submitted` profile are replaced: `submit=true` is now live and delegates to the verification service (draft submit is local; a rejected resubmit uses Case 1 and may answer `202 identitySync`), a submitted application locks profile edits with `409 ApplicationNotEditable`, and `GET /me/application` returns metadata-only documents with Identity name and avatar hydrated (null on degrade). The `SubmitRequiresDocuments` constant no longer exists; a missing license or id is a `400 ValidationFailed` with field `documents` raised by the verification service. See [verification spec](../verification/spec.md) §6 and §16.
+
+- **As-built delta from `schedules` (2026-10-09, spec v1.3.0).** [`schedules`](../schedules/spec.md) wires the last term of `isBookable` (D-R12): `DoctorsService` now injects `SchedulesService`, and `loadView` fetches `hasActiveConsultationType` (one indexed read, `idx_consultation_types_doctor_profile_id_active`) in the same `Promise.all` as the languages and specialty links, so `getOwn` is **five** queries (profile; languages, links and active-type in parallel; specialties `= ANY`; plus the unchanged `authorize` check where it applies), no longer four. `apply` and `PATCH /me` build their view the same way. `DoctorProfileView` gains `hasActiveConsultationType`, and `DoctorProfileOwnResponseDto.from(view)` calls `isBookable(profile, view.hasActiveConsultationType)`; the function and its truth table are unchanged. `isBookable` now becomes `false` again immediately when the last active type is deactivated (proved by the doctors integration flip test and manual QA cases 186, 187 and 191 of schedules). `DoctorsService` also exposes `findProfileForSchedule` and `lockProfileForSchedule` (thin wrappers of the profile lookup and the `FOR UPDATE` lookup) for the `ScheduleOwnerResolver` port, and `buildScheduleOwnerResolver` lives in `src/app/doctors/schedule-owner.resolver.ts`.
+- **Deferred (recorded 2026-10-09): timezone change and schedules.** `PATCH /doctors/me` already accepts a `timezone` change. Working hours, exceptions and every future booking are stored as doctor-local wall clock, so a timezone change silently re-interprets all of them. No impact check exists for it yet: `schedules` does not handle it (its spec section 10), and the planned owner is `consultations` (or a follow-up on `doctors`) reusing `ScheduleImpactProvider` with `change.kind = 'working_hours'`. Until then a timezone change creates no `409 ScheduleConflictsUnconfirmed` and flags nothing.

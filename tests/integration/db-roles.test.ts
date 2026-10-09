@@ -164,6 +164,22 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
         }
     });
 
+    it("should grant vcare_app SELECT, INSERT and UPDATE but no DELETE or TRUNCATE on the three schedules tables and USAGE on their sequences", async () => {
+        const tables = ["working_hours", "schedule_exceptions", "consultation_types"];
+        for (const table of tables) {
+            const result = await ownerDb.raw<{ rows: Array<Record<string, boolean>> }>(
+                `SELECT has_table_privilege('vcare_app', ?::regclass, 'SELECT') AS sel,
+                        has_table_privilege('vcare_app', ?::regclass, 'INSERT') AS ins,
+                        has_table_privilege('vcare_app', ?::regclass, 'UPDATE') AS upd,
+                        has_table_privilege('vcare_app', ?::regclass, 'DELETE') AS del,
+                        has_table_privilege('vcare_app', ?::regclass, 'TRUNCATE') AS trunc,
+                        has_sequence_privilege('vcare_app', ?::regclass, 'USAGE') AS seq`,
+                [table, table, table, table, table, `${table}_id_seq`],
+            );
+            expect(result.rows[0]).toEqual({ sel: true, ins: true, upd: true, del: false, trunc: false, seq: true });
+        }
+    });
+
     it("should reject care_app inserts that set created_at or id while AuditRecorder.record still inserts (L2)", async () => {
         const columns = "actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata";
         await expect(

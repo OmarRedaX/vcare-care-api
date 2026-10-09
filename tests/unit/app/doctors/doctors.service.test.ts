@@ -12,6 +12,7 @@ import type { SpecialtiesService } from "../../../../src/app/specialties/service
 import type { AuditRecorder } from "../../../../src/lib/audit/audit";
 import type { Env } from "../../../../src/lib/config/types";
 import type { AuthContext } from "../../../../src/lib/types/types";
+import type { SchedulesService } from "../../../../src/app/schedules/service/schedules.service";
 import type { VerificationService } from "../../../../src/app/verification/service/verification.service";
 
 const actor: AuthContext = { userId: 202, role: "doctor", status: "pending", emailVerified: true };
@@ -37,8 +38,9 @@ function setup() {
     const audit = { record } as unknown as AuditRecorder;
     const findByIds = jest.fn().mockResolvedValue(specialties());
     const verification = { submitInTransaction: jest.fn().mockResolvedValue({ jobId: null }), finishSubmit: jest.fn(), getOwnApplication: jest.fn() };
+    const hasActiveConsultationType = jest.fn().mockResolvedValue(true);
     const service = new DoctorsService(db, audit, { ALLOWED_CURRENCIES: ["EGP"] } as unknown as Env, { findByIds } as unknown as SpecialtiesService,
-        verification as unknown as VerificationService);
+        verification as unknown as VerificationService, { hasActiveConsultationType } as unknown as SchedulesService);
     const mocks = {
         find: jest.spyOn(profileRepo, "findProfileByUserId").mockResolvedValue(profile()),
         locked: jest.spyOn(profileRepo, "findProfileByUserIdForUpdate").mockResolvedValue(undefined),
@@ -54,7 +56,7 @@ function setup() {
         clearPrimary: jest.spyOn(linkRepo, "clearPrimaryExcept").mockResolvedValue(),
         markPrimary: jest.spyOn(linkRepo, "markPrimary").mockResolvedValue(),
     };
-    return { service, trx, db, transaction, record, findByIds, mocks, verification };
+    return { service, trx, db, transaction, record, findByIds, mocks, verification, hasActiveConsultationType };
 }
 
 afterEach(() => jest.restoreAllMocks());
@@ -157,12 +159,14 @@ describe("DoctorsService", () => {
         await expect(service.getOwn(actor)).rejects.toMatchObject({ code: "NotFound" });
     });
 
-    it("should load the profile, languages, links and specialty data in four queries on getOwn", async () => {
-        const { service, db, mocks, findByIds } = setup();
-        await service.getOwn(actor);
+    it("should load the profile, languages, links, active-type flag and specialty data in five queries on getOwn", async () => {
+        const { service, db, mocks, findByIds, hasActiveConsultationType } = setup();
+        const view = await service.getOwn(actor);
         expect(mocks.find).toHaveBeenCalledWith(202, db);
         expect(mocks.languages).toHaveBeenCalledTimes(1); expect(mocks.links).toHaveBeenCalledTimes(1);
+        expect(hasActiveConsultationType).toHaveBeenCalledWith(9, db);
         expect(findByIds).toHaveBeenCalledTimes(1);
+        expect(view.hasActiveConsultationType).toBe(true);
     });
 
     it("should audit sorted changed wire names and no values on update", async () => {

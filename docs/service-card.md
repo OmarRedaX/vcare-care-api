@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [service-card, catalog, care]
 related: [index, system-design, runbook, integration, data-model]
 sync_to_hub: catalog/care-service.card.md
@@ -20,7 +20,7 @@ sync_to_hub: catalog/care-service.card.md
 | **Name** | care-service |
 | **Repo** | `vcare-care-api` |
 | **Owner** | care-team |
-| **Status** | Foundation, access, specialties, doctor own-profile onboarding, and verification are built and tested (verification 2026-10-08: unit 1154, integration 489, manual QA 274 pass). Verification adds verified direct document upload, submission, the admin review queue and decision, Case 1 with a durable `identity-sync` worker loop, Case 2 hydration on the admin views, and the `upload-intent-purge` loop. Case 1 cannot reach `synced` against real Identity until its internal-users module (`GET /internal/users`, `PATCH /internal/users/{id}/status`) lands; Care keeps the decision and answers 202 pending meanwhile. Search, schedules, and other business modules remain designed. |
+| **Status** | Foundation, access, specialties, doctor own-profile onboarding, and verification are built and tested (verification 2026-10-08: unit 1154, integration 489, manual QA 274 pass). Verification adds verified direct document upload, submission, the admin review queue and decision, Case 1 with a durable `identity-sync` worker loop, Case 2 hydration on the admin views, and the `upload-intent-purge` loop. Case 1 cannot reach `synced` against real Identity until its internal-users module (`GET /internal/users`, `PATCH /internal/users/{id}/status`) lands; Care keeps the decision and answers 202 pending meanwhile. Schedules (2026-10-09: unit 1541 total, integration schedules 116, manual QA 220 pass): working hours, exceptions and consultation types for the doctor, the pure `pkg/slots` open-interval resolver (one performance budget decision open), and the last term of `isBookable`. The conflict path (`409 ScheduleConflictsUnconfirmed`) is wired behind a no-op port until `consultations` exists. Search and other business modules remain designed. |
 | **Tier** | 1 (booking and consultations are on the synchronous patient path) · availability target **99.9 %** monthly (ADR 0005) |
 | **Runtime** | Node.js 24 LTS + TypeScript (strict), Express 5. `care-api`: two listeners, public `PORT=3001` (`/api/*`), internal `INTERNAL_PORT=3101` (`/internal/*`), 2–6 tasks. `care-worker`: built loops `audit-partitions`, `identity-sync`, `upload-intent-purge`; planned notification outbox, reminders, cache refresh (1 task) |
 | **Datastores** | PostgreSQL 17 (own `care` database, `btree_gist`; primary + async replica; up to `DATABASE_POOL_MAX` + 1 readiness-probe connection per API task, 4 per worker task; two roles — owner `care` for migrations only, app login `care_app` in the `NOLOGIN` group `vcare_app` for `care-api`/`care-worker`, explicit per-table grants, `audit_logs` append-only by grant with column-level `INSERT` — ADR 0018) · Redis 7, Tier 2 (slot/next-available cache, hydration cache, idempotency, rate limits) · object storage (verification documents, record attachments; private bucket; presigned upload with byte verification, 60 s presigned download on demand — ADRs 0013–0014) |
@@ -33,7 +33,7 @@ consultation lifecycle (waiting room, session join, no-show), patient profiles, 
 
 ## Data owned
 `specialties`, `doctor_profiles`, `doctor_specialties`, `doctor_languages`, `verification_documents` (built), `upload_intents` (built),
-`working_hours`, `schedule_exceptions`, `consultation_types`, `consultations`, `patient_profiles`,
+`working_hours` (built), `schedule_exceptions` (built), `consultation_types` (built), `consultations`, `patient_profiles`,
 `medical_records`, `medical_record_amendments`, `record_attachments`, `help_articles`, `audit_logs`,
 `identity_sync_jobs` (built), `notification_outbox`. Identity accounts are referenced only by `*_user_id BIGINT` (no cross-database FK).
 Detail: [architecture/data-model.md](./architecture/data-model.md).
@@ -60,7 +60,7 @@ Detail: [architecture/data-model.md](./architecture/data-model.md).
 
 ## Endpoint families
 `/api/health/live`, `/api/health/ready` (live; body `checks: { database, redis, identityJwks }`; `/api/health` removed) · `/api/specialties` (live: `GET` list, `POST` create, `PATCH /{id}` update) · doctors onboarding (live: `POST /api/doctors/apply`, `GET/PATCH /api/doctors/me`, `GET /api/doctors/me/application`; draft submit is local, rejected resubmit uses Case 1) · verification documents (live: `POST /api/doctors/me/documents/uploads`, `…/uploads/{uploadId}/complete`, `POST …/{documentId}/download-url`, `DELETE …/{documentId}`) · `/api/doctors`, `/api/doctors/{doctorUserId}`, `/api/doctors/{doctorUserId}/slots` ·
-`/api/doctors/me/working-hours`, `/api/doctors/me/exceptions`, `/api/doctors/me/consultation-types` ·
+`/api/doctors/me/working-hours`, `/api/doctors/me/exceptions`, `/api/doctors/me/consultation-types` (live: `GET`/`PUT` working hours; `GET`/`POST` exceptions, `DELETE /{id}`; `GET`/`POST` consultation types, `PATCH /{id}`; doctor role, self ownership, no cross-service call) ·
 `/api/admin/applications` (live: `GET` queue and `/{id}` detail, `POST /{id}/documents/{documentId}/download-url`, `PATCH /{id}/approve|reject|reopen`) · `/api/admin/doctors/{doctorUserId}/suspend`, `/reinstate` (planned) ·
 `/api/patients/me`, `/api/patients/{patientUserId}`, `/api/patients/{patientUserId}/records` ·
 `/api/consultations` (book, list, waiting-room, calendar, get, reschedule, cancel, join, start, complete, no-show, record) ·

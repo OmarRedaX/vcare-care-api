@@ -24,4 +24,12 @@ export const TOKENS = {
     DoctorsController: Symbol.for("DoctorsController"),
     VerificationService: Symbol.for("VerificationService"),
     VerificationController: Symbol.for("VerificationController"),
+    SchedulesService: Symbol.for("SchedulesService"),
+    SchedulesController: Symbol.for("SchedulesController"),
+    /** Port: future non-terminal consultations a schedule change strands (default no-op; `consultations` rebinds). */
+    ScheduleImpactProvider: Symbol.for("ScheduleImpactProvider"),
+    /** Port: after-commit hook for cache invalidation (default no-op; `availability` rebinds). */
+    ScheduleChangeListener: Symbol.for("ScheduleChangeListener"),
+    /** Port: the caller's doctor profile for `schedules`, resolved lazily through `doctors`. */
+    ScheduleOwnerResolver: Symbol.for("ScheduleOwnerResolver"),
 } as const;

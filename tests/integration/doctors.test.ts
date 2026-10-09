@@ -422,6 +422,24 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
         expect(await profiles()).toHaveLength(2);
     });
 
+    it("should flip isBookable with the last active consultation type through the schedules routes", async () => {
+        await apply();
+        await ownerDb("doctor_profiles").where("user_id", 202).update({ verification_status: "approved", decided_at: new Date(), identity_sync_status: "synced" });
+        const bookable = async (): Promise<boolean> => (await get()).body.data.isBookable as boolean;
+        expect(await bookable()).toBe(false);
+        const types = "/api/doctors/me/consultation-types";
+        const first = await call("post", types, "doctor", { name: "Synthetic Visit 001", durationMinutes: 30, price: 100, currency: "EGP" });
+        expect(first.status).toBe(201);
+        expect(await bookable()).toBe(true);
+        const second = await call("post", types, "doctor", { name: "Synthetic Visit 002", durationMinutes: 45, price: 150, currency: "EGP" });
+        expect((await call("patch", `${types}/${first.body.data.id}`, "doctor", { isActive: false })).status).toBe(200);
+        expect(await bookable()).toBe(true);
+        expect((await call("patch", `${types}/${second.body.data.id}`, "doctor", { isActive: false })).status).toBe(200);
+        expect(await bookable()).toBe(false);
+        expect((await call("patch", `${types}/${first.body.data.id}`, "doctor", { isActive: true })).status).toBe(200);
+        expect(await bookable()).toBe(true);
+    });
+
     it("should keep tokens and profile text out of request logs and use doctor route labels", async () => {
         // .env.test runs at LOG_LEVEL=warn, which hides request_completed; raise it so the assertion is not vacuous.
         jest.replaceProperty(logger as unknown as { level: string }, "level", "debug");
@@ -436,7 +454,8 @@ describe("doctors (integration: real routes, Postgres and Redis)", () => {
 
     it("should declare every observed response status and apply idempotency in the contract", () => {
         for (const [key, statuses] of seen) {
-            const [method = "", path = ""] = key.split(" ");
+            const [method = "", rawPath = ""] = key.split(" ");
+            const path = rawPath.replace(/\/consultation-types\/\d+$/, "/consultation-types/{id}");
             const declared = contractResponseCodes(path, method as Verb).map(Number);
             for (const status of statuses) expect(declared).toContain(status);
         }

@@ -48,7 +48,7 @@ export class DoctorProfileOwnResponseDto {
             isAcceptingPatients: p.isAcceptingPatients, verificationStatus: p.verificationStatus,
             reviewNote: p.reviewNote, identitySyncStatus: p.identitySyncStatus,
             isSuspended: p.suspendedAt !== null, suspendedAt: p.suspendedAt?.toISOString() ?? null,
-            isBookable: isBookable(p, false), createdAt: p.createdAt.toISOString(), updatedAt: p.updatedAt.toISOString(),
+            isBookable: isBookable(p, view.hasActiveConsultationType), createdAt: p.createdAt.toISOString(), updatedAt: p.updatedAt.toISOString(),
         };
     }
 }

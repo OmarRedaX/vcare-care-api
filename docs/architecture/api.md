@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [api, reference, routes, rbac]
-related: [rbac, specialties-spec, doctors-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
+related: [rbac, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
 
 # API — care-service (human view)
@@ -82,18 +82,21 @@ stored in Redis, and each issued URL gets its own audit row). All responses are 
 | GET | `/api/doctors/{doctorUserId}` | patient, admin | none (non-bookable → 404 for patients) | 2 degrade | includes `nextAvailableSlots` |
 | GET | `/api/doctors/{doctorUserId}/slots` | patient, admin | none | — | `typeId, from, to` (≤ 14 days), `timezone`; p95 < 300 ms |
 
-## schedules (account `status` active, not locally suspended)
+## schedules (live, schedules module, 2026-10-09; account `status` active, not locally suspended)
+All eight routes: doctor, token status `active`, not locally suspended (`doctor_not_suspended`, re-checked under the profile lock on writes), ownership `self` (every row scoped by the caller's live profile; no id in a path or body can name another doctor). A caller with no live profile gets `404`. Rate limits: writes 30/min per user, reads 120/min per user (`429` + `Retry-After`). A path `id` that is not a positive integer is `404`. [Spec](../schedules/spec.md).
+
 | Method | Path | Roles | Ownership | Audit | Errors |
 |---|---|---|---|---|---|
-| GET | `/api/doctors/me/working-hours` | doctor | self | — | |
-| PUT | `/api/doctors/me/working-hours` | doctor | self | admin-action when conflicts confirmed | 400, 409 `ScheduleConflictsUnconfirmed` (body lists ids) |
-| GET | `/api/doctors/me/exceptions` | doctor | self | — | `fromDate`, `toDate` |
-| POST | `/api/doctors/me/exceptions` | doctor | self | admin-action when conflicts confirmed | 400, 409 `ScheduleConflictsUnconfirmed` / `Conflict`, 422 (Idem opt) |
-| DELETE | `/api/doctors/me/exceptions/{id}` | doctor | self (`:id` in own profile, else 404) | — | 204, 404 |
-| GET | `/api/doctors/me/consultation-types` | doctor | self | — | `isActive` |
-| POST | `/api/doctors/me/consultation-types` | doctor | self | — | 400, 409, 422 (Idem opt) |
-| PATCH | `/api/doctors/me/consultation-types/{id}` | doctor | self (`:id` in own profile, else 404) | — | 400, 404, 409 |
+| GET | `/api/doctors/me/working-hours` | doctor | self | — | 200 `{ timezone, days }` (`days: []` before any PUT); 404 |
+| PUT | `/api/doctors/me/working-hours` | doctor | self | `schedule.hours_replaced`; `schedule.conflicts_confirmed` when conflicts are confirmed | 400 (duplicate weekday, overlap, `end <= start`, > 6 intervals/day), 404, 409 `ScheduleConflictsUnconfirmed` (body lists ids). An identical set is a 200 no-op (no write, no audit). Ignores `Idempotency-Key` |
+| GET | `/api/doctors/me/exceptions` | doctor | self | — | `fromDate` (default today in the doctor's timezone), `toDate`; keyset `(date, id)`; 400, 404 |
+| POST | `/api/doctors/me/exceptions` | doctor | self | `schedule.exception_created`; `schedule.conflicts_confirmed` | 201 (rows ascending by date); 400 (past date, shape, > 60 dates), 404, 409 `ScheduleConflictsUnconfirmed` / `Conflict` (a live exception on any date: nothing created), 422 (Idem opt) |
+| DELETE | `/api/doctors/me/exceptions/{id}` | doctor | self (`:id` in own profile, else 404) | `schedule.exception_deleted`; `schedule.conflicts_confirmed` | 204; `?confirmConflicts` strict boolean (400); 404; 409 `ScheduleConflictsUnconfirmed` (only for a `custom_hours` dated today or later) |
+| GET | `/api/doctors/me/consultation-types` | doctor | self | — | `isActive`; keyset by `id`; 400, 404 |
+| POST | `/api/doctors/me/consultation-types` | doctor | self | `consultation_type.created` | 201; 400 (currency must be allowed and equal the profile currency), 404, 409 `Conflict` (duplicate live name, or the 20-type cap), 422 (Idem opt) |
+| PATCH | `/api/doctors/me/consultation-types/{id}` | doctor | self (`:id` in own profile, else 404) | `consultation_type.updated` (changed field names only) | 400 (`{}` or a `null` member), 404, 409 `Conflict`; a no-op is a 200 with no write. Ignores `Idempotency-Key` |
 
+As built: `409 ScheduleConflictsUnconfirmed` and its `conflicts` body are wired but the default `ScheduleImpactProvider` returns no affected consultations until `consultations` exists, so the path is proved with a stub provider only. `isBookable` on `GET /api/doctors/me` now needs a live active consultation type.
 ## admin-verification (live, verification module, 2026-10-08)
 All admin routes: admin, token status `active`, 120/min per user, `no-store`. `approve`/`reject`/`reopen` take an optional `Idempotency-Key`.
 

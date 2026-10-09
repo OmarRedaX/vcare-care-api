@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-10-08
+last_verified: 2026-10-09
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -13,10 +13,10 @@ related: [infrastructure, api, integration, scheduling-slots, foundation-spec, a
 
 From zero to a running service on your machine, then (once the modules exist) to a booked consultation.
 
-> **Built today (foundation 2026-09-28, access 2026-10-02, specialties 2026-10-04, doctors 2026-10-05, verification 2026-10-08):** both listeners, the four health
+> **Built today (foundation 2026-09-28, access 2026-10-02, specialties 2026-10-04, doctors 2026-10-05, verification 2026-10-08, schedules 2026-10-09):** both listeners, the four health
 > probes, migrations (incl. `audit_logs`, the app database role, and the `specialties` table with its 20-row synthetic
 > starter catalog), user-token verification against Identity's JWKS, the worker with its `audit-partitions` loop, and
-> the specialty catalog routes, doctor onboarding, and verification (verified document upload, submission, admin queue and decision, the `identity-sync` and `upload-intent-purge` worker loops). They need a user token from a running Identity — see `scripts/curl-test-specialties.sh` and `scripts/curl-test-verification.sh` for full examples. Case 1 additionally needs an Identity that serves `/internal/users` and `/internal/users/{id}/status`; real Identity does not yet (its internal-users module is pending), so use a contract-compliant shim, or accept `202 identitySync: pending`. Steps 1–3 work now. Steps 4–9 are marked `(planned)`: they show the intended shape once the business
+> the specialty catalog routes, doctor onboarding, and verification (verified document upload, submission, admin queue and decision, the `identity-sync` and `upload-intent-purge` worker loops), and the doctor's working hours, exceptions and consultation types (`/api/doctors/me/{working-hours,exceptions,consultation-types}`). They need a user token from a running Identity — see `scripts/curl-test-specialties.sh`, `scripts/curl-test-verification.sh` and `scripts/curl-test-schedules.sh` for full examples (the schedules script mints tokens through the fake-JWKS helper `scripts/schedules-qa-fake-identity.mjs` when no Identity is running; its header lists the start-up steps). Case 1 additionally needs an Identity that serves `/internal/users` and `/internal/users/{id}/status`; real Identity does not yet (its internal-users module is pending), so use a contract-compliant shim, or accept `202 identitySync: pending`. Steps 1–3 work now. Steps 4–9 are marked `(planned)`: they show the intended shape once the business
 > modules are built through the workflow. All ids and text below are synthetic.
 
 ## 1. Prerequisites

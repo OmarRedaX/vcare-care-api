@@ -18,6 +18,7 @@ import { findProfileByUserId, findProfileByUserIdForUpdate, insertProfile, isUse
 import { clearPrimaryExcept, deleteLinksNotIn, insertLinks, listSpecialtyLinks, markPrimary } from "../repository/doctor-specialties.repo";
 import type { ApplyResult, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, SpecialtyLink, SpecialtyRef } from "../types";
 import type { DoctorProfile } from "../entity/doctor-profile.entity";
+import { SchedulesService } from "../../schedules/service/schedules.service";
 import { VerificationService } from "../../verification/service/verification.service";
 import type { VerificationApplicationView } from "../../verification/types";
 
@@ -38,6 +39,7 @@ export class DoctorsService {
         @inject(TOKENS.Env) private readonly env: Env,
         @inject(TOKENS.SpecialtiesService) private readonly specialties: SpecialtiesService,
         @inject(TOKENS.VerificationService) private readonly verification: VerificationService,
+        @inject(TOKENS.SchedulesService) private readonly schedules: SchedulesService,
     ) {}
 
     async getOwn(actor: AuthContext): Promise<DoctorProfileView> {
@@ -49,6 +51,12 @@ export class DoctorsService {
     getOwnApplication(actor: AuthContext): Promise<VerificationApplicationView> { return this.verification.getOwnApplication(actor); }
 
     async isLocallySuspended(userId: number): Promise<boolean> { return isUserLocallySuspended(userId, this.db); }
+
+    /** For `schedules` (through `ScheduleOwnerResolver`): the live profile, never a locked read. */
+    findProfileForSchedule(userId: number, conn: Knex): Promise<DoctorProfile | undefined> { return findProfileByUserId(userId, conn); }
+
+    /** For `schedules` writes: `SELECT ... FOR UPDATE` on the live profile inside the caller's transaction. */
+    lockProfileForSchedule(userId: number, trx: Knex.Transaction): Promise<DoctorProfile | undefined> { return findProfileByUserIdForUpdate(userId, trx); }
 
     async apply(actor: AuthContext, input: DoctorProfileInput): Promise<ApplyResult> {
         this.assertCurrencyAllowed(input.consultationFee.currency);
@@ -172,12 +180,13 @@ export class DoctorsService {
     }
 
     private async loadView(profile: DoctorProfile, conn: Knex, knownLanguages?: string[], knownLinks?: SpecialtyLink[]): Promise<DoctorProfileView> {
-        const [languages, links] = await Promise.all([knownLanguages === undefined ? listLanguages(profile.id, conn) : Promise.resolve(knownLanguages),
-            knownLinks === undefined ? listSpecialtyLinks(profile.id, conn) : Promise.resolve(knownLinks)]);
+        const [languages, links, hasActiveConsultationType] = await Promise.all([knownLanguages === undefined ? listLanguages(profile.id, conn) : Promise.resolve(knownLanguages),
+            knownLinks === undefined ? listSpecialtyLinks(profile.id, conn) : Promise.resolve(knownLinks),
+            this.schedules.hasActiveConsultationType(profile.id, conn)]);
         const specialties = await this.specialties.findByIds(links.map((link) => link.specialtyId), conn);
         const refs: SpecialtyRef[] = specialties.map((item) => ({ id: item.id, slug: item.slug, name: item.name,
             isPrimary: links.some((link) => link.specialtyId === item.id && link.isPrimary) }));
         refs.sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.name.localeCompare(b.name) || a.id - b.id);
-        return { profile, languages, specialties: refs };
+        return { profile, languages, specialties: refs, hasActiveConsultationType };
     }
 }
