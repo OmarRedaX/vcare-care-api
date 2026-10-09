@@ -30,29 +30,6 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: care
-          POSTGRES_PASSWORD: care
-          POSTGRES_DB: care_test
-        ports:
-          - 5434:5432
-        options: >-
-          --health-cmd "pg_isready -U care -d care_test"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6381:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -60,8 +37,13 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Same stack as local runs: Postgres, Redis and MinIO (storage-adapter + verification suites need it).
+      - run: npm run test:infra:up
       # global-setup runs the migrations before the suites.
       - run: npm run test:integration
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --no-color --tail=100
 
   docker:
     runs-on: ubuntu-latest
