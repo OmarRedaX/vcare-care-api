@@ -31,5 +31,5 @@ Spec: [spec.md](./spec.md) v1.0.0. Build-order tags in parentheses.
 - [x] (routes) `routes.ts` (noStore, guard, authorize, rate limit)
 - [x] (mount) `src/routes.ts`
 - [x] (tests) <- /write-tests (spec 9): written and green; the two product findings it pinned (all cross-field details at once; validly signed cursor with an impossible `t` answers 400) are fixed
-- [ ] (manual-qa) <- /manual-qa
+- [x] (manual-qa) <- /manual-qa: 2026-10-09, 122 pass / 0 fail, `scripts/curl-test-audit.sh` (unverified paths listed in manual-qa.md)
 - [x] (docs) service card, INDEX, checkpoint; `architecture/*` deltas (data-model indexes, api row) left to /update-docs
