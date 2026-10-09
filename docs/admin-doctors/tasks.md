@@ -32,6 +32,6 @@ Spec: [spec.md](./spec.md) v0.2.0 (Appendix B ordering). Build-order tags in par
 - [x] (controller) `AdminDoctorsController` + container registration
 - [x] (routes) `routes.ts` (no-store, guard, authorize, rate limit, idempotency)
 - [x] (mount) `src/routes.ts`
-- [ ] (tests) <- /write-tests: admin-doctors and identity-sync unit + integration suites of spec 9; fake Identity server (`suspended -> active`, recorded PATCH bodies, 500 code point reason limit) and `FakeClock` helpers; `truncateCodePoints`; `siblings`; re-run `tests/integration/verification.test.ts` and the rest of the integration suite against Postgres/Redis (only typechecked here)
+- [x] (tests) admin-doctors and identity-sync unit + integration suites of spec 9 (`tests/integration/admin-doctors.test.ts` 67 tests; unit suites under `tests/unit/app/admin-doctors/`, `tests/unit/app/identity-sync/`, `tests/unit/contract/admin-doctors-contract.test.ts`), fake Identity server (`suspended -> active`, recorded PATCH bodies, 500 code point reason limit), `FakeClock`, `truncateCodePoints`, `siblings`; verification, schedules, doctors, boot, db-roles and worker-partitions integration re-run green. Open note: the contract operations do not declare `Idempotency-Key`, `422` or the in-flight `409` that the routes implement (tracked by a `test.failing` in `admin-doctors-contract.test.ts`)
 - [ ] (manual-qa) <- /manual-qa
 - [~] (docs) service-card, INDEX and ADR 0021 done; `architecture/*`, `runbook.md` and `system-design.md` deltas of spec Appendix A are left to /update-docs

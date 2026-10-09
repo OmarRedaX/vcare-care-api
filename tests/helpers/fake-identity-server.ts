@@ -3,12 +3,17 @@ import type { AddressInfo } from "node:net";
 import type { IdentityStatus } from "../../src/lib/identity-client/types";
 
 export interface FakeIdentityCall { method: string; path: string; requestId: string | undefined; authorization: string | undefined }
+/** One recorded `PATCH /internal/users/{id}/status` body (every attempt, including ones answered with a failure). */
+export interface FakeIdentityStatusBody { userId: number; status: IdentityStatus; reason: string; actorUserId: number; requestId: string | undefined }
+/** Identity's `StatusChangeRequest.reason` maxLength (contract), counted in code points. */
+export const FAKE_IDENTITY_REASON_MAX = 500;
 export interface FakeIdentityUser { id: number; fullName: string; avatarUrl: string | null; status: IdentityStatus }
 export interface FakeIdentityOptions { down?: boolean; tokenFailures?: number; statusFailures?: number; statusFailureCode?: number; batchFailures?: number; slowMs?: number; malformed?: boolean; forceUnauthorized?: number; forceConflict?: boolean }
 
 export class FakeIdentityServer {
     readonly users = new Map<number, FakeIdentityUser>();
     readonly calls: FakeIdentityCall[] = [];
+    readonly statusBodies: FakeIdentityStatusBody[] = [];
     readonly options: FakeIdentityOptions = {};
     private readonly server = http.createServer((req, res) => { void this.handle(req, res).catch(() => { res.destroy(); }); });
 
@@ -47,17 +52,24 @@ export class FakeIdentityServer {
         }
         const match = /^\/internal\/users\/(\d+)\/status$/.exec(path);
         if (req.method === "PATCH" && match) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+            const body = JSON.parse(Buffer.concat(chunks).toString()) as { status: IdentityStatus; reason: string; actorUserId: number };
+            this.statusBodies.push({ userId: Number(match[1]), status: body.status, reason: body.reason, actorUserId: body.actorUserId, requestId: req.headers["x-request-id"] as string | undefined });
             if (this.options.statusFailures && this.options.statusFailures-- > 0) { send(this.options.statusFailureCode ?? 500, {}); return; }
             const user = this.users.get(Number(match[1]));
             if (!user) { send(404, { success: false, error: { code: "NotFound" } }); return; }
+            // Mirrors Identity's StatusChangeRequest: a reason longer than 500 code points is a 400, never a status change.
+            if (typeof body.reason !== "string" || [...body.reason].length > FAKE_IDENTITY_REASON_MAX) {
+                send(400, { success: false, error: { code: "ValidationFailed", message: "Request validation failed", details: [{ field: "reason", issue: "must be at most 500 characters" }] } });
+                return;
+            }
             if (this.options.forceConflict) { send(409, { success: false, error: { code: "InvalidStatusTransition" } }); return; }
-            const chunks: Buffer[] = [];
-            for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
-            const body = JSON.parse(Buffer.concat(chunks).toString()) as { status: IdentityStatus };
             const allowed = user.status === body.status ||
                 (user.status === "pending" && (body.status === "active" || body.status === "rejected")) ||
                 (user.status === "rejected" && body.status === "pending") ||
-                (user.status === "active" && body.status === "suspended");
+                (user.status === "active" && body.status === "suspended") ||
+                (user.status === "suspended" && body.status === "active");
             if (!allowed) { send(409, { success: false, error: { code: "InvalidStatusTransition" } }); return; }
             user.status = body.status;
             send(200, { success: true, data: { id: user.id, status: user.status, updatedAt: new Date().toISOString() } });
