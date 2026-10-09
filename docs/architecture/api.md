@@ -164,7 +164,7 @@ All admin routes: admin, token status `active`, 120/min per user, `no-store`. `a
 ## audit
 | Method | Path | Roles | Ownership | Notes |
 |---|---|---|---|---|
-| GET | `/api/audit-logs` | admin | none | newest first; filters `actorUserId, action, entityType, entityId` (exact match; `entityId` needs `entityType`), window `[from, to)` (defaults: `to` now, `from` 30 days earlier; `from > to` 400, `from == to` empty); signed cursor freezes the window; 120/min per admin; `no-store`; metadata only, reading writes no audit row |
+| GET | `/api/audit-logs` | admin | none | newest first; filters `actorUserId, action, entityType, entityId` (exact match; `entityId` needs `entityType`), window `[from, to)` (defaults: `to` now, `from` 30 days earlier; `from > to` 400, `from == to` empty); signed cursor (`{t,id,from,to}`, exactly two segments) freezes both bounds, ms precision, tamper or a rotated secret -> 400 `cursor`; every cross-field problem is reported in one 400; 120/min per admin; `no-store`; metadata only, reading writes no audit row |
 
 ## internal (listener `:3101`, service token)
 | Method | Path | Auth | Scope | Notes |

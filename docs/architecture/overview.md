@@ -91,7 +91,7 @@ flowchart LR
 | `patients` | patient profile, clinical timeline | `patient_profiles` | `records`, `consultations` (relationship check) |
 | `records` | medical records, amendments, attachments | `medical_records`, `medical_record_amendments`, `record_attachments` | storage (uploads, download URLs), `consultations` |
 | `help-articles` | help center content | `help_articles` | — |
-| `audit` | append-only audit log and its read API | `audit_logs` | — (called by every module through `lib/audit`) |
+| `audit` (read API built 2026-10-09) | append-only audit log (written through `lib/audit`) and `GET /api/audit-logs`: admin-only, time-bounded `[from, to)`, keyset page with a signed cursor; no table of its own beyond three read indexes, no audit row for the read | `audit_logs` | — (written by every module through `lib/audit`; the read module calls nothing) |
 | `identity-client` (lib) | outbound Identity calls and their policies | — | identity-service |
 
 Cross-module calls go through **services**, never another module's repository.

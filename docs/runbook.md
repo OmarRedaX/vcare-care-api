@@ -152,6 +152,12 @@ Repeat for `idx_audit_logs_actor_user_id_created_at (actor_user_id, created_at D
 every partition's index is attached (`SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_audit_logs_created_at_id'::regclass`). A failed
 `CONCURRENTLY` build leaves an invalid index: drop it and retry that partition. Partitions created later inherit the parent indexes.
 
+### Audit log pagination answers `400` on `cursor`
+`GET /api/audit-logs` and the verification queue sign their cursors with `SERVICE_CLIENT_SECRET`. After a rotation of that secret every
+outstanding cursor answers `400 ValidationFailed` (`field: cursor`); clients restart from page 1 (no data loss). Slow audit pages: confirm
+the request is time-bounded (default 30 days) and the three read indexes exist; an `action` or `entityType`-only filter on a wide window is the
+known slow shape (audit spec section 8). Log only the request id.
+
 ### Inspect an identity sync job
 ```sql
 SELECT id, kind, doctor_user_id, target_status, status, attempts, consecutive_failures,

@@ -96,7 +96,7 @@ authenticated Care request is 401; the platform alert row lives in hub `architec
   200 / 202 `identitySync: pending|failed` / 404 / 409 `InvalidTransition`, `x-failure-policy: retry-report-pending`);
   implemented by the admin-doctors module (built 2026-10-09).
 - ~~`GET /api/audit-logs` requires/defaults a time range (ADR 0009).~~ Contract landed 2026-10-08 (`to` defaults to now,
-  `from` to 30 days before `to`); implementation pending the audit module.
+  `from` to 30 days before `to`); implemented by the audit module (built 2026-10-09).
 - File handling (ADRs 0013, 0014): replace the two multipart upload operations with `…/uploads` + `…/complete`, add
   the three `download-url` operations, drop `downloadUrl` from DTOs, add `UploadIntentExpired` — full list in
   [file-handling.md](./file-handling.md) §2. IaC: bucket CORS, Block Public Access, TLS policy, `quarantine/*`

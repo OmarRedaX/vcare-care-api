@@ -3,7 +3,7 @@ title: audit — Tasks
 owner: care-team
 service: care-service
 module: audit
-status: in-progress
+status: implemented
 last_verified: 2026-10-09
 tags: [tasks, audit, audit-logs, keyset, indexes]
 related: [audit-spec, audit-brainstorm]
@@ -11,7 +11,7 @@ related: [audit-spec, audit-brainstorm]
 
 # audit — Tasks
 
-Spec: [spec.md](./spec.md) v1.0.0. Build-order tags in parentheses.
+Spec: [spec.md](./spec.md) v1.1.0 (implemented; section 13 as-built notes). Test run 2026-10-09: `npm test` 111 suites / 2031 tests green; review clean. Build-order tags in parentheses.
 
 ## Legend
 - [ ] todo · [~] in progress · [x] done
@@ -32,4 +32,4 @@ Spec: [spec.md](./spec.md) v1.0.0. Build-order tags in parentheses.
 - [x] (mount) `src/routes.ts`
 - [x] (tests) <- /write-tests (spec 9): written and green; the two product findings it pinned (all cross-field details at once; validly signed cursor with an impossible `t` answers 400) are fixed
 - [x] (manual-qa) <- /manual-qa: 2026-10-09, 122 pass / 0 fail, `scripts/curl-test-audit.sh` (unverified paths listed in manual-qa.md)
-- [x] (docs) service card, INDEX, checkpoint; `architecture/*` deltas (data-model indexes, api row) left to /update-docs
+- [x] (docs) service card, INDEX, checkpoint; `/update-docs` 2026-10-09: spec v1.1.0 as-built notes, `architecture/*` deltas (data-model indexes, api row, overview module map, deployment note), runbook

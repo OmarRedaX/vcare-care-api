@@ -3,8 +3,8 @@ title: audit — Spec
 owner: care-team
 service: care-service
 module: audit
-status: ready
-version: 1.0.0
+status: implemented
+version: 1.1.0
 diataxis: reference
 last_verified: 2026-10-09
 tags: [spec, audit, audit-logs, pagination, keyset, partitions, indexes, explain, rbac]
@@ -229,7 +229,7 @@ key `SERVICE_CLIENT_SECRET` — the same key and helper the verification queue c
 - A cursor is a **position, never a grant**: every page re-applies the request's filters and window. The cursor does
   not bind the filter set (unlike the verification queue's status): changing a filter between pages simply restarts
   ordering from that position within the new filter; it cannot reveal anything the admin could not already query.
-- Size: about 165 characters, far below the 1024 cap.
+- Size: about 200 characters, far below the 1024 cap.
 
 ---
 
@@ -361,7 +361,7 @@ seeding, real Redis, `FakeClock` bound to `TOKENS.AuditClock`, signed admin toke
 | `parseIsoDateTimeWithOffset` | should accept `Z`, `+05:30`, `-08:00`, 1–9 fraction digits (truncated to ms); should reject date-only, no offset, `+0100`, lowercase `t`/`z`, space separator, hour 24, minute 60, second 60, `2027-02-30`, year 0000/1969/10000, empty, arrays; should convert `2026-04-15T14:00:00+02:00` to `12:00:00.000Z` |
 | `IsIsoDateTimeWithOffset` + DTO | should return `400`-shaped details with `field` `from`/`to` and no echoed value; should reject unknown keys; should reject `limit` `0`/`101`/`1.5`/`abc`; should reject `actorUserId` `0`/`-1`/`007`/`1e3`/`abc`; should reject empty or 65-char `action`/`entityType` and NUL; should accept all filters together |
 | `resolveAuditWindow` (pure) | should default `to` to the clock and `from` to `to` minus 30 days; should use `cursor.to` when `query.to` is absent; should prefer `query.to` over `cursor.to`; should reject `from > to` with field `from`; should accept `from == to` and report empty; should reject `entityId` without `entityType` with field `entityType`; should compute the 30 days with `toMs(30, "d")` |
-| cursor | should round-trip `{ t, id, to }`; should answer `400` `cursor` for: not base64, missing MAC, flipped MAC byte, flipped payload byte, a verification-queue cursor, `t` with 3 fraction digits, `id` 0 / float / string, missing `to`, `to` not a valid instant, rotated secret |
+| cursor | should round-trip `{ t, id, from, to }`; should answer `400` `cursor` for: not base64, missing MAC, flipped MAC byte, flipped payload byte, a verification-queue cursor, `t` with 3 fraction digits, `id` 0 / float / string, missing `from` or `to`, `from`/`to` not a valid instant or not millisecond form, `t` not a real instant, a cursor with extra `.` segments, rotated secret |
 | service (fake repo, fake clock) | should call the repository once with `limit + 1`; should not call the clock when `cursor` and `to` are both present; should set `nextCursor` only when `hasMore`; should freeze `to` into the cursor; should not call the repository when `from == to`; should not touch any audit recorder |
 | response DTO | should produce exactly the nine contract keys and no other; should copy `metadata` verbatim (null, number, boolean, string); should render `createdAt` with `toISOString`; should map a `service` actor to `actorUserId: null` |
 | policies | should list only `admin`, owner `none`, no `accountState` override |
@@ -520,3 +520,23 @@ Types (`AuditLogRow`, `ListAuditLogsParams`, `AuditCursorPayload`, `AuditWindow`
 `docs/architecture/api.md` (audit row: window, filters, cursor), `docs/INDEX.md`, and `docs/service-card.md` (endpoint
 list gains `GET /api/audit-logs` as built; the indexes on `audit_logs`). The **service card will need updating** when the
 module ships; this spec does not edit it.
+
+---
+
+## 13. As-built notes (2026-10-09, `feature/admin-doctors`)
+
+Built, tested (`npm test` 111 suites / 2031 tests; real-Postgres integration green incl. EXPLAIN/pruning), manual QA 122 pass / 0 fail
+([manual-qa.md](./manual-qa.md)), code review clean (review file removed). Where this section differs from §1-§12, **this section is the
+as-built behavior**; the sections above stay as the design record. `contracts/openapi.yaml` already matched the route and was not changed
+by `/update-docs`.
+
+| # | As built | Design text it refines |
+|---|---|---|
+| B1 | **Both bounds are frozen into the cursor.** The payload is `{ t, id, from, to }` (not `{ t, id, to }`): `from` and `to` are the effective bounds of page 1, both in millisecond ISO form (`AUDIT_CURSOR_TO_PATTERN`), each also checked with `parseIsoDateTimeWithOffset`. A `from`/`to` sent again on a later page wins over the frozen value (`resolveAuditWindow(now, from, to, cursorTo, cursorFrom)`). Only a first page without `to` reads the clock. | §3.2, R3, R4, A1 |
+| B2 | **Millisecond precision for the window and `createdAt`; microseconds only in `t`.** Bounds are truncated to milliseconds, the DTO renders `created_at.toISOString()`, and only the cursor's `t` carries the full six-digit microsecond value (`AUDIT_CURSOR_TIMESTAMP_PATTERN`; also checked as a real instant, so a validly signed but impossible `t` answers `400`, never a Postgres `22008` -> `500`). | §3.1, §3.2 |
+| B3 | **Strict two-segment signed cursors.** `decodeSignedCursor` (shared by the verification queue and audit) requires exactly `body.mac`: a cursor with extra `.` segments, or an empty segment, is `400 ValidationFailed` `{ field: "cursor", issue: "is invalid" }`, so one position has one valid spelling. | §3.2 tamper handling |
+| B4 | **All cross-field problems are aggregated.** The service collects the cursor error, the `entityId`-without-`entityType` error and the `from > to` error and answers one `400` whose `details[]` lists every one, sorted by `field` (`cursor`, `entityType`, `from`). | §3.1 cross-field table |
+| B5 | **Cursor wording in the unit plan** (§9.2/§9.3) follows B1-B3; the tamper cases additionally cover extra segments and non-millisecond `from`/`to`. | §9.2, §9.3 |
+
+Unchanged and verified: no new table, column, grant or error code; one statement per request with the nine columns plus `cursor_timestamp`;
+no audit row for the read; rate limit `audit-read` 120/min per admin after `authorize`; `Cache-Control: no-store`.
