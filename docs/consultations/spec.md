@@ -3,7 +3,7 @@ title: consultations — Spec
 owner: care-team
 service: care-service
 module: consultations
-status: draft
+status: ready
 version: 0.1.0
 diataxis: reference
 last_verified: 2026-10-11
