@@ -22,7 +22,7 @@ describe("lib/lifecycle/runMain (parity c: boot_failed)", () => {
         );
 
         expect(lines).toHaveLength(1);
-        expect(lines[0]).toMatchObject({ level: "error", message: "boot_failed", error: { name: "Error", message: "synthetic boot failure" } });
+        expect(lines[0]).toMatchObject({ level: "error", message: "boot_failed", error: { name: "Error", message: "error:Error" } });
         expect(exit).toHaveBeenCalledWith(1);
     });
 

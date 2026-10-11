@@ -103,7 +103,8 @@ describe("lib/logger/Logger", () => {
         logger.error("db_failed", { error: pgError });
 
         const error = parsed()[0]?.error as Record<string, unknown>;
-        expect(Object.keys(error).sort()).toEqual(["code", "name", "stack"]);
+        expect(Object.keys(error).sort()).toEqual(["code", "message", "name", "stack"]);
+        expect(error.message).toBe("pg_error:23505");
         expect(error.code).toBe("23505");
         expect(JSON.stringify(parsed())).not.toContain("synthetic.patient@example.test");
     });
@@ -123,11 +124,10 @@ describe("lib/logger/Logger", () => {
 
             const serialized = serializeError(pgError);
 
-            expect(serialized.message).toBeUndefined();
+            expect(serialized.message).toBe(`pg_error:${code}`);
             expect(serialized).toMatchObject({ name: "Error", code, severity: "ERROR", routine: "pg_strtoint32_safe" });
             expect(JSON.stringify(serialized)).not.toContain("SYNTHETIC-COMPLAINT-7731");
-            const [header, ...frames] = (serialized.stack ?? "").split("\n");
-            expect(header).toBe("Error");
+            const frames = (serialized.stack ?? "").split("\n");
             expect(frames.length).toBeGreaterThan(0);
             expect(frames.every((line) => /^\s+at /.test(line))).toBe(true);
         },
@@ -148,19 +148,26 @@ describe("lib/logger/Logger", () => {
 
         const serialized = serializeError(pgError) as unknown as Record<string, unknown>;
 
-        expect(Object.keys(serialized).sort()).toEqual(["code", "column", "constraint", "name", "severity", "stack", "table"]);
+        expect(Object.keys(serialized).sort()).toEqual(["code", "column", "constraint", "message", "name", "severity", "stack", "table"]);
         expect(JSON.stringify(serialized)).not.toContain("SYNTHETIC-COMPLAINT-7731");
     });
 
-    it("should keep the message but rebuild the stack from frames when a non-database Error is serialized", () => {
+    it("should replace the message and keep only stack frames when a non-database Error is serialized", () => {
         const error = new Error("Knex: Timeout acquiring a connection");
         error.message = "Knex: Timeout acquiring a connection\nsecond line";
 
         const serialized = serializeError(error);
 
-        expect(serialized.message).toBe("Knex: Timeout acquiring a connection\nsecond line");
-        expect(serialized.stack?.split("\n")[0]).toBe("Error");
+        expect(serialized.message).toBe("error:Error");
+        expect(serialized.stack?.split("\n")[0]).toMatch(/^\s+at /);
         expect(serialized.stack).not.toContain("second line");
+    });
+
+    it("should omit a secret embedded in an Error message from captured logs", () => {
+        const { logger, lines, parsed } = collectingLogger();
+        logger.error("unhandled_error", { error: new Error("SYNTHETIC-SECRET-9812") });
+        expect(lines.join("")).not.toContain("SYNTHETIC-SECRET-9812");
+        expect(parsed()[0]?.error).toMatchObject({ name: "Error", message: "error:Error" });
     });
 
     it("should never log a non-Error value when error is not an Error", () => {

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-08
+last_verified: 2026-10-11
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -157,11 +157,12 @@ written by services, repositories, and async continuations carry it without pass
 
 - `request_completed` per request: route **pattern** (`req.baseUrl + req.route.path`, else `unmatched`), method,
   status, error `code`, `durationMs`, and `userId`/`role` once the user guard verified a token. Level `error` for 5xx,
-  `debug` for `/health/` routes below 500 (invisible at `LOG_LEVEL=info`), else `info`; `warn request_aborted` when
-  the client disconnects first. Never the URL, query string, headers, or bodies. The pattern is captured on
+  `debug` for `/health/` routes below 500 (invisible at `LOG_LEVEL=info`), else `info`; `warn request_aborted` with status 499 when
+  the client disconnects first. The request id is captured when the middleware starts and retained for finish and abort logs. Never the URL, query string, headers, or bodies. The pattern is captured on
   `res.locals` by the guard, `authorize`, the limiter, idempotency, and every sealed router's error layer, so it keeps
   the full mount prefix when a nested router's handler throws (fixes [#6](https://github.com/OmarRedaX/vcare-care-api/issues/6)).
 - Metrics are log lines (`message: "metric"`, `metric`, `value`, `dims`; [ADR 0007](../adr/0007-log-derived-metrics.md)).
+- Non-`AppError` messages are replaced by `error:<name>` or `pg_error:<SQLSTATE>`; stack logs contain frames only. After headers are sent, the error handler logs once and destroys the response.
 - `console.*` is banned in `src/` (lint); Knex's messages are routed through the logger.
 
 **Never logged:** complaint text, examination notes, diagnosis text or code, treatment plans, allergies, chronic

@@ -33,6 +33,8 @@ export function createRedis(url: string, options?: CreateRedisOptions): Redis {
         enableOfflineQueue: false,
         maxRetriesPerRequest: 1,
         connectTimeout: 2_000,
+        // TCP probes detect an idle half-open connection, including when no command is outstanding.
+        keepAlive: 10_000,
         commandTimeout: REDIS_COMMAND_TIMEOUT_MS,
         socketTimeout: REDIS_SOCKET_TIMEOUT_MS,
         retryStrategy: (attempt: number) => Math.min(attempt * 200, 2_000),

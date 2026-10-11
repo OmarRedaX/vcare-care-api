@@ -32,6 +32,23 @@ describe("lib/error/errorHandler", () => {
         logs.restore();
     });
 
+    it("should log once and destroy the response when headers were already sent", () => {
+        const req = { requestId: REQUEST_ID, method: "GET", baseUrl: "", route: { path: "/t" } } as unknown as Request;
+        const res = {
+            headersSent: true,
+            statusCode: 200,
+            destroy: jest.fn(),
+            end: jest.fn(),
+        } as unknown as Response;
+
+        errorHandler(new Error("SYNTHETIC-SECRET-9812"), req, res, jest.fn());
+
+        expect((res.destroy as jest.Mock).mock.calls).toHaveLength(1);
+        expect((res.end as jest.Mock).mock.calls).toHaveLength(0);
+        expect(logs.lines().filter((line) => line.message === "error_after_headers_sent")).toHaveLength(1);
+        expect(logs.text()).not.toContain("SYNTHETIC-SECRET-9812");
+    });
+
     it("should render the envelope with status and code when an AppError is thrown (F4)", async () => {
         const res = await request(
             harness(() => {
@@ -156,8 +173,8 @@ describe("lib/error/errorHandler", () => {
         expect(line?.status).toBe(500);
         const error = line?.error as { name: string; message?: string; stack?: string };
         expect(error.name).toBe("Error");
-        expect(error.message).toBe("synthetic unknown failure");
-        expect(error.stack?.split("\n")[1]).toMatch(/^\s+at /);
+        expect(error.message).toBe("error:Error");
+        expect(error.stack?.split("\n")[0]).toMatch(/^\s+at /);
     });
 
     it("should log a declared IdentityUnavailable 503 as a warn handled_error without a stack", async () => {
@@ -186,10 +203,11 @@ describe("lib/error/errorHandler", () => {
 
     it("should not call next or print a raw stack when headers were already sent (parity b)", () => {
         const next = jest.fn();
-        const res = { headersSent: true, end: jest.fn() } as unknown as Response;
+        const res = { headersSent: true, destroy: jest.fn(), end: jest.fn() } as unknown as Response;
         errorHandler(new Error("late failure"), { requestId: REQUEST_ID } as Request, res, next);
         expect(next).not.toHaveBeenCalled();
-        expect((res.end as jest.Mock).mock.calls).toHaveLength(1);
+        expect((res.destroy as jest.Mock).mock.calls).toHaveLength(1);
+        expect((res.end as jest.Mock).mock.calls).toHaveLength(0);
         expect(logs.lines().filter((entry) => entry.message === "error_after_headers_sent")).toHaveLength(1);
     });
 
@@ -212,16 +230,14 @@ describe("lib/error/errorHandler", () => {
     });
 
     it("should not write a second body when headers were already sent", async () => {
-        const res = await request(
+        await expect(request(
             harness((_req, res, next) => {
                 res.status(200);
                 res.write("partial");
                 next(new Error("late failure"));
             }),
-        ).get("/t");
+        ).get("/t")).rejects.toThrow();
 
-        expect(res.status).toBe(200);
-        expect(res.text).toBe("partial");
         expect(logs.lines().find((entry) => entry.message === "error_after_headers_sent")).toMatchObject({
             route: "GET /t", // L7
             status: 200,

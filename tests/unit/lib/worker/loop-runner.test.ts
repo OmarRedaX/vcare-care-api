@@ -109,7 +109,7 @@ describe("lib/worker/LoopRunner", () => {
 
         const failure = lines.find((line) => line.message === "worker_tick_failed");
         expect(failure).toMatchObject({ level: "error", loop: "reminders" });
-        expect((failure?.error as { message: string }).message).toBe("synthetic tick failure");
+        expect((failure?.error as { message: string }).message).toBe("error:Error");
         await runner.stop();
     });
 

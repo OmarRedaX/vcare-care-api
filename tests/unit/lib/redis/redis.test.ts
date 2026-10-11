@@ -66,6 +66,7 @@ describe("lib/redis", () => {
                 enableOfflineQueue: false,
                 maxRetriesPerRequest: 1,
                 connectTimeout: 2_000,
+                keepAlive: 10_000,
                 commandTimeout: 500,
                 // M2: a stalled/half-open socket with commands outstanding is destroyed and redialled
                 socketTimeout: REDIS_SOCKET_TIMEOUT_MS,

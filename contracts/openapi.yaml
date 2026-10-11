@@ -93,11 +93,14 @@ paths:
       security: []
       x-roles: [public]
       x-ownership: none
+      x-error-codes: [InternalError]
       parameters:
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
           $ref: '#/components/responses/HealthLiveOk'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/health/ready:
     get:
@@ -108,6 +111,7 @@ paths:
       security: []
       x-roles: [public]
       x-ownership: none
+      x-error-codes: [InternalError]
       parameters:
         - $ref: '#/components/parameters/RequestId'
       responses:
@@ -115,6 +119,8 @@ paths:
           $ref: '#/components/responses/HealthReadyOk'
         '503':
           $ref: '#/components/responses/HealthReadyDown'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /internal/health/live:
     get:
@@ -128,11 +134,14 @@ paths:
       security: []
       x-roles: [public]
       x-ownership: none
+      x-error-codes: [InternalError]
       parameters:
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
           $ref: '#/components/responses/HealthLiveOk'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /internal/health/ready:
     get:
@@ -146,6 +155,7 @@ paths:
       security: []
       x-roles: [public]
       x-ownership: none
+      x-error-codes: [InternalError]
       parameters:
         - $ref: '#/components/parameters/RequestId'
       responses:
@@ -153,6 +163,8 @@ paths:
           $ref: '#/components/responses/HealthReadyOk'
         '503':
           $ref: '#/components/responses/HealthReadyDown'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   # ─────────────────────────────────────────────────────────────── specialties
   /api/specialties:
@@ -2945,7 +2957,7 @@ components:
         type: string
         format: uuid
     CacheControlNoStore:
-      description: '`no-store` on every clinical and consultation response.'
+      description: '`no-store` prevents caching of this response.'
       schema:
         type: string
         const: no-store
@@ -3461,6 +3473,7 @@ components:
             error:
               code: TokenExpired
               message: Access token expired
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ServiceTokenRequired:
       description: '`ServiceTokenRequired` — `/internal/*` without a valid service token (a user token, even an admin''s, lands here).'
@@ -3476,6 +3489,7 @@ components:
             error:
               code: ServiceTokenRequired
               message: A service token is required
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     Forbidden:
       description: '`Forbidden` — role or ownership check failed, account state not allowed, or the doctor is locally suspended.'
@@ -3493,6 +3507,7 @@ components:
             error:
               code: Forbidden
               message: You are not allowed to perform this action
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     InsufficientScope:
       description: '`InsufficientScope` — the service token lacks `doctors:read`.'
@@ -3508,6 +3523,7 @@ components:
             error:
               code: InsufficientScope
               message: The service token lacks the required scope
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     BookingForbidden:
       description: '`EmailNotVerified` (token `ev=false`) or `Forbidden` (wrong role or non-active account).'
@@ -3523,6 +3539,7 @@ components:
             error:
               code: EmailNotVerified
               message: Verify your email before booking
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordWriteForbidden:
       description: '`NotAssignedDoctor` (a doctor other than the consultation''s doctor) or `Forbidden` (wrong role, suspended doctor).'
@@ -3538,6 +3555,7 @@ components:
             error:
               code: NotAssignedDoctor
               message: Only the assigned doctor can write this record
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     NotFound:
       description: '`NotFound` — absent, soft-deleted, or not visible to the caller (existence is not revealed).'
@@ -3555,6 +3573,7 @@ components:
             error:
               code: NotFound
               message: Resource not found
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     Conflict:
       description: '`Conflict` — generic uniqueness or state conflict (e.g. duplicate slug, application already submitted). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
@@ -3574,6 +3593,7 @@ components:
             error:
               code: Conflict
               message: The resource already exists
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     BookingConflict:
       description: '`DoctorNotBookable` (not approved+synced, suspended, not accepting, or no active type) or `SlotUnavailable` (taken, incl. exclusion violation). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
@@ -3591,6 +3611,7 @@ components:
             error:
               code: SlotUnavailable
               message: The selected slot is no longer available
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RescheduleConflict:
       description: '`PolicyWindowViolation`, `InvalidTransition`, `DoctorNotBookable`, or `SlotUnavailable`. Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
@@ -3608,6 +3629,7 @@ components:
             error:
               code: PolicyWindowViolation
               message: This consultation can no longer be changed by the patient
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     CancelConflict:
       description: '`PolicyWindowViolation` (patient inside the window) or `InvalidTransition` (terminal or not cancellable). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
@@ -3625,6 +3647,7 @@ components:
             error:
               code: InvalidTransition
               message: The consultation cannot change from its current status
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     SessionConflict:
       description: '`RoomNotOpen` (outside the session window) or `InvalidTransition`.'
@@ -3640,6 +3663,7 @@ components:
             error:
               code: RoomNotOpen
               message: The session room is not open
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     DoctorTransitionConflict:
       description: '`InvalidTransition` — the doctor cannot change from the current state (suspend: not approved and synced; reinstate: suspended but not synced). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
@@ -3657,6 +3681,7 @@ components:
             error:
               code: InvalidTransition
               message: The doctor cannot change from the current state
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     InvalidTransition:
       description: '`InvalidTransition` — lifecycle transition not allowed (including any change to a terminal state).'
@@ -3672,6 +3697,7 @@ components:
             error:
               code: InvalidTransition
               message: The consultation cannot change from its current status
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     NoShowConflict:
       description: '`NoShowTooEarly` (before `starts_at` + grace) or `InvalidTransition`.'
@@ -3687,6 +3713,7 @@ components:
             error:
               code: NoShowTooEarly
               message: A no-show can be marked only after the grace period
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordCreateConflict:
       description: '`RecordRequiresCompleted` (consultation not `completed`) or `Conflict` (a record already exists). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
@@ -3704,6 +3731,7 @@ components:
             error:
               code: RecordRequiresCompleted
               message: A record can be written only for a completed consultation
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordLocked:
       description: '`RecordLocked` — attachments cannot be deleted after the 24 h lock.'
@@ -3719,6 +3747,7 @@ components:
             error:
               code: RecordLocked
               message: The record is locked
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ApplicationNotReviewable:
       description: '`ApplicationNotReviewable` — the application is not in `submitted`.'
@@ -3736,6 +3765,7 @@ components:
             error:
               code: ApplicationNotReviewable
               message: Only submitted applications can be reviewed
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ApplicationDecisionConflict:
       description: '`ApplicationNotReviewable` — the application is not in `submitted`. Or `Conflict` with `Retry-After: 5` — the account''s previous status change (resubmit/reopen) has not reached Identity yet (`identity_sync_status=pending`); retry after the delay.'
@@ -3757,6 +3787,7 @@ components:
                 error:
                   code: ApplicationNotReviewable
                   message: Only submitted applications can be reviewed
+                  details: []
                   requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
             syncPending:
               value:
@@ -3764,6 +3795,7 @@ components:
                 error:
                   code: Conflict
                   message: Conflict
+                  details: []
                   requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ApplicationNotEditable:
       description: '`ApplicationNotEditable` — submitted applications cannot be edited. Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed; retry after the delay.'
@@ -3783,6 +3815,7 @@ components:
             error:
               code: ApplicationNotEditable
               message: The submitted application cannot be edited
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     UploadIntentExpired:
       description: '`UploadIntentExpired` — upload intent expired before completion.'
@@ -3800,6 +3833,7 @@ components:
             error:
               code: UploadIntentExpired
               message: The upload intent has expired
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     ScheduleConflictsUnconfirmed:
       description: '`ScheduleConflictsUnconfirmed` (also returned by `deleteMyException`; body lists the affected consultation ids; resubmit with `confirmConflicts=true`) or `Conflict` (a live exception already exists for a date). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict). `Conflict` bodies are the plain envelope.'
@@ -3828,6 +3862,7 @@ components:
             error:
               code: OutsideWorkingHours
               message: The requested time is outside the doctor's working hours
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     IdempotencyConflict:
       description: '`IdempotencyConflict` — the same `Idempotency-Key` was used with a different body.'
@@ -3845,6 +3880,7 @@ components:
             error:
               code: IdempotencyConflict
               message: The idempotency key was already used with a different request
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RateLimited:
       description: '`RateLimited` — Redis sliding-window limiter tripped.'
@@ -3864,6 +3900,7 @@ components:
             error:
               code: RateLimited
               message: Too many requests
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     InternalError:
       description: '`InternalError` — unhandled error (no internals in the body). Also returned when an audit write for a clinical read fails.'
@@ -3881,6 +3918,7 @@ components:
             error:
               code: InternalError
               message: An unexpected error occurred
+              details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     SuspensionPending:
       description: '`IdentityUnavailable` — the suspension is applied locally (bookings and doctor actions blocked) but Identity has not confirmed session revocation. A durable job keeps retrying.'
@@ -3944,7 +3982,7 @@ components:
           const: false
         error:
           type: object
-          required: [code, message, requestId]
+          required: [code, message, details, requestId]
           properties:
             code:
               $ref: '#/components/schemas/ErrorCode'
@@ -3981,6 +4019,7 @@ components:
         error:
           code: ScheduleConflictsUnconfirmed
           message: The change affects existing consultations; resubmit with confirmConflicts=true
+          details: []
           requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
         conflicts:
           consultationIds: [1042, 1057]
@@ -4002,6 +4041,7 @@ components:
         error:
           code: IdentityUnavailable
           message: Suspension applied locally; session revocation is pending
+          details: []
           requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
         suspension: applied-locally, session-revocation-pending
         data:

@@ -142,7 +142,8 @@ describe("lib/knex/ensureAppLogin", () => {
         const real = new Logger({ level: "debug", service: "care-service", write: (line) => lines.push(line) });
         real.error("migration_failed", { command: "ensure-app-login", error: rejection });
         expect(lines).toHaveLength(1);
-        expect(lines.join("")).toContain("app_login_ddl_failed");
+        expect(lines.join("")).toContain("error:Error");
+        expect(lines.join("")).not.toContain("app_login_ddl_failed");
         expect(lines.join("")).not.toContain("synthetic-pw-8823");
     });
 

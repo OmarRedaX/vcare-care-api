@@ -30,6 +30,39 @@ export type ErrorCode =
     | "RateLimited"
     | "InternalError";
 
+/** Runtime mirror of the TypeScript ErrorCode set, checked against the OpenAPI enum. */
+export const ERROR_CODES = [
+    "ValidationFailed",
+    "Unauthorized",
+    "TokenExpired",
+    "ServiceTokenRequired",
+    "InsufficientScope",
+    "Forbidden",
+    "EmailNotVerified",
+    "DoctorNotBookable",
+    "SlotUnavailable",
+    "OutsideWorkingHours",
+    "BookingInPast",
+    "BeyondBookingHorizon",
+    "PolicyWindowViolation",
+    "InvalidTransition",
+    "NoShowTooEarly",
+    "RoomNotOpen",
+    "RecordRequiresCompleted",
+    "NotAssignedDoctor",
+    "RecordLocked",
+    "ApplicationNotReviewable",
+    "ApplicationNotEditable",
+    "UploadIntentExpired",
+    "ScheduleConflictsUnconfirmed",
+    "IdentityUnavailable",
+    "IdempotencyConflict",
+    "NotFound",
+    "Conflict",
+    "RateLimited",
+    "InternalError",
+] as const satisfies readonly ErrorCode[];
+
 export interface ErrorDetail {
     field: string;
     issue: string;

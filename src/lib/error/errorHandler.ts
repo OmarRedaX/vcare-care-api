@@ -68,7 +68,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
             status: res.statusCode,
             error: err,
         });
-        res.end();
+        res.destroy();
         return;
     }
 

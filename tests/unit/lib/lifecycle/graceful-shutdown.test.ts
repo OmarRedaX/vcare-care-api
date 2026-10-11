@@ -183,7 +183,7 @@ describe("lib/lifecycle/createGracefulShutdown", () => {
         expect(events).toContain("redis.quit");
         const failure = lines.find((line) => line.message === "shutdown_resource_failed");
         expect(failure?.level).toBe("error");
-        expect((failure?.error as { message: string }).message).toBe("synthetic destroy failure");
+        expect((failure?.error as { message: string }).message).toBe("error:Error");
         expect(exit).toHaveBeenCalledWith(0);
     });
 
