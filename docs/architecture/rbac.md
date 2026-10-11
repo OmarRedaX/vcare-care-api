@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-09
+last_verified: 2026-10-11
 tags: [rbac, authorization, ownership, privacy, security]
 related: [api, schedules-spec, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -101,9 +101,9 @@ not a policy check.
 | `PATCH /admin/applications/:id/approve`, `/reject`, `/reopen` (live) | admin | none; approve/reject refused with `409 Conflict` + `Retry-After: 5` while `identity_sync_status` is `pending` | `verification.approved|rejected|reopened`, `identity_sync.pending|synced|failed` |
 | `PATCH /admin/doctors/:doctorUserId/suspend` (live, 2026-10-09) | admin (token `status=active`; a doctor, including the target, and a patient get `403 Forbidden`) | none; `doctorUserId` is the doctor's Identity user id; 30/min per admin, one bucket shared with reinstate | admin-action: `doctor.suspended`, `consultation.flagged_for_followup` (entity `consultation`), `identity_sync.*`; reason text never in audit metadata (`reasonLength` only) |
 | `PATCH /admin/doctors/:doctorUserId/reinstate` (live, 2026-10-09, ADR 0012) | admin | none; same limiter | admin-action: `doctor.reinstated`, `identity_sync.*` |
-| `GET /patients/me` | patient | self | clinical-read |
-| `PATCH /patients/me` | patient | self | clinical-write |
-| `GET /patients/:patientUserId`, `GET /patients/:patientUserId/records` | patient, doctor | `consulted-patient-or-self`: patient `:id = auth.userId`; doctor has a `completed` or current consultation with the patient; else `deny-not-found` | clinical-read |
+| `GET /patients/me` (live, 2026-10-11) | patient (token `status=active`; doctor and admin `403`) | self | clinical-read: `patient_profile.read`, metadata `{ patientUserId }` |
+| `PATCH /patients/me` (live, 2026-10-11) | patient (as above) | self | clinical-write: `patient_profile.updated`, metadata `{ created, changedFields }` (names only) |
+| `GET /patients/:patientUserId`, `GET /patients/:patientUserId/records` (**planned**) | patient, doctor | `consulted-patient-or-self`: patient `:id = auth.userId`; doctor has a `completed` or current consultation with the patient; else `deny-not-found` | clinical-read |
 | `POST /consultations` | patient (active, email verified) | `self` — `patient_user_id := auth.userId` | — |
 | `GET /consultations` | patient, doctor, admin | `participant-or-admin` — own rows; admin all with admin DTO | — |
 | `GET /consultations/:id` | patient, doctor, admin | `participant-or-admin`; others `deny-not-found` | clinical-read for participants |

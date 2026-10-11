@@ -4,6 +4,8 @@ import { AdminDoctorsController } from "./app/admin-doctors/controller/admin-doc
 import { AdminDoctorsService } from "./app/admin-doctors/service/admin-doctors.service";
 import { NoopSuspensionImpactProvider } from "./app/admin-doctors/service/noop-suspension-impact.provider";
 import { HealthController } from "./app/health/controller/health.controller";
+import { PatientsController } from "./app/patients/controller/patients.controller";
+import { PatientsService } from "./app/patients/service/patients.service";
 import { DoctorsController } from "./app/doctors/controller/doctors.controller";
 import { DoctorsService } from "./app/doctors/service/doctors.service";
 import { buildScheduleOwnerResolver } from "./app/doctors/schedule-owner.resolver";
@@ -59,4 +61,6 @@ export function registerDependencies(env: Env): void {
     container.registerInstance(TOKENS.AuditClock, { now: () => Date.now() });
     container.registerSingleton(TOKENS.AuditService, AuditService);
     container.registerSingleton(TOKENS.AuditController, AuditController);
+    container.registerSingleton(TOKENS.PatientsService, PatientsService);
+    container.registerSingleton(TOKENS.PatientsController, PatientsController);
 }

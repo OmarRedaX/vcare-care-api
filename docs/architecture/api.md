@@ -6,7 +6,7 @@ status: draft
 diataxis: reference
 last_verified: 2026-10-11
 tags: [api, reference, routes, rbac]
-related: [rbac, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
+related: [rbac, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
 
 # API — care-service (human view)
@@ -120,10 +120,10 @@ All admin routes: admin, token status `active`, 120/min per user, `no-store`. `a
 ## patients
 | Method | Path | Roles | Ownership | Audit | Notes |
 |---|---|---|---|---|---|
-| GET | `/api/patients/me` | patient | self | clinical-read | 404 until created |
-| PATCH | `/api/patients/me` | patient | self | clinical-write | upsert; `timezone` required on create |
-| GET | `/api/patients/{patientUserId}` | patient, doctor | consulted-patient-or-self (else 404) | clinical-read | admins never |
-| GET | `/api/patients/{patientUserId}/records` | patient, doctor | consulted-patient-or-self (else 404) | clinical-read | timeline: profile + records newest first |
+| GET | `/api/patients/me` (live, 2026-10-11) | patient | self | clinical-read | 404 until created; 120/min per user; `no-store` (also on parser-level 400s) |
+| PATCH | `/api/patients/me` (live, 2026-10-11) | patient | self | clinical-write | upsert; `timezone` required on create; 200 for create and update; 20/min per user |
+| GET | `/api/patients/{patientUserId}` | patient, doctor | consulted-patient-or-self (else 404) | clinical-read | **planned** (ships with `consultations`); admins never |
+| GET | `/api/patients/{patientUserId}/records` | patient, doctor | consulted-patient-or-self (else 404) | clinical-read | **planned** (ships with `records`); timeline: profile + records newest first |
 
 ## consultations
 | Method | Path | Roles | Ownership | Idem | Audit / Case | Errors |

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { buildAdminDoctorsRouter } from "./app/admin-doctors/routes";
 import { buildAuditRouter } from "./app/audit/routes";
 import { buildDoctorsRouter } from "./app/doctors/routes";
+import { buildPatientsRouter } from "./app/patients/routes";
 import { buildSchedulesRouter } from "./app/schedules/routes";
 import { buildSpecialtiesRouter } from "./app/specialties/routes";
 import { buildVerificationRouter } from "./app/verification/routes";
@@ -17,5 +18,7 @@ export function buildPublicRoutes(): Router {
     // After the doctors/schedules routers and before any future `GET /doctors/:doctorUserId` discovery router.
     router.use(buildAdminDoctorsRouter());
     router.use(buildAuditRouter());
+    // Self-owned `/patients/me`: before any future `GET /patients/:patientUserId` (consultations) so `me` is never captured.
+    router.use(buildPatientsRouter());
     return router;
 }

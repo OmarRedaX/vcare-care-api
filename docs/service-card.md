@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-09
+last_verified: 2026-10-11
 tags: [service-card, catalog, care]
 related: [index, system-design, runbook, integration, data-model]
 sync_to_hub: catalog/care-service.card.md
@@ -33,7 +33,7 @@ consultation lifecycle (waiting room, session join, no-show), patient profiles, 
 
 ## Data owned
 `specialties`, `doctor_profiles`, `doctor_specialties`, `doctor_languages`, `verification_documents` (built), `upload_intents` (built),
-`working_hours` (built), `schedule_exceptions` (built), `consultation_types` (built), `consultations`, `patient_profiles`,
+`working_hours` (built), `schedule_exceptions` (built), `consultation_types` (built), `consultations`, `patient_profiles` (built),
 `medical_records`, `medical_record_amendments`, `record_attachments`, `help_articles`, `audit_logs`,
 `identity_sync_jobs` (built; kinds `verification`, `suspension`, `reinstatement`, written by the `identity-sync` engine), `notification_outbox`. Identity accounts are referenced only by `*_user_id BIGINT` (no cross-database FK).
 Detail: [architecture/data-model.md](./architecture/data-model.md).
@@ -62,7 +62,7 @@ Detail: [architecture/data-model.md](./architecture/data-model.md).
 `/api/health/live`, `/api/health/ready` (live; body `checks: { database, redis, identityJwks }`; `/api/health` removed) · `/api/specialties` (live: `GET` list, `POST` create, `PATCH /{id}` update) · doctors onboarding (live: `POST /api/doctors/apply`, `GET/PATCH /api/doctors/me`, `GET /api/doctors/me/application`; draft submit is local, rejected resubmit uses Case 1) · verification documents (live: `POST /api/doctors/me/documents/uploads`, `…/uploads/{uploadId}/complete`, `POST …/{documentId}/download-url`, `DELETE …/{documentId}`) · `/api/doctors`, `/api/doctors/{doctorUserId}`, `/api/doctors/{doctorUserId}/slots` ·
 `/api/doctors/me/working-hours`, `/api/doctors/me/exceptions`, `/api/doctors/me/consultation-types` (live: `GET`/`PUT` working hours; `GET`/`POST` exceptions, `DELETE /{id}`; `GET`/`POST` consultation types, `PATCH /{id}`; doctor role, self ownership, no cross-service call) ·
 `/api/admin/applications` (live: `GET` queue and `/{id}` detail, `POST /{id}/documents/{documentId}/download-url`, `PATCH /{id}/approve|reject|reopen`) · `/api/admin/doctors/{doctorUserId}/suspend`, `/reinstate` (live; admin only, 30/min per admin) ·
-`/api/patients/me`, `/api/patients/{patientUserId}`, `/api/patients/{patientUserId}/records` ·
+`/api/patients/me` (live: `GET`, `PATCH` upsert; patient role, self ownership, no-store, audited, no cross-service call) · `/api/patients/{patientUserId}`, `/api/patients/{patientUserId}/records` (planned, with consultations/records) ·
 `/api/consultations` (book, list, waiting-room, calendar, get, reschedule, cancel, join, start, complete, no-show, record) ·
 `/api/records/{id}` (+ attachment uploads, complete, download-url — planned) · `/api/help-articles` · `/api/audit-logs` (live: `GET`, admin only, filters actor/action/entity/window, 120/min per admin) · `/internal/doctors/{userId}/summary` · `/internal/health/live`, `/internal/health/ready` (live). Other endpoint families are designed in the contract, not yet built.
 
