@@ -12,7 +12,7 @@ import { requestLogger } from "./lib/logger/request-logger";
 import { assertRoutesAuthorized } from "./lib/rbac/assert-routes-authorized";
 import { markPreAuth } from "./lib/rbac/markers";
 import { requestId } from "./lib/request-id/request-id";
-import { buildPublicRoutes } from "./routes";
+import { buildPublicRoutes, NO_STORE_PREFIXES } from "./routes";
 
 /** The public listener (`/api/*` on PORT). */
 export function createPublicApp(options?: AppOptions): express.Express {
@@ -32,8 +32,11 @@ export function createPublicApp(options?: AppOptions): express.Express {
     }
     app.use(optionsNotFound);
 
-    // Clinical prefixes get no-store before body parsing so a malformed-body 400 carries it too (patients spec 3.1).
-    app.use("/api/patients", markPreAuth(noStore()));
+    // Clinical and consultation prefixes get no-store before body parsing so a malformed-body 400 (and a 401/404) carries
+    // it too (patients spec 3.1; consultations spec 3.10). Doctor routes keep their own handling.
+    for (const prefix of NO_STORE_PREFIXES) {
+        app.use(prefix, markPreAuth(noStore()));
+    }
     app.use(markPreAuth(express.json({ limit: "100kb", strict: true, type: "application/json" })));
 
     app.use("/api/health", buildHealthRouter());
