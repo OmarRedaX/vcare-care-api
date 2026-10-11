@@ -31,6 +31,8 @@ export interface Env {
     IDENTITY_SYNC_RETRY_CAP_SECONDS: number;
     IDENTITY_SYNC_ALERT_AFTER_SECONDS: number;
     UPLOAD_INTENT_PURGE_SECONDS: number;
+    BOOKING_HORIZON_DAYS: number;
+    CANCELLATION_POLICY_MINUTES: number;
     AUDIT_PARTITION_MONTHS_AHEAD: number;
     CORS_ORIGINS: string[];
     LOG_LEVEL: LogLevel;

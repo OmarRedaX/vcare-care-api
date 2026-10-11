@@ -17,3 +17,20 @@ describe("ALLOWED_CURRENCIES", () => {
         expect(() => parseEnv({ ...base, ALLOWED_CURRENCIES: value })).toThrow(InvalidEnvError);
     });
 });
+
+describe("BOOKING_HORIZON_DAYS and CANCELLATION_POLICY_MINUTES", () => {
+    it("should default to 60 days and 120 minutes", () => {
+        const env = parseEnv(base);
+        expect(env.BOOKING_HORIZON_DAYS).toBe(60);
+        expect(env.CANCELLATION_POLICY_MINUTES).toBe(120);
+    });
+    it("should accept explicit in-range values", () => {
+        const env = parseEnv({ ...base, BOOKING_HORIZON_DAYS: "30", CANCELLATION_POLICY_MINUTES: "0" });
+        expect(env.BOOKING_HORIZON_DAYS).toBe(30);
+        expect(env.CANCELLATION_POLICY_MINUTES).toBe(0);
+    });
+    it.each([["BOOKING_HORIZON_DAYS", "0"], ["BOOKING_HORIZON_DAYS", "366"], ["BOOKING_HORIZON_DAYS", "1.5"], ["CANCELLATION_POLICY_MINUTES", "-1"], ["CANCELLATION_POLICY_MINUTES", "10081"], ["CANCELLATION_POLICY_MINUTES", "abc"]])(
+        "should reject %s=%s", (key, value) => {
+            expect(() => parseEnv({ ...base, [key]: value })).toThrow(InvalidEnvError);
+        });
+});

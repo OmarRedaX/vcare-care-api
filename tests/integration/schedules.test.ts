@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import request from "supertest";
 import type { Test } from "supertest";
 import type { NoopScheduleChangeListener } from "../../src/app/schedules/service/noop-schedule-change-listener";
-import type { NoopScheduleImpactProvider } from "../../src/app/schedules/service/noop-schedule-impact.provider";
+import type { ScheduleImpactProvider } from "../../src/app/schedules/types";
 import { hasActiveTypeQuery, listTypesPageQuery } from "../../src/app/schedules/repository/consultation-types.repo";
 import { listExceptionsPageQuery } from "../../src/app/schedules/repository/schedule-exceptions.repo";
 import { listLiveHoursQuery } from "../../src/app/schedules/repository/working-hours.repo";
@@ -51,7 +51,7 @@ describe("schedules (integration: real routes, Postgres and Redis)", () => {
     const tokens = {} as Record<Actor, string>;
     const previous: Array<{ token: symbol; value: unknown }> = [];
     const seen = new Map<string, Set<number>>();
-    const provider = container.resolve<NoopScheduleImpactProvider>(TOKENS.ScheduleImpactProvider);
+    const provider = container.resolve<ScheduleImpactProvider>(TOKENS.ScheduleImpactProvider);
     const listener = container.resolve<NoopScheduleChangeListener>(TOKENS.ScheduleChangeListener);
 
     const template = (path: string): string => path.split("?")[0]?.replace(/\/(exceptions|consultation-types)\/[^/]+$/, "/$1/{id}") ?? path;

@@ -45,6 +45,8 @@ describe("lib/config/env parseEnv", () => {
             IDENTITY_SYNC_RETRY_CAP_SECONDS: 60,
             IDENTITY_SYNC_ALERT_AFTER_SECONDS: 900,
             UPLOAD_INTENT_PURGE_SECONDS: 300,
+            BOOKING_HORIZON_DAYS: 60,
+            CANCELLATION_POLICY_MINUTES: 120,
             AUDIT_PARTITION_MONTHS_AHEAD: 2,
             CORS_ORIGINS: [],
             LOG_LEVEL: "info",

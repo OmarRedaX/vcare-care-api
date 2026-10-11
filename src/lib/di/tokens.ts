@@ -46,6 +46,15 @@ export const TOKENS = {
     ScheduleOwnerResolver: Symbol.for("ScheduleOwnerResolver"),
     /** Wall clock `{ now(): number }` (epoch ms); tests bind a fake. */
     Clock: Symbol.for("Clock"),
+    /** Port: doctor-patient consultation relationship for `patients` (bound to `ConsultationsService` in `bootstrap.ts`). */
+    PatientRelationship: Symbol.for("PatientRelationship"),
     PatientsService: Symbol.for("PatientsService"),
     PatientsController: Symbol.for("PatientsController"),
+    /** Transactional outbox writer (insert side only; delivery is a later worker unit). */
+    NotificationsService: Symbol.for("NotificationsService"),
+    ConsultationsService: Symbol.for("ConsultationsService"),
+    ConsultationQueriesService: Symbol.for("ConsultationQueriesService"),
+    ConsultationsController: Symbol.for("ConsultationsController"),
+    /** Port: after-commit hook for slot / next-available cache invalidation (default no-op; discovery rebinds). */
+    ConsultationChangeListener: Symbol.for("ConsultationChangeListener"),
 } as const;

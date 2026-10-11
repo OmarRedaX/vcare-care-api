@@ -1,8 +1,15 @@
+import { instanceCachingFactory } from "tsyringe";
 import { AuditController } from "./app/audit/controller/audit.controller";
 import { AuditService } from "./app/audit/service/audit.service";
 import { AdminDoctorsController } from "./app/admin-doctors/controller/admin-doctors.controller";
 import { AdminDoctorsService } from "./app/admin-doctors/service/admin-doctors.service";
-import { NoopSuspensionImpactProvider } from "./app/admin-doctors/service/noop-suspension-impact.provider";
+import { ConsultationsController } from "./app/consultations/controller/consultations.controller";
+import { ConsultationQueriesService } from "./app/consultations/service/consultation-queries.service";
+import { ConsultationsService } from "./app/consultations/service/consultations.service";
+import { NoopConsultationChangeListener } from "./app/consultations/service/noop-consultation-change.listener";
+import { buildScheduleImpactProvider } from "./app/consultations/service/schedule-impact.provider";
+import { ConsultationSuspensionImpactProvider } from "./app/consultations/service/suspension-impact.provider";
+import { NotificationsService } from "./app/notifications/service/notifications.service";
 import { HealthController } from "./app/health/controller/health.controller";
 import { PatientsController } from "./app/patients/controller/patients.controller";
 import { PatientsService } from "./app/patients/service/patients.service";
@@ -11,7 +18,6 @@ import { DoctorsService } from "./app/doctors/service/doctors.service";
 import { buildScheduleOwnerResolver } from "./app/doctors/schedule-owner.resolver";
 import { SchedulesController } from "./app/schedules/controller/schedules.controller";
 import { NoopScheduleChangeListener } from "./app/schedules/service/noop-schedule-change-listener";
-import { NoopScheduleImpactProvider } from "./app/schedules/service/noop-schedule-impact.provider";
 import { SchedulesService } from "./app/schedules/service/schedules.service";
 import { HealthService } from "./app/health/service/health.service";
 import { SpecialtiesController } from "./app/specialties/controller/specialties.controller";
@@ -41,9 +47,14 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.HealthController, HealthController);
     container.registerSingleton(TOKENS.SpecialtiesService, SpecialtiesService);
     container.registerSingleton(TOKENS.SpecialtiesController, SpecialtiesController);
-    // Schedules seams: default no-op ports (`consultations` / `availability` rebind them) and the lazy owner resolver
-    // that breaks the doctors <-> schedules constructor cycle (DoctorsService is looked up at call time).
-    container.registerSingleton(TOKENS.ScheduleImpactProvider, NoopScheduleImpactProvider);
+    // Consultations seams, registered before their consumers: the outbox writer and the (no-op) cache-invalidation listener.
+    container.registerSingleton(TOKENS.NotificationsService, NotificationsService);
+    container.registerSingleton(TOKENS.ConsultationChangeListener, NoopConsultationChangeListener);
+    // Schedules seams: the real impact provider from `consultations` (SchedulesService is looked up at call time because it
+    // injects the provider), the no-op `availability` listener, and the lazy owner resolver that breaks the doctors <->
+    // schedules constructor cycle (DoctorsService is looked up at call time).
+    container.register(TOKENS.ScheduleImpactProvider, { useFactory: instanceCachingFactory((c) => buildScheduleImpactProvider({
+        getSchedules: () => c.resolve<SchedulesService>(TOKENS.SchedulesService), notifications: c.resolve<NotificationsService>(TOKENS.NotificationsService) })) });
     container.registerSingleton(TOKENS.ScheduleChangeListener, NoopScheduleChangeListener);
     container.register(TOKENS.ScheduleOwnerResolver, { useFactory: (c) => buildScheduleOwnerResolver(() => c.resolve<DoctorsService>(TOKENS.DoctorsService)) });
     container.registerSingleton(TOKENS.SchedulesService, SchedulesService);
@@ -54,8 +65,8 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.IdentitySyncService, IdentitySyncService);
     container.registerSingleton(TOKENS.VerificationService, VerificationService);
     container.registerSingleton(TOKENS.VerificationController, VerificationController);
-    // Case 3/4 seam: default no-op port (`consultations` rebinds it); the service needs the sync engine registered above.
-    container.registerSingleton(TOKENS.SuspensionImpactProvider, NoopSuspensionImpactProvider);
+    // Case 3/4 seam: the real flagging port from `consultations`; the service needs the sync engine registered above.
+    container.registerSingleton(TOKENS.SuspensionImpactProvider, ConsultationSuspensionImpactProvider);
     container.registerSingleton(TOKENS.AdminDoctorsService, AdminDoctorsService);
     container.registerSingleton(TOKENS.AdminDoctorsController, AdminDoctorsController);
     container.registerInstance(TOKENS.AuditClock, { now: () => Date.now() });
@@ -63,4 +74,9 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.AuditController, AuditController);
     container.registerSingleton(TOKENS.PatientsService, PatientsService);
     container.registerSingleton(TOKENS.PatientsController, PatientsController);
+    container.registerSingleton(TOKENS.ConsultationsService, ConsultationsService);
+    container.registerSingleton(TOKENS.ConsultationQueriesService, ConsultationQueriesService);
+    container.registerSingleton(TOKENS.ConsultationsController, ConsultationsController);
+    // Port for `patients`: the doctor-patient relationship is answered by the consultations service.
+    container.register(TOKENS.PatientRelationship, { useFactory: (c) => c.resolve<ConsultationsService>(TOKENS.ConsultationsService) });
 }

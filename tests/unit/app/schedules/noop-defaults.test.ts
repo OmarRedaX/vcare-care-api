@@ -20,12 +20,11 @@ describe("no-op schedule defaults", () => {
         await expect(new NoopScheduleChangeListener().onScheduleChanged()).resolves.toBeUndefined();
     });
 
-    it("should be the default bindings in the container", async () => {
+    it("should keep the no-op listener in the container while consultations bind the real impact provider", async () => {
         const provider = container.resolve<ScheduleImpactProvider>(TOKENS.ScheduleImpactProvider);
         const listener = container.resolve<ScheduleChangeListener>(TOKENS.ScheduleChangeListener);
-        expect(provider).toBeInstanceOf(NoopScheduleImpactProvider);
+        expect(provider).not.toBeInstanceOf(NoopScheduleImpactProvider);
         expect(listener).toBeInstanceOf(NoopScheduleChangeListener);
-        await expect(provider.findAffected(ctx, trx)).resolves.toEqual([]);
         await expect(listener.onScheduleChanged({ doctorProfileId: 1, doctorUserId: 202, kind: "working_hours" as never })).resolves.toBeUndefined();
     });
 });

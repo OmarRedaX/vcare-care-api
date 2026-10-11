@@ -12,9 +12,11 @@ import type { Logger } from "../../../lib/logger/logger";
 import { currentRequestId } from "../../../lib/logger/request-context";
 import type { AuthContext } from "../../../lib/types/types";
 import { formatTimeOfDay } from "../../../pkg/slots/local-time";
-import { isCalendarDate, localDateOf } from "../../../pkg/slots/local-date";
+import { addDays, isCalendarDate, localDateOf } from "../../../pkg/slots/local-date";
+import { resolveOpenIntervals } from "../../../pkg/slots/resolve-open-intervals";
+import type { OpenDay } from "../../../pkg/slots/types";
 import {
-    AUDIT_CONFLICT_IDS_MAX, CONSULTATION_TYPE_ENTITY_TYPE, DATE_CURSOR_LENGTH, DOCTOR_PROFILE_ENTITY_TYPE, MAX_CONSULTATION_TYPES_PER_DOCTOR,
+    AUDIT_CONFLICT_IDS_MAX, CONSULTATION_TYPE_ENTITY_TYPE, DATE_CURSOR_LENGTH, DOCTOR_PROFILE_ENTITY_TYPE, MAX_CONSULTATION_TYPES_PER_DOCTOR, OPEN_DAYS_CHUNK_DATES,
     SCHEDULE_EXCEPTION_ENTITY_TYPE, UQ_CONSULTATION_TYPE_NAME, UQ_SCHEDULE_EXCEPTION_DATE,
 } from "../constants";
 import type { ListExceptionsQueryDto, ListTypesQueryDto } from "../dto/schedules.request.dto";
@@ -26,9 +28,9 @@ import {
     TypeCurrencyMismatch,
 } from "../errors";
 import { countLiveTypes, findTypeById, hasActiveType, insertType, listTypesPage, updateType } from "../repository/consultation-types.repo";
-import { findExceptionById, insertExceptions, listExceptionsPage, softDeleteException } from "../repository/schedule-exceptions.repo";
+import { findExceptionById, insertExceptions, listExceptionsInRange, listExceptionsPage, softDeleteException } from "../repository/schedule-exceptions.repo";
 import { insertHours, listLiveHours, softDeleteLiveHours } from "../repository/working-hours.repo";
-import { assertExceptionShape, assertValidHours, diffConsultationType, expandExceptionDates, groupHours, normalizeHours, sameHours } from "../rules";
+import { assertExceptionShape, assertValidHours, diffConsultationType, expandExceptionDates, groupHours, normalizeHours, sameHours, toExceptionRules, toWeeklyRules } from "../rules";
 import type {
     ConsultationTypeChanges, ConsultationTypeInput, ExceptionInput, ScheduleChange, ScheduleChangeListener, ScheduleChangedEvent,
     ScheduleImpactContext, ScheduleImpactProvider, ScheduleOwner, ScheduleOwnerResolver, WorkingHoursInput, WorkingHoursView,
@@ -198,6 +200,31 @@ export class SchedulesService {
     /** Domain rule 6 term for `doctors`' `isBookable`; the caller passes its own connection or transaction. */
     hasActiveConsultationType(profileId: number, conn: Knex = this.db): Promise<boolean> {
         return hasActiveType(profileId, conn);
+    }
+
+    /** For booking: a live, active consultation type of the profile; a foreign, deactivated or deleted id is `undefined`. */
+    async findBookableType(profileId: number, typeId: number, conn: Knex = this.db): Promise<ConsultationType | undefined> {
+        const type = await findTypeById(profileId, typeId, conn);
+        return type !== undefined && type.isActive ? type : undefined;
+    }
+
+    /**
+     * The doctor's open intervals for each doctor-local date in `[fromDate, toDate]` (hours + exceptions, resolved by `pkg/slots`):
+     * two queries however long the range. Read through `conn`, so a transaction sees its own uncommitted schedule rows.
+     */
+    async resolveOpenDays(profileId: number, timezone: string, fromDate: string, toDate: string, conn: Knex = this.db): Promise<OpenDay[]> {
+        const hours = await listLiveHours(profileId, conn);
+        const exceptions = await listExceptionsInRange(profileId, fromDate, toDate, conn);
+        const weekly = toWeeklyRules(hours);
+        const rules = toExceptionRules(exceptions);
+        const days: OpenDay[] = [];
+        for (let start = fromDate; start <= toDate;) {
+            const chunkEnd = addDays(start, OPEN_DAYS_CHUNK_DATES - 1);
+            const end = chunkEnd < toDate ? chunkEnd : toDate;
+            days.push(...resolveOpenIntervals({ timezone, weekly, exceptions: rules, fromDate: start, toDate: end }));
+            start = addDays(end, 1);
+        }
+        return days;
     }
 
     /** The caller's live profile without a lock (reads); absent -> 404. */

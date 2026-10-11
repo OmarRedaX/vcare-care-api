@@ -20,5 +20,12 @@ export interface PatientProfileColumnChanges {
 }
 export interface PatientProfileDiff { fields: PatientProfileField[]; columns: PatientProfileColumnChanges }
 export interface PatientProfileViewer { userId: number; role: Role }
+/**
+ * Port: does this doctor have a booked/waiting/in_progress/completed consultation with this patient? Implemented by the
+ * `consultations` module (bound to `TOKENS.PatientRelationship` in `bootstrap.ts`); `patients` never imports its repository.
+ */
+export interface PatientRelationshipChecker {
+    hasConsultationRelationship(doctorUserId: number, patientUserId: number): Promise<boolean>;
+}
 export type PatientsRoute = "getMe" | "updateMe";
 export type PatientsPolicies = Readonly<Record<PatientsRoute, UserPolicy>>;

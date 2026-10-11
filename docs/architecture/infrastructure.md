@@ -41,6 +41,8 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `UPLOAD_POLICY_TTL_SECONDS` / `UPLOAD_INTENT_TTL_SECONDS` / `DOWNLOAD_URL_TTL_SECONDS` | `300` / `900` / `60` | | Validated positive integers; fixed outside tests |
 | `IDENTITY_SYNC_POLL_SECONDS` / `IDENTITY_SYNC_RETRY_CAP_SECONDS` / `IDENTITY_SYNC_ALERT_AFTER_SECONDS` | `10` / `60` / `900` | | Validated positive integer worker intervals |
 | `UPLOAD_INTENT_PURGE_SECONDS` | `300` | | Validated positive integer: the `upload-intent-purge` loop interval |
+| `BOOKING_HORIZON_DAYS` | `60` | | 1–365; furthest bookable start from now (Domain rule 3) |
+| `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10) |
 | `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | `CORS_ORIGINS` | `""` (none) | | comma-separated origins (`scheme://host[:port]`, no path), honoured only when `NODE_ENV=development`; production is single-origin with CORS disabled (hub ADR 0005). `.env.example` sets `http://localhost:5173` |
 | `LOG_LEVEL` | `info` | | `debug` \| `info` \| `warn` \| `error`; `debug` is rejected when `NODE_ENV=production` |

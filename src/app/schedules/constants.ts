@@ -15,6 +15,8 @@ export const TIME_OF_DAY_PATTERN = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$|^24:00$/;
 /** Ids written to the `schedule.conflicts_confirmed` audit row (joined by `,`, so ≤ 500 chars by construction). */
 export const AUDIT_CONFLICT_IDS_MAX = 20;
 export const DATE_CURSOR_LENGTH = 10;
+/** `resolveOpenIntervals` accepts at most 400 dates per call; open-day resolution runs in chunks of this many dates. */
+export const OPEN_DAYS_CHUNK_DATES = 366;
 export const DOCTOR_PROFILE_ENTITY_TYPE = "doctor_profile";
 export const SCHEDULE_EXCEPTION_ENTITY_TYPE = "schedule_exception";
 export const CONSULTATION_TYPE_ENTITY_TYPE = "consultation_type";

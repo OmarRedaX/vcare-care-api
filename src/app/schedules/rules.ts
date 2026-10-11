@@ -1,5 +1,6 @@
 import { addDays, daysBetween } from "../../pkg/slots/local-date";
-import { formatTimeOfDay } from "../../pkg/slots/local-time";
+import { formatTimeOfDay, parseTimeOfDay } from "../../pkg/slots/local-time";
+import type { ExceptionRule, LocalInterval, WeeklyHoursRule } from "../../pkg/slots/types";
 import { MAX_EXCEPTION_RANGE_DATES, MAX_INTERVALS_PER_DAY, MAX_WEEKDAYS } from "./constants";
 import { ConsultationTypeField, ScheduleExceptionType } from "./enums";
 import {
@@ -7,6 +8,7 @@ import {
     ExceptionRangeTooLong, ExceptionTimesOutOfOrder, invalidWorkingHours,
 } from "./errors";
 import type { ConsultationType } from "./entity/consultation-type.entity";
+import type { ScheduleException } from "./entity/schedule-exception.entity";
 import type { WorkingHour } from "./entity/working-hour.entity";
 import type { ConsultationTypeChanges, ConsultationTypeDiff, ExceptionInput, WorkingHoursDayInput, WorkingHoursDayView, WorkingHoursInsertRow } from "./types";
 
@@ -49,6 +51,26 @@ export function sameHours(current: readonly WorkingHour[], next: readonly Workin
     const stored = current.map((row) => key(row.weekday, row.startTime, row.endTime)).sort();
     const wanted = next.map((row) => key(row.weekday, row.startTime, row.endTime)).sort();
     return stored.every((value, index) => value === wanted[index]);
+}
+
+/** Stored working-hours rows as the pure resolver's weekly rules (`HH:mm`, `24:00` allowed as an end). */
+export function toWeeklyRules(hours: readonly WorkingHour[]): WeeklyHoursRule[] {
+    const byWeekday = new Map<number, LocalInterval[]>();
+    for (const hour of hours) {
+        const intervals = byWeekday.get(hour.weekday) ?? [];
+        intervals.push({ startMinute: parseTimeOfDay(hour.startTime), endMinute: parseTimeOfDay(hour.endTime) });
+        byWeekday.set(hour.weekday, intervals);
+    }
+    return [...byWeekday].map(([weekday, intervals]) => ({ weekday, intervals }));
+}
+
+/** Stored exceptions as the pure resolver's exception rules. */
+export function toExceptionRules(exceptions: readonly ScheduleException[]): ExceptionRule[] {
+    return exceptions.map((exception) => ({
+        date: exception.date, type: exception.type,
+        startMinute: exception.startTime === null ? null : parseTimeOfDay(exception.startTime),
+        endMinute: exception.endTime === null ? null : parseTimeOfDay(exception.endTime),
+    }));
 }
 
 /** `date..endDate` inclusive, one string per local date; at most 60 dates. */
