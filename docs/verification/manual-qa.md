@@ -5,14 +5,14 @@ service: care-service
 module: verification
 status: verified
 diataxis: how-to
-last_verified: 2026-10-08
+last_verified: 2026-10-11
 tags: [verification, manual-qa, curl, rbac, minio, identity-sync, worker, case-1, case-2]
 related: [verification-spec, verification-tasks, verification-brainstorm, file-handling, integration, quickstart]
 ---
 
 # verification — Manual QA (CURL)
 
-_Run: 2026-10-08 • Server: http://localhost:3001 (internal 3101) • Result: 274 pass / 0 fail (plus 2 pass in the separate real-Identity probe)_
+_Run: 2026-10-08 • Server: http://localhost:3001 (internal 3101) • Result: 274 pass / 0 fail (plus 2 pass in the separate real-Identity probe). Re-run 2026-10-11 against the real Identity, no shim: 274 pass / 0 fail (see below)._
 
 Repeatable form: `scripts/curl-test-verification.sh` (the main table below is its report, `PHASE=all`; the probe is `PHASE=gap`). Every case checks the status, `error.code`, the response shape against `contracts/openapi.yaml`, the echoed `X-Request-Id`, `Cache-Control: no-store`, and that no storage key or URL leaks into read DTOs. Tokens, presigned URLs, cookies, emails and bodies are not recorded; the reviewer-reason sentinel is shown as `<reason sentinel>`. All data is synthetic (`@example.test`, generated PDF/PNG/JPEG bytes).
 
@@ -25,6 +25,14 @@ Repeatable form: `scripts/curl-test-verification.sh` (the main table below is it
 | Care | `care-api` and `care-worker` from `feature/verification` via `tsx` on the host, against the local Postgres (`vcare_care`, with the four verification migrations applied) and Redis db 1. |
 | Storage | Real MinIO from care's `docker-compose.yml` (`minio`, `minio-setup`, host `:9002`, bucket `care-private`). Presigned POSTs and GETs were driven with CURL as a browser would. |
 | Outage | The script stopped and restarted the shim (`IDENTITY_STOP_CMD` / `IDENTITY_START_CMD`); the real Identity (JWKS, login) stayed up. |
+
+## Re-run against the real Identity (2026-10-11)
+
+The shim above is no longer needed: `internal-users` is built in `vcare-identity-api` (`GET /internal/users`, `GET /internal/users/contacts`, `PATCH /internal/users/{id}/status`). `scripts/curl-test-verification.sh` (`PHASE=all`, with `IDENTITY_STOP_CMD` / `IDENTITY_START_CMD` killing and relaunching the whole Identity process) ran with `IDENTITY_INTERNAL_URL` pointed straight at the real internal listener `:3100` and a real `care-service` client (scopes `users:read users:status:write users:contact:read`, provisioned with `npm run service-client:sql`). Result: **274 pass / 0 fail** (second run, after two script corrections). Every Identity-dependent case passed: Case 1 approve, reject and reopen reaching `synced` against the real transition table, the `409 InvalidStatusTransition` drift case (job `failed`, not retried), Case 2 degraded reads during the outage, `202 pending` during the outage and worker convergence after Identity returned.
+
+The first run was 270 / 4, none of it Identity: (1) cases 89, 90 and 248 expected idempotency on `POST /doctors/me/documents/uploads`, but spec D6 and `routes.ts` deliberately mount none there (signed POST policies are never stored in Redis), so the script now asserts the key is ignored; (2) case 71 (`410 UploadIntentExpired`) failed once because the worker's 300 s `upload-intent-purge` loop closed the intent between the script's `UPDATE expires_at` and its `complete` call. Re-run with `UPLOAD_INTENT_PURGE_SECONDS=3600` on the worker it passed. The script races that loop at the default interval, so run it with a long purge interval.
+
+Cases 3 and 4 (`PATCH /api/admin/doctors/{id}/suspend` and `/reinstate`) were checked end to end with real logins, not through `curl-test-admin-doctors.sh` (that script needs the fake Identity to mint tokens): 19 of 19 checks passed. Suspend returned 200 and left Identity `suspended` with a `user_status_changes` row (`actor_service=care-service`, `actor_user_id` = the admin, Care's `X-Request-Id` carried), all refresh tokens revoked, the doctor's refresh `401` and login `403 AccountSuspended`. A repeat suspend returned 200 and added no Identity row. Reinstate returned 200, Identity `active`, the history row `suspended>active`, the old refresh token stayed revoked, the doctor signed in again, and a blind repeat returned 200. A `care-service` token aimed directly at a patient got `403 Forbidden` and the patient was unchanged (ADR 0025). Case 5 (`/internal/users/contacts`) was only exercised provider-side with the `care-service` token (`200`, email and locale returned, no phone); Care has no consumer for it yet.
 
 ## Cases
 

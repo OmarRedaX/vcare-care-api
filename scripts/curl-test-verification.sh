@@ -300,12 +300,12 @@ check GET "audit_logs" doctor "document_uploaded audited exactly once despite re
 good_doc doctor "${TOK[docA]}" id "$TMP/ok.png" image/png id.png "A"; ID_A="$DOC_ID"
 T doctor POST "/api/doctors/me/documents/uploads/$LIC_UP/complete" "${TOK[docA]}" "replay complete with unknown body field" "400 ValidationFailed" none '{"x":1}'
 
-echo "== idempotency on intents"
+echo "== no idempotency on intents (spec D6: signed POST policies are never stored in Redis)"
 K="$(uuid)"
 T doctor POST /api/doctors/me/documents/uploads "${TOK[docA]}" "intent with Idempotency-Key (first)" 201 intent '{"type":"degree"}' "$K"; FIRST="$(jget data.uploadId)"
-T doctor POST /api/doctors/me/documents/uploads "${TOK[docA]}" "same key + same body replays original" 201 intent '{"type":"degree"}' "$K"
-check POST "uploadId" doctor "replay returned the same uploadId" "$FIRST" "$(jget data.uploadId)"
-T doctor POST /api/doctors/me/documents/uploads "${TOK[docA]}" "same key + different body" "422 IdempotencyConflict" none '{"type":"license"}' "$K"
+T doctor POST /api/doctors/me/documents/uploads "${TOK[docA]}" "same key + same body issues a NEW intent (key ignored)" 201 intent '{"type":"degree"}' "$K"
+check POST "uploadId" doctor "second call returned a different uploadId" "different" "$([ "$FIRST" != "$(jget data.uploadId)" ] && echo different || echo same)"
+T doctor POST /api/doctors/me/documents/uploads "${TOK[docA]}" "same key + different body is not a conflict" 201 intent '{"type":"license"}' "$K"
 
 echo "== download-url, delete (draft)"
 T doctor POST "/api/doctors/me/documents/$LIC_A/download-url" "${TOK[docA]}" "own document download URL" 200 dlurl
@@ -486,7 +486,7 @@ fi
 # ---------- 8. rate limit, expiry of presigned URL, log hygiene ---------------------------------------------------------------
 echo "== idempotency key format, locally suspended doctor, intent purge loop"
 call POST /api/doctors/me/documents/uploads "${TOK[docE]}" '{"type":"degree"}' "not-a-uuid"
-rec doctor POST /api/doctors/me/documents/uploads "malformed Idempotency-Key" "400 ValidationFailed" "$STATUS $(jget error.code)" "$([ "$STATUS $(jget error.code)" = "400 ValidationFailed" ] && echo 1 || echo 0)"
+rec doctor POST /api/doctors/me/documents/uploads "Idempotency-Key ignored on createIntent (spec D6)" "201" "$STATUS" "$([ "$STATUS" = "201" ] && echo 1 || echo 0)"
 good_doc doctor "${TOK[docE]}" license "$TMP/ok.pdf" application/pdf license.pdf "E"; LIC_E="$DOC_ID"
 good_doc doctor "${TOK[docE]}" id "$TMP/ok.png" image/png id.png "E"
 new_intent doctor "${TOK[docE]}" degree "E: open intent with stored PDF, completed after suspension"; INT_E="$UP_ID"
