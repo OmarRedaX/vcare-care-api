@@ -131,6 +131,31 @@ export function contractResponseCodes(apiPath: string, method: "get" | "post" | 
     return [...contractOperationBlock(apiPath, method).matchAll(/^ {8}'(\d{3})':/gm)].map((match) => match[1] ?? "");
 }
 
+export interface ContractOperation {
+    statuses: string[];
+    headersByStatus: Record<string, string[]>;
+    errorCodes: string[];
+}
+
+/** Statuses, referenced response headers, and error codes declared by one operation. */
+export function contractOperation(apiPath: string, method: "get" | "post" | "patch" | "put" | "delete"): ContractOperation {
+    const block = contractOperationBlock(apiPath, method);
+    const statuses = contractResponseCodes(apiPath, method);
+    const errorCodes = firstInlineList(block, "x-error-codes");
+    const headersByStatus: Record<string, string[]> = {};
+    for (const status of statuses) {
+        const response = new RegExp(`^ {8}'${status}':\\s*\\n {10}\\$ref: '#/components/responses/([^']+)'`, "m").exec(block);
+        if (response?.[1] === undefined) {
+            headersByStatus[status] = [];
+            continue;
+        }
+        const declared = responseBlock(response[1]);
+        const headers = /^ {6}headers:\s*\n((?: {8}.*\n|\s*\n)*)/m.exec(declared)?.[1] ?? "";
+        headersByStatus[status] = [...headers.matchAll(/^ {8}([A-Za-z-]+):/gm)].map((match) => match[1] ?? "");
+    }
+    return { statuses, headersByStatus, errorCodes };
+}
+
 /** Asserts the one error envelope (CLAUDE.md → API conventions) against `ErrorEnvelope` + `ErrorCode`. */
 export function expectErrorEnvelope(body: unknown, expectedCode: string, requestId?: string): void {
     const envelope = body as {

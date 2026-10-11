@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-09
+last_verified: 2026-10-11
 tags: [api, reference, routes, rbac]
 related: [rbac, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
@@ -21,7 +21,7 @@ Every response echoes `X-Request-Id`: a valid incoming UUID is adopted **lower-c
 generated one.
 Lists are cursor-paginated (`cursor` opaque, ≤ 1024 characters; `limit` 1–100 default 20, canonical integers only;
 `meta: { nextCursor, hasMore, count }`).
-Ids are int64 numbers; datetimes ISO-8601 with offset. Every route may also return `401`, `429`, and `500`.
+Ids are int64 numbers; datetimes ISO-8601 with offset. Every operation declares its possible errors in the contract; all four health operations include `500 InternalError`.
 
 Legend — **Idem**: `req` = `Idempotency-Key` required, `opt` = optional. **Case**: identity-service integration
 case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
@@ -34,7 +34,7 @@ case and policy (1 retry-report-pending · 2 degrade · 3 must-not-degrade).
 | GET | `/internal/health/live`, `/internal/health/ready` | public (internal listener only) | none | same bodies as the public pair |
 
 Implemented by the foundation (2026-09-28). Health bodies are bare JSON (not enveloped) with `Cache-Control: no-store`;
-unknown query parameters are ignored. The old `/api/health` and `/internal/health` paths no longer exist and return
+unknown query parameters are ignored. Unexpected health failures use the shared error envelope. The old `/api/health` and `/internal/health` paths no longer exist and return
 `404 NotFound`, as does any other method on a health path (including `OPTIONS`). Each listener serves only its own
 prefix: `/internal/*` on the public listener and `/api/*` on the internal listener are `404`.
 

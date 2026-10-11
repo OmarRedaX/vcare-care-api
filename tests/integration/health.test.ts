@@ -3,6 +3,7 @@ import type { Knex } from "knex";
 import request from "supertest";
 import { HealthController } from "../../src/app/health/controller/health.controller";
 import { HealthService } from "../../src/app/health/service/health.service";
+import { ERROR_CODES } from "../../src/lib/error/types";
 import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
 import type { JwksStatusSource } from "../../src/lib/auth/types";
@@ -13,7 +14,8 @@ import { redis } from "../../src/lib/redis/redis";
 import { buildTestApps, withContainerOverrides } from "../helpers/app";
 import {
     contractNoStoreValue,
-    contractResponseCodes,
+    contractOperation,
+    contractErrorCodes,
     expectErrorEnvelope,
     expectHealthLiveBody,
     expectHealthStatusBody,
@@ -350,17 +352,51 @@ describe("health (integration: real Postgres + Redis)", () => {
         });
     });
 
-    it("should match the contract HealthLive and HealthStatus shapes and declared status codes exactly (contract conformance)", async () => {
-        expect(contractResponseCodes("/api/health/live", "get")).toEqual(["200"]);
-        expect(contractResponseCodes("/internal/health/live", "get")).toEqual(["200"]);
-        expect(contractResponseCodes("/api/health/ready", "get")).toEqual(["200", "503"]);
-        expect(contractResponseCodes("/internal/health/ready", "get")).toEqual(["200", "503"]);
+    it("should declare 200 and 500 with InternalError and response headers on all health operations", () => {
+        for (const path of ["/api/health/live", "/api/health/ready", "/internal/health/live", "/internal/health/ready"]) {
+            const operation = contractOperation(path, "get");
+            expect(operation.statuses).toContain("200");
+            expect(operation.statuses).toContain("500");
+            expect(operation.errorCodes).toContain("InternalError");
+            expect(operation.headersByStatus["200"]).toEqual(expect.arrayContaining(["X-Request-Id", "Cache-Control"]));
+        }
+    });
 
-        const { publicApp, internalApp } = buildTestApps();
-        expectHealthLiveBody((await request(publicApp).get("/api/health/live")).body);
-        expectHealthLiveBody((await request(internalApp).get("/internal/health/live")).body);
-        const ready = await request(publicApp).get("/api/health/ready");
-        expectHealthStatusBody(ready.body, ready.status);
-        expect(["200", "503"]).toContain(String(ready.status));
+    it("should serve the declared 200 and 503 with declared headers on both readiness routes", async () => {
+        const deadDb = createKnex({
+            url: "postgres://care:care@127.0.0.1:1/care_test",
+            poolMax: 1,
+            statementTimeoutMs: 2_000,
+            applicationName: "care-test",
+        });
+        try {
+            for (const internal of [false, true]) {
+                const path = internal ? "/internal/health/ready" : "/api/health/ready";
+                const declared = contractOperation(path, "get");
+                const healthy = buildTestApps();
+                await withContainerOverrides(healthWiring({ db: deadDb }), async () => {
+                    const down = buildTestApps();
+                    for (const [app, status] of [
+                        [internal ? healthy.internalApp : healthy.publicApp, 200],
+                        [internal ? down.internalApp : down.publicApp, 503],
+                    ] as const) {
+                        const res = await request(app).get(path);
+                        expect(declared.statuses).toContain(String(status));
+                        expect(res.status).toBe(status);
+                        expectHealthStatusBody(res.body, status);
+                        for (const header of declared.headersByStatus[String(status)] ?? []) {
+                            expect(res.headers[header.toLowerCase()]).toBeDefined();
+                        }
+                        expect(res.headers["cache-control"]).toBe(contractNoStoreValue());
+                    }
+                });
+            }
+        } finally {
+            await deadDb.destroy();
+        }
+    });
+
+    it("should match the TypeScript error-code set to the contract ErrorCode enum", () => {
+        expect([...ERROR_CODES].sort()).toEqual([...contractErrorCodes()].sort());
     });
 });
