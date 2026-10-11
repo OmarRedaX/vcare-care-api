@@ -10,6 +10,7 @@ import { markPreAuth } from "../rbac/markers";
 export function requestLogger(): RequestHandler {
     return markPreAuth((req, res, next) => {
         const startedAt = performance.now();
+        const requestId = req.requestId;
         let settled = false;
 
         res.on("finish", () => {
@@ -21,7 +22,7 @@ export function requestLogger(): RequestHandler {
             const status = res.statusCode;
             const code = (res.locals as { errorCode?: string }).errorCode;
             const fields = {
-                requestId: req.requestId,
+                requestId,
                 ...(req.auth ? { userId: req.auth.userId, role: req.auth.role } : {}),
                 method: req.method,
                 route,
@@ -45,9 +46,10 @@ export function requestLogger(): RequestHandler {
             }
             settled = true;
             (req.log ?? logger).warn("request_aborted", {
-                requestId: req.requestId,
+                requestId,
                 method: req.method,
                 route: routePattern(req) ?? "unmatched",
+                status: 499,
                 durationMs: Number((performance.now() - startedAt).toFixed(1)),
             });
         });

@@ -111,7 +111,8 @@ describe("lib/logger/requestLogger", () => {
     });
 
     it("should log request_aborted when the connection closes before finish", () => {
-        const { res, lines } = setup({ routePath: "/consultations/:id" });
+        const { req, res, lines } = setup({ routePath: "/consultations/:id" });
+        req.requestId = undefined as unknown as string;
         res.emit("close");
         res.emit("finish");
         expect(lines).toHaveLength(1);
@@ -119,9 +120,17 @@ describe("lib/logger/requestLogger", () => {
             level: "warn",
             message: "request_aborted",
             requestId: REQUEST_ID,
+            status: 499,
             method: "POST",
             route: "/api/consultations/:id",
         });
+    });
+
+    it("should retain the request id captured before the finish listener runs", () => {
+        const { req, res, lines } = setup();
+        req.requestId = undefined as unknown as string;
+        res.emit("finish");
+        expect(lines[0]?.requestId).toBe(REQUEST_ID);
     });
 
     it("should log exactly one line when both finish and close fire", () => {

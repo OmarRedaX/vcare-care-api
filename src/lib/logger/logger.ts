@@ -1,4 +1,5 @@
 import { getEnv } from "../config/env";
+import { AppError } from "../error/AppError";
 import type { LogLevel } from "../config/types";
 import { redact } from "./redact";
 import { requestContext } from "./request-context";
@@ -36,12 +37,11 @@ function framesOnly(error: Error): string | undefined {
         return undefined;
     }
     const frames = error.stack.split("\n").filter((line) => STACK_FRAME_PATTERN.test(line));
-    return [error.name, ...frames].join("\n");
+    return frames.join("\n");
 }
 
 /**
- * Database errors → `{ name, code, severity?, constraint?, table?, column?, routine?, stack? }` with NO message;
- * other errors → `{ name, message, code?, stack? }`; non-Errors → a fixed placeholder (the value is never logged).
+ * Non-AppError messages may contain secrets. Keep only a fixed category and safe identifiers.
  * Never pg `detail`, `where`, `hint`, `parameters`, `query`, or `bindings` (spec §3.4.4).
  */
 export function serializeError(error: unknown): SerializedError {
@@ -52,7 +52,7 @@ export function serializeError(error: unknown): SerializedError {
     const stack = framesOnly(error);
 
     if (typeof code === "string" && SQLSTATE_PATTERN.test(code)) {
-        const serialized: SerializedError = { name: error.name, code };
+        const serialized: SerializedError = { name: error.name, message: `pg_error:${code}`, code };
         const source = error as unknown as Record<string, unknown>;
         for (const field of DATABASE_ERROR_FIELDS) {
             const value = source[field];
@@ -68,7 +68,7 @@ export function serializeError(error: unknown): SerializedError {
 
     return {
         name: error.name,
-        message: error.message,
+        message: error instanceof AppError ? error.message : `error:${error.name}`,
         ...(typeof code === "string" ? { code } : {}),
         ...(stack !== undefined ? { stack } : {}),
     };
