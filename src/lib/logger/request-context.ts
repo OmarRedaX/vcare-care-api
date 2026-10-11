@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RequestContext } from "./types";
 
@@ -9,4 +10,9 @@ export const requestContext = new AsyncLocalStorage<RequestContext>();
 
 export function currentRequestId(): string | undefined {
     return requestContext.getStore()?.requestId;
+}
+
+/** The current request id, or a fresh UUID when there is no request context (worker, tests). */
+export function currentRequestIdOrNew(): string {
+    return currentRequestId() ?? randomUUID();
 }

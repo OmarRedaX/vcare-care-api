@@ -8,7 +8,7 @@ import { Conflict, Forbidden, NotFound, ValidationFailed } from "../../../lib/er
 import { decodeSignedCursor, encodeSignedCursor } from "../../../lib/http/pagination/signed-cursor";
 import { withSessionAdvisoryLock } from "../../../lib/knex/session-advisory-lock";
 import { logger } from "../../../lib/logger/logger";
-import { currentRequestId } from "../../../lib/logger/request-context";
+import { currentRequestIdOrNew } from "../../../lib/logger/request-context";
 import { IdentityClient } from "../../../lib/identity-client/identity-client";
 import type { ObjectStorage } from "../../../lib/storage/types";
 import type { AuthContext } from "../../../lib/types/types";
@@ -39,7 +39,7 @@ export class VerificationService {
         @inject(TOKENS.IdentitySyncService) private readonly identitySync: IdentitySyncService,
     ) {}
 
-    private requestId(): string { return currentRequestId() ?? randomUUID(); }
+    private requestId(): string { return currentRequestIdOrNew(); }
     private assertEditable(profile: DoctorProfile): void {
         if (profile.suspendedAt !== null) throw Forbidden;
         if (profile.verificationStatus !== VerificationStatus.Draft && profile.verificationStatus !== VerificationStatus.Rejected) throw ApplicationNotEditable;

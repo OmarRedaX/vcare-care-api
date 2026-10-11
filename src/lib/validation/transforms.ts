@@ -19,3 +19,15 @@ export function ToInt(): PropertyDecorator {
         return value;
     }, { toClassOnly: true });
 }
+
+/**
+ * `a,b,c` to `["a","b","c"]` (empty segments stay, so `IsIn` rejects them). A repeated query parameter arrives as an array and
+ * is wrapped so each-item validators reject it: one comma-separated parameter is the only accepted form.
+ */
+export function ToCommaList(): PropertyDecorator {
+    return Transform(({ value }: { value: unknown }) => {
+        if (typeof value === "string") return value.split(",");
+        if (Array.isArray(value)) return [value];
+        return value;
+    }, { toClassOnly: true });
+}

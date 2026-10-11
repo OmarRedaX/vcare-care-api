@@ -5,6 +5,7 @@
  */
 export const REDACTED_KEYS: readonly string[] = [
     "complaintText",
+    "cancelReason",
     "examinationNotes",
     "diagnosisText",
     "diagnosisCode",

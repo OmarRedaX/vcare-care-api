@@ -24,3 +24,8 @@ export interface RequestExtensions {
     auth?: AuthContext;
     service?: ServiceContext;
 }
+
+/** Injectable wall clock (`TOKENS.Clock`); tests bind a fake. Epoch milliseconds. */
+export interface Clock {
+    now(): number;
+}

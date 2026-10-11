@@ -44,6 +44,8 @@ export const TOKENS = {
     ScheduleChangeListener: Symbol.for("ScheduleChangeListener"),
     /** Port: the caller's doctor profile for `schedules`, resolved lazily through `doctors`. */
     ScheduleOwnerResolver: Symbol.for("ScheduleOwnerResolver"),
+    /** Wall clock `{ now(): number }` (epoch ms); tests bind a fake. */
+    Clock: Symbol.for("Clock"),
     PatientsService: Symbol.for("PatientsService"),
     PatientsController: Symbol.for("PatientsController"),
 } as const;
