@@ -26,10 +26,22 @@ function childEnv(overrides: Record<string, string | undefined>): NodeJS.Process
     return env;
 }
 
+/** A string matches anywhere; a predicate sees only newline-terminated lines, never a half-flushed one. */
+function matchesSignal(signalAfter: string | ((completeLines: string) => boolean), stdout: string): boolean {
+    if (typeof signalAfter === "string") {
+        return stdout.includes(signalAfter);
+    }
+    return signalAfter(stdout.slice(0, stdout.lastIndexOf("\n") + 1));
+}
+
 function run(
     entrypoint: string,
     env: NodeJS.ProcessEnv,
-    options?: { signalAfter?: string; signal?: NodeJS.Signals; timeoutMs?: number },
+    options?: {
+        signalAfter?: string | ((completeLines: string) => boolean);
+        signal?: NodeJS.Signals;
+        timeoutMs?: number;
+    },
 ): Promise<RunResult> {
     return new Promise<RunResult>((resolve, reject) => {
         const child = spawn(process.execPath, ["--import", "tsx", entrypoint], {
@@ -48,7 +60,7 @@ function run(
 
         child.stdout.on("data", (chunk: Buffer) => {
             stdout += chunk.toString("utf8");
-            if (options?.signalAfter !== undefined && !signalled && stdout.includes(options.signalAfter)) {
+            if (options?.signalAfter !== undefined && !signalled && matchesSignal(options.signalAfter, stdout)) {
                 signalled = true;
                 child.kill(options.signal ?? "SIGTERM");
             }
@@ -56,7 +68,8 @@ function run(
         child.stderr.on("data", (chunk: Buffer) => {
             stderr += chunk.toString("utf8");
         });
-        child.on("exit", (code) => {
+        // `close`, not `exit`: it fires only after stdout and stderr are fully drained.
+        child.on("close", (code) => {
             clearTimeout(timer);
             resolve({ code, stdout, stderr });
         });
@@ -99,11 +112,13 @@ describe("entrypoint environment validation (F1)", () => {
 const isBootJwksLine = (line: Record<string, unknown>): boolean =>
     (line.message === "jwks_refreshed" || line.message === "jwks_refresh_failed") && line.trigger === "boot";
 
+const hasBootJwksLine = (completeLines: string): boolean => jsonLines(completeLines).some(isBootJwksLine);
+
 describe("server boot wiring (L8)", () => {
     // Runs on every platform: the child is killed once the line appears, no graceful shutdown is needed.
     it("should start the JWKS cache at boot: one boot-triggered refresh is logged without any request", async () => {
         const result = await run("src/server.ts", childEnv({ PORT: "34983", INTERNAL_PORT: "34984", LOG_LEVEL: "info" }), {
-            signalAfter: '"trigger":"boot"',
+            signalAfter: hasBootJwksLine,
             signal: "SIGKILL",
         });
         const lines = jsonLines(result.stdout + result.stderr);
@@ -117,7 +132,7 @@ describe("server boot wiring (L8)", () => {
 describeSignals("graceful shutdown on SIGTERM (F19, F20)", () => {
     it("should log shutdown_started and shutdown_complete and exit 0 when the server receives SIGTERM", async () => {
         const result = await run("src/server.ts", childEnv({ PORT: "34981", INTERNAL_PORT: "34982", LOG_LEVEL: "info" }), {
-            signalAfter: '"trigger":"boot"',
+            signalAfter: hasBootJwksLine,
         });
 
         expect(result.code).toBe(0);
