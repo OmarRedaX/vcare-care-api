@@ -6,7 +6,7 @@ module: consultations
 status: ready
 version: 0.1.0
 diataxis: reference
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 tags: [spec, consultations, booking, reschedule, cancel, exclusion-constraint, idempotency, outbox, ports, clinical-privacy]
 related: [consultations-brainstorm, patients-spec, schedules-spec, admin-doctors-spec, doctors-spec, access-spec, data-model, scheduling-slots, consultation-lifecycle, rbac, integration, adr-0003-db-exclusion-constraint, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 contracts: [contracts/openapi.yaml]
