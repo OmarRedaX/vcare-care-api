@@ -3,7 +3,7 @@ title: consultations — Tasks
 owner: care-team
 service: care-service
 module: consultations
-status: implemented-pending-tests
+status: tested
 last_verified: 2026-10-12
 tags: [tasks, consultations]
 related: [consultations-spec, consultations-brainstorm]
@@ -35,7 +35,7 @@ Source: [spec.md](./spec.md) (ready, owner-approved 2026-10-11). Issue #38, bran
 - [x] (controller) `ConsultationsController`, `PatientsController.getById`
 - [x] (routes) `consultations/routes.ts`, `GET /patients/:patientUserId` after `/patients/me`
 - [x] (mount) `src/routes.ts`
-- [~] (tests) done alongside the code: unit (pure `slot-fit`, `toIsoInZone`, generic helpers, DTOs, response viewer matrix, policies, env) and `tests/integration/consultations.test.ts` (booking, replay, concurrency, reschedule, cancel, list/get, Case 2 degrade, `/patients/{id}`, impact ports end to end, query plans, rate limit). Left to `/write-tests`: service rule unit tests with mocks (check order, window edges 120:00/119:59.999, `23P01` and idempotency mapping), DST booking integration with a fake clock, contract conformance test, suspension race (`FOR SHARE`), outbox rollback atomicity, `findAffected` benchmark, log hygiene for `cancelReason`
+- [x] (tests) unit (pure `slot-fit`, `toIsoInZone`, generic helpers, DTOs, response viewer matrix, policies, env, service rules with mocks, providers incl. `findAffected` benchmark, queries service), contract (`tests/unit/contract/consultations-contract.test.ts` + `tests/integration/consultations-contract.test.ts`), and integration (`consultations.test.ts` smoke, `consultations-rbac`, `consultations-rules`: concurrency, idempotency, DST with a fake clock, suspension race, outbox/audit atomicity, audit, log hygiene, budgets; `consultations-reads`: pagination per scope, Case 2 degrade). Shared harness `tests/helpers/consultations-harness.ts`
 - [ ] (manual-qa) <- /manual-qa (`scripts/curl-test-consultations.sh`)
 - [~] (docs) service card and INDEX updated; as-built refresh of `data-model.md`, `api.md`, `rbac.md`, `consultation-lifecycle.md`, `scheduling-slots.md`, `integration.md`, `patients/spec.md`, `schedules/spec.md` is `/update-docs`
 
