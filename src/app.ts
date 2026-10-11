@@ -5,6 +5,7 @@ import { getEnv } from "./lib/config/env";
 import { errorHandler } from "./lib/error/errorHandler";
 import { notFound, optionsNotFound } from "./lib/error/not-found";
 import { cors } from "./lib/http/cors";
+import { noStore } from "./lib/http/no-store";
 import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
 import { requestLogger } from "./lib/logger/request-logger";
@@ -31,6 +32,8 @@ export function createPublicApp(options?: AppOptions): express.Express {
     }
     app.use(optionsNotFound);
 
+    // Clinical prefixes get no-store before body parsing so a malformed-body 400 carries it too (patients spec 3.1).
+    app.use("/api/patients", markPreAuth(noStore()));
     app.use(markPreAuth(express.json({ limit: "100kb", strict: true, type: "application/json" })));
 
     app.use("/api/health", buildHealthRouter());

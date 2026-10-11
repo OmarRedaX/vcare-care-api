@@ -11,6 +11,7 @@ const EXPECTED_KEYS = [
     "chronicConditions",
     "bloodType",
     "dateOfBirth",
+    "gender",
     "objectKey",
     "downloadUrl",
     "uploadUrl",

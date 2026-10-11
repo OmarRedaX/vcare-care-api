@@ -13,6 +13,7 @@ export const REDACTED_KEYS: readonly string[] = [
     "chronicConditions",
     "bloodType",
     "dateOfBirth",
+    "gender",
     "objectKey",
     "downloadUrl",
     "uploadUrl",

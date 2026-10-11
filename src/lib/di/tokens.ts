@@ -44,4 +44,6 @@ export const TOKENS = {
     ScheduleChangeListener: Symbol.for("ScheduleChangeListener"),
     /** Port: the caller's doctor profile for `schedules`, resolved lazily through `doctors`. */
     ScheduleOwnerResolver: Symbol.for("ScheduleOwnerResolver"),
+    PatientsService: Symbol.for("PatientsService"),
+    PatientsController: Symbol.for("PatientsController"),
 } as const;

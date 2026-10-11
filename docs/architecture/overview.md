@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-09
+last_verified: 2026-10-11
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -88,7 +88,7 @@ flowchart LR
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
 | `consultations` | booking, reschedule, cancel, no-show, lists, calendar | `consultations` | `availability`, `doctors` (bookability), email, identity-client (Case 2) |
 | `sessions` | waiting room, join/start/complete, room tokens | `consultations` (session columns) | video, email |
-| `patients` | patient profile, clinical timeline | `patient_profiles` | `records`, `consultations` (relationship check) |
+| `patients` (profile built 2026-10-11; doctor read and timeline planned) | patient profile (`GET/PATCH /api/patients/me`), clinical timeline (planned) | `patient_profiles` | `records`, `consultations` (relationship check) |
 | `records` | medical records, amendments, attachments | `medical_records`, `medical_record_amendments`, `record_attachments` | storage (uploads, download URLs), `consultations` |
 | `help-articles` | help center content | `help_articles` | — |
 | `audit` (read API built 2026-10-09) | append-only audit log (written through `lib/audit`) and `GET /api/audit-logs`: admin-only, time-bounded `[from, to)`, keyset page with a signed cursor; no table of its own beyond three read indexes, no audit row for the read | `audit_logs` | — (written by every module through `lib/audit`; the read module calls nothing) |

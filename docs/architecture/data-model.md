@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-09
+last_verified: 2026-10-11
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -443,6 +443,7 @@ CREATE TABLE patient_profiles (
 CREATE UNIQUE INDEX uq_patient_profiles_user_id ON patient_profiles (user_id) WHERE deleted_at IS NULL;
 ```
 Allergies and conditions are free-text lists that are only displayed, never filtered on, so arrays are adequate here.
+As built: migration `20261011120000_create_patient_profiles` (grants `SELECT, INSERT, UPDATE` to `vcare_app`). The `CHECK`s cap the item count only; per-item length, non-blank and duplicate rules are DTO-only (a CHECK cannot iterate an array without a helper function).
 
 ## `medical_records`
 ```sql
