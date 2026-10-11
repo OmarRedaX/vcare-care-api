@@ -1719,7 +1719,9 @@ paths:
       summary: Get a patient profile (the patient themself, or a doctor who has consulted them)
       description: |
         Doctor access requires a `completed` or current (`booked`/`waiting`/`in_progress`) consultation with this patient
-        (`EXISTS` on `consultations`). Anyone else gets `404 NotFound`. Admins are not allowed. Every successful call is audited.
+        (`EXISTS` on `consultations`). Anyone else gets `404 NotFound`. Admins are not allowed (`403 Forbidden`). A doctor whose
+        account is locally suspended gets `403 Forbidden`. A patient whose profile has not been created yet, and a non-numeric
+        `patientUserId`, get `404 NotFound` (no `400` is declared). Every successful call is audited.
       security:
         - bearerUser: []
       x-roles: [patient, doctor]
@@ -1806,6 +1808,9 @@ paths:
         (`422 OutsideWorkingHours`), then inserts; an exclusion violation (SQLSTATE 23P01) maps to `409 SlotUnavailable`.
         Same key + same body replays the original 201; same key + different body → `422 IdempotencyConflict`.
         The confirmation email is queued asynchronously and never blocks or rolls back the booking.
+        `patientTimezone` is validated, canonicalized and stored as a per-consultation snapshot; the patient profile is neither
+        read nor written. `followUpOfRecordId` is rejected with `400 ValidationFailed` (`details[].field = followUpOfRecordId`)
+        until the records module ships.
         Budget p95 < 200 ms. Rate limit 10 booking writes/min per user.
       security:
         - bearerUser: []
@@ -1861,9 +1866,14 @@ paths:
       tags: [consultations]
       summary: List consultations visible to the caller
       description: |
-        Patients see their own, doctors their own, admins all (admin view omits `complaintText`). Names/avatars of the
+        Patients see their own, doctors their own, admins all. List items never carry `complaintText` for any viewer
+        (clinical text is returned by `GET /api/consultations/{id}`, which is audited). Names/avatars of the
         counterpart are hydrated with one batched Identity call per page (Case 2, degrade).
-        Default sort: `startsAt` ascending for `scope=upcoming`, descending for `scope=past`.
+        `scope=upcoming` is `endsAt > now`, sorted `startsAt` ascending; `scope=past` is `endsAt <= now`, sorted `startsAt`
+        descending; `scope=all` has no time predicate and is sorted `startsAt` ascending. `from`/`to` bound `startsAt`
+        (`>= from`, `< to`) and combine with the scope. The admin-only filters (`doctorUserId`, `patientUserId`,
+        `needsAdminFollowup`) used by a non-admin return `403 Forbidden`. `needsAdminFollowup=true` implies status
+        `booked`/`waiting`/`in_progress` (the follow-up queue), intersected with any `status` filter.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
@@ -1928,7 +1938,7 @@ paths:
         - name: timezone
           in: query
           required: false
-          description: IANA zone for `*Local` fields. Defaults to the viewer's own timezone (see Consultation).
+          description: 'IANA zone for `*Local` fields, honored for every role. Defaults: patient `patientTimezone`, doctor the doctor''s own timezone, admin `UTC` (see Consultation).'
           schema:
             type: string
       responses:
@@ -2082,7 +2092,8 @@ paths:
       summary: Get one consultation (participant, or admin without clinical fields)
       description: |
         Participants receive `complaintText` and the read is audited as a clinical read. Admins receive the admin view
-        (no `complaintText`). Anyone else → `404 NotFound`.
+        (no `complaintText`, not audited). Anyone else → `404 NotFound`. `timezone` is honored for every role (defaults as
+        in `Consultation`); an invalid zone is `400 ValidationFailed`.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
@@ -2123,8 +2134,11 @@ paths:
       description: |
         `Idempotency-Key` is **required**. Status stays `booked`; only a `booked` consultation can be rescheduled
         (else `409 InvalidTransition`). Patients: not within 120 minutes of the **current** start (`409 PolicyWindowViolation`).
-        Admins: any time, `reason` required. The new interval passes Domain rules 1–5 inside one transaction that updates
-        the same row, releasing the old interval atomically.
+        Admins: any time, `reason` required (`400 ValidationFailed` when absent). The new interval keeps the stored interval
+        length and passes Domain rules 1–5 inside one transaction that updates the same row, releasing the old interval
+        atomically. Every successful call writes a `consultation.rescheduled` audit row for any caller (`byRole` in the
+        metadata); `x-audit: admin-action` is the policy class, not a restriction to admins. A new start equal to the current
+        one is a `200` no-op (no write, no audit).
       security:
         - bearerUser: []
       x-roles: [patient, admin]
@@ -2169,8 +2183,12 @@ paths:
       description: |
         `Idempotency-Key` is **required**. `booked`/`waiting` → `cancelled`. Patients only outside the policy window
         (`409 PolicyWindowViolation`); the assigned doctor with a `reason`; admins any time with a `reason`.
+        The patient window is 120 minutes before the start (`CANCELLATION_POLICY_MINUTES`), the same as reschedule; `reason`
+        is optional for patients and required for the doctor and admin (`400 ValidationFailed` when absent). A locally
+        suspended doctor gets `403 Forbidden`.
         Terminal consultations → `409 InvalidTransition`. The interval is released by the status change; both parties are
-        notified asynchronously.
+        notified asynchronously. Every successful call writes a `consultation.cancelled` audit row for any caller
+        (`byRole` in the metadata); `x-audit: admin-action` is the policy class.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
@@ -4903,9 +4921,12 @@ components:
     Consultation:
       type: object
       description: |
-        Viewer-aware. Participants (patient, assigned doctor) receive `complaintText`; the **admin view omits
-        `complaintText`** entirely. `*Local` fields are rendered in `timezone`: the patient's `patientTimezone` for the
-        patient, the doctor's timezone for the doctor, and the `timezone` query parameter (default UTC) for admins.
+        Viewer-aware. Participants (patient, assigned doctor) receive `complaintText` on get-one and on their own write
+        responses; the **admin view omits `complaintText`** entirely, and **list items omit it for every viewer**.
+        `*Local` fields are rendered in `timezone`: the `timezone` query parameter when given (any role), otherwise the
+        patient's `patientTimezone` for the patient, the doctor's timezone for the doctor, and `UTC` for admins.
+        Write responses (book, reschedule, cancel) carry `doctor` and `patient` as `{ userId, displayName: null,
+        avatarUrl: null, profileHydrated: false }`; so does the viewer's own side on reads.
       required: [id, status, doctor, patient, consultationType, startsAt, endsAt, startsAtLocal, endsAtLocal, timezone, patientTimezone, price, needsAdminFollowup, createdAt, updatedAt]
       properties:
         id:
@@ -4949,7 +4970,7 @@ components:
         complaintText:
           type: string
           maxLength: 4000
-          description: Participants only. Absent in admin views. Never logged.
+          description: Participants only, on get-one and the actor's own write responses. Absent in admin views and in list items. Never logged.
         joinedAt:
           type: [string, 'null']
           format: date-time
@@ -4977,6 +4998,7 @@ components:
           format: int64
         hasRecord:
           type: boolean
+          description: Always `false` until the records module ships.
         createdAt:
           type: string
           format: date-time
