@@ -14,6 +14,10 @@ export type StatusResult =
     | { outcome: "rejected-transition"; attemptsMade: number }
     | { outcome: "permanent"; errorCode: string; attemptsMade: number };
 export interface HydratedUser { displayName: string; avatarUrl: string | null; status: IdentityStatus }
+/** Notification contact (Case 5): held in worker memory for one batch, never cached, stored or logged. */
+export interface Contact { email: string; fullName: string; locale: string; status: IdentityStatus }
+/** `unavailable` = the chunk containing the id could not be read (transient: delay the row); an id in neither set is unknown to Identity. */
+export interface ContactsResult { contacts: Map<number, Contact>; unavailable: Set<number> }
 export interface BatchResult { users: Map<number, HydratedUser>; degraded: boolean }
 export interface IdentityClientOptions {
     env?: Env;

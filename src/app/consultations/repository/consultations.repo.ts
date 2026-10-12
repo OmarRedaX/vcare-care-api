@@ -7,7 +7,7 @@ import { ConsultationScope, ConsultationStatus } from "../enums";
 import type { FollowupReason } from "../enums";
 import type {
     CandidateRow, CandidateWindow, ConsultationListDbRow, ConsultationListRow, ConsultationListEntry, ConsultationListFilter, ConsultationRow, FlaggedRow,
-    NewConsultation, TransitionChanges,
+    FutureFlaggedRow, DeliveryDbRow, ReminderDbRow, NewConsultation, TransitionChanges,
 } from "../types";
 
 export const CONSULTATION_COLUMNS = [
@@ -202,11 +202,54 @@ export async function flagConsultations(ids: readonly number[], doctorUserId: nu
     return rows.sort((a, b) => a.id - b.id);
 }
 
-/** Case 3: flags every future non-terminal consultation of a suspended doctor. Last writer wins on `followup_reason`. Ascending ids. */
-export async function flagFutureForDoctor(doctorUserId: number, now: Date, reason: FollowupReason, trx: Knex.Transaction): Promise<FlaggedRow[]> {
-    const rows: FlaggedRow[] = await futureNonTerminal(doctorUserId, now, trx).update({ needs_admin_followup: true, followup_reason: reason, updated_at: trx.fn.now() })
-        .returning(["id", "patient_user_id", "starts_at", "ends_at"]);
-    return rows.sort((a, b) => a.id - b.id);
+/**
+ * Case 3: flags every future non-terminal consultation of a suspended doctor. Last writer wins on `followup_reason`. Ascending ids.
+ * `newly_flagged` is computed from the pre-image in the same statement: false when the row already carried this `reason` (flag-once,
+ * so a patient is notified once per flag).
+ */
+export async function flagFutureForDoctor(doctorUserId: number, now: Date, reason: FollowupReason, trx: Knex.Transaction): Promise<FutureFlaggedRow[]> {
+    const result = await trx.raw<{ rows: FutureFlaggedRow[] }>(
+        `WITH target AS (
+            SELECT id, (needs_admin_followup AND followup_reason IS NOT DISTINCT FROM ?) AS already_flagged
+            FROM consultations
+            WHERE doctor_user_id = ? AND status IN ('booked','waiting','in_progress') AND deleted_at IS NULL
+              AND ends_at > ? AND starts_at >= ?
+            FOR UPDATE)
+        UPDATE consultations c SET needs_admin_followup = TRUE, followup_reason = ?, updated_at = NOW()
+        FROM target t WHERE c.id = t.id
+        RETURNING c.id, c.patient_user_id, c.starts_at, c.ends_at, NOT t.already_flagged AS newly_flagged`,
+        [reason, doctorUserId, now, new Date(now.getTime() - MAX_DURATION_MINUTES * MINUTE_MS), reason],
+    );
+    return [...result.rows].sort((a, b) => a.id - b.id);
+}
+
+/**
+ * Delivery context for outbox rows, soft-deleted consultations included. The doctor's timezone comes from the live profile
+ * (`uq_doctor_profiles_user_id`); `null` when the profile is gone.
+ */
+export async function findDeliveryRows(ids: readonly number[], conn: Knex): Promise<DeliveryDbRow[]> {
+    if (ids.length === 0) return [];
+    return conn("consultations as c").leftJoin("doctor_profiles as dp", function join() {
+        this.on("dp.user_id", "=", "c.doctor_user_id").andOnNull("dp.deleted_at");
+    }).select("c.id", "c.status", "c.starts_at", "c.ends_at", "c.patient_user_id", "c.doctor_user_id", "c.patient_timezone",
+        "dp.timezone as doctor_timezone", "c.deleted_at").whereIn("c.id", [...ids]);
+}
+
+/**
+ * Reminder scan candidates: booked consultations that start within the window and have not been stamped for it, locked so a concurrent
+ * scan, reschedule or cancel cannot interleave. Served by `idx_consultations_booked_starts_at`.
+ */
+export async function listReminderRows(windowMs: number, stampColumn: "reminder_24h_sent_at" | "reminder_1h_sent_at", now: Date, limit: number, trx: Knex.Transaction): Promise<ReminderDbRow[]> {
+    return trx("consultations as c").select("c.id", "c.patient_user_id", "c.doctor_user_id", "c.starts_at", "c.ends_at", "c.created_at")
+        .where("c.status", ConsultationStatus.Booked).whereNull("c.deleted_at").where("c.starts_at", ">", now)
+        .where("c.starts_at", "<=", new Date(now.getTime() + windowMs)).whereNull(`c.${stampColumn}`)
+        .orderBy([{ column: "c.starts_at", order: "asc" }, { column: "c.id", order: "asc" }]).limit(limit).forUpdate("c").skipLocked();
+}
+
+/** Marks a reminder as queued. `updated_at` is not touched (a stamp is not a business change). */
+export async function stampReminderColumn(ids: readonly number[], column: "reminder_24h_sent_at" | "reminder_1h_sent_at", now: Date, trx: Knex.Transaction): Promise<void> {
+    if (ids.length === 0) return;
+    await trx("consultations").whereIn("id", [...ids]).where("status", ConsultationStatus.Booked).whereNull("deleted_at").whereNull(column).update({ [column]: now });
 }
 
 /** Ids of the doctor's future non-terminal consultations currently flagged with `reason`, ascending. */

@@ -8,10 +8,18 @@ export interface FakeIdentityStatusBody { userId: number; status: IdentityStatus
 /** Identity's `StatusChangeRequest.reason` maxLength (contract), counted in code points. */
 export const FAKE_IDENTITY_REASON_MAX = 500;
 export interface FakeIdentityUser { id: number; fullName: string; avatarUrl: string | null; status: IdentityStatus }
-export interface FakeIdentityOptions { down?: boolean; tokenFailures?: number; statusFailures?: number; statusFailureCode?: number; batchFailures?: number; slowMs?: number; malformed?: boolean; forceUnauthorized?: number; forceConflict?: boolean }
+/** A synthetic notification contact served by `GET /internal/users/contacts`. */
+export interface FakeIdentityContact { id: number; email: string; fullName: string; locale: string; status: IdentityStatus }
+export interface FakeIdentityOptions { contactsFailures?: number; contactsStatus?: number; contactsMalformed?: "bad-email" | "extra-id" | "duplicate-id"; withholdContactScope?: boolean; contactsForceUnauthorized?: number;
+     down?: boolean; tokenFailures?: number; statusFailures?: number; statusFailureCode?: number; batchFailures?: number; slowMs?: number; malformed?: boolean; forceUnauthorized?: number; forceConflict?: boolean }
 
 export class FakeIdentityServer {
     readonly users = new Map<number, FakeIdentityUser>();
+    readonly contacts = new Map<number, FakeIdentityContact>();
+    /** The `scope` requested by every token call, in order. */
+    readonly tokenScopes: string[] = [];
+    /** The bearer token of every contacts call, in order. */
+    readonly contactTokens: Array<string | undefined> = [];
     readonly calls: FakeIdentityCall[] = [];
     readonly statusBodies: FakeIdentityStatusBody[] = [];
     readonly options: FakeIdentityOptions = {};
@@ -36,8 +44,24 @@ export class FakeIdentityServer {
         if (this.options.slowMs) await new Promise((resolve) => setTimeout(resolve, this.options.slowMs));
         if (req.method === "POST" && path === "/internal/auth/token") {
             if (this.options.tokenFailures && this.options.tokenFailures-- > 0) { send(500, {}); return; }
-            send(200, { success: true, data: { access_token: "fake-token", token_type: "Bearer", expires_in: 300,
-                scope: "users:read users:status:write" } });
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+            const requested = (JSON.parse(Buffer.concat(chunks).toString() || "{}") as { scope?: string }).scope ?? "users:read users:status:write";
+            this.tokenScopes.push(requested);
+            if (requested === "users:contact:read" && this.options.withholdContactScope) { send(200, { success: true, data: { access_token: "fake-token", token_type: "Bearer", expires_in: 300, scope: "users:read" } }); return; }
+            send(200, { success: true, data: { access_token: requested === "users:contact:read" ? "fake-contact-token" : "fake-token", token_type: "Bearer", expires_in: 300, scope: requested } });
+            return;
+        }
+        if (req.method === "GET" && path.startsWith("/internal/users/contacts?ids=")) {
+            this.contactTokens.push(req.headers.authorization);
+            if (this.options.contactsForceUnauthorized && this.options.contactsForceUnauthorized-- > 0) { send(401, { success: false }); return; }
+            if (this.options.contactsFailures && this.options.contactsFailures-- > 0) { send(this.options.contactsStatus ?? 500, {}); return; }
+            const ids = new URL(path, "http://localhost").searchParams.get("ids")?.split(",").map(Number) ?? [];
+            const data: unknown[] = ids.flatMap((id) => { const contact = this.contacts.get(id); return contact ? [{ ...contact }] : []; });
+            if (this.options.contactsMalformed === "bad-email" && data.length > 0) data[0] = { ...(data[0] as object), email: "not-an-email" };
+            if (this.options.contactsMalformed === "extra-id") data.push({ id: 999_999, email: "extra@example.test", fullName: "Extra", locale: "en", status: "active" });
+            if (this.options.contactsMalformed === "duplicate-id" && data.length > 0) data.push(data[0]);
+            send(200, { success: true, data });
             return;
         }
         if (this.options.forceUnauthorized && this.options.forceUnauthorized-- > 0) { send(401, { success: false }); return; }

@@ -18,6 +18,9 @@ export interface WorkerLoop {
     tick(signal: AbortSignal): Promise<TickOutcome | void>;
 }
 
+/** Anything a loop can tick; the module services implement it. */
+export interface TickService { tick(signal: AbortSignal): Promise<TickOutcome | void> }
+
 export interface LoopRunnerDeps {
     logger: Logger;
     heartbeatEveryMs?: number;

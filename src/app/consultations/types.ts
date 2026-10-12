@@ -26,6 +26,13 @@ export type ConsultationListRow = Omit<ConsultationRow, ListOmittedColumn> & Par
 export interface ConsultationListDbRow extends ConsultationListRow { starts_at_cursor: string }
 export interface CandidateRow { id: number; starts_at: Date; ends_at: Date }
 export interface FlaggedRow { id: number; patient_user_id: number; starts_at: Date; ends_at: Date }
+/** `newly_flagged` = the row did not already carry this follow-up reason before the statement (flag-once notification). */
+export interface FutureFlaggedRow extends FlaggedRow { newly_flagged: boolean }
+export interface DeliveryDbRow {
+    id: number; status: string; starts_at: Date; ends_at: Date; patient_user_id: number; doctor_user_id: number; patient_timezone: string;
+    doctor_timezone: string | null; deleted_at: Date | null;
+}
+export interface ReminderDbRow { id: number; patient_user_id: number; doctor_user_id: number; starts_at: Date; ends_at: Date; created_at: Date }
 
 /** What the booking transaction inserts; `ends_at`, price and currency are already server-derived. */
 export interface NewConsultation {

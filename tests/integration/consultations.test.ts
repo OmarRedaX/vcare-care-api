@@ -8,6 +8,7 @@ import { ConsultationQueriesService } from "../../src/app/consultations/service/
 import { ConsultationScope } from "../../src/app/consultations/enums";
 import { hasRelationshipQuery, listPageQuery } from "../../src/app/consultations/repository/consultations.repo";
 import type { ConsultationListFilter } from "../../src/app/consultations/types";
+import { NotificationsService } from "../../src/app/notifications/service/notifications.service";
 import { ConsultationSuspensionImpactProvider } from "../../src/app/consultations/service/suspension-impact.provider";
 import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
@@ -525,7 +526,7 @@ describe("consultations (integration: real routes, Postgres, Redis and a fake Id
         it("should flag future non-terminal consultations for a suspension and list them again", async () => {
             const id = (await book()).body.data.id as number;
             const done = await seedConsultation({ status: "completed", starts_at: new Date(Date.now() - 86_400_000), ends_at: new Date(Date.now() - 86_400_000 + 1_800_000) });
-            const provider = new ConsultationSuspensionImpactProvider();
+            const provider = new ConsultationSuspensionImpactProvider(new NotificationsService());
             const ctx = { doctorProfileId: 1, doctorUserId: DOCTOR, now: new Date() };
             const flagged = await db.transaction((trx) => provider.flagFutureConsultations(ctx, trx));
             expect(flagged).toEqual([id]);

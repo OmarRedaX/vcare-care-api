@@ -136,19 +136,39 @@ describe("ScheduleImpactProvider.flagAffected", () => {
 
 describe("ConsultationSuspensionImpactProvider", () => {
     const suspension = { doctorProfileId: 9, doctorUserId: 202, now: NOW };
+    const setup = (): { provider: ConsultationSuspensionImpactProvider; enqueue: jest.Mock } => {
+        const enqueue = jest.fn().mockResolvedValue(undefined);
+        return { provider: new ConsultationSuspensionImpactProvider({ enqueue }), enqueue };
+    };
 
     it("should flag the future consultations doctor_suspended and return their ids", async () => {
+        const { provider } = setup();
         const flag = jest.spyOn(repo, "flagFutureForDoctor").mockResolvedValue([
-            { id: 3, patient_user_id: 101, starts_at: NOW, ends_at: NOW }, { id: 8, patient_user_id: 102, starts_at: NOW, ends_at: NOW },
+            { id: 3, patient_user_id: 101, starts_at: NOW, ends_at: NOW, newly_flagged: true }, { id: 8, patient_user_id: 102, starts_at: NOW, ends_at: NOW, newly_flagged: true },
         ]);
-        await expect(new ConsultationSuspensionImpactProvider().flagFutureConsultations(suspension, trx)).resolves.toEqual([3, 8]);
+        await expect(provider.flagFutureConsultations(suspension, trx)).resolves.toEqual([3, 8]);
         expect(flag).toHaveBeenCalledWith(202, NOW, "doctor_suspended", trx);
     });
 
-    it("should list the consultations already flagged doctor_suspended", async () => {
+    it("should queue one doctor_suspended notice per newly flagged patient and none for rows already flagged (N-R17)", async () => {
+        const { provider, enqueue } = setup();
+        jest.spyOn(repo, "flagFutureForDoctor").mockResolvedValue([
+            { id: 3, patient_user_id: 101, starts_at: NOW, ends_at: NOW, newly_flagged: true }, { id: 8, patient_user_id: 102, starts_at: NOW, ends_at: NOW, newly_flagged: false },
+        ]);
+        await expect(provider.flagFutureConsultations(suspension, trx)).resolves.toEqual([3, 8]);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+        expect(enqueue).toHaveBeenCalledWith(trx, [{
+            kind: "doctor_suspended", consultationId: 3, recipientUserId: 101,
+            payload: { startsAt: NOW.toISOString(), endsAt: NOW.toISOString(), recipientRole: "patient" },
+        }]);
+    });
+
+    it("should list the consultations already flagged doctor_suspended and enqueue nothing", async () => {
+        const { provider, enqueue } = setup();
         const conn = { id: "db" } as unknown as Knex;
         const list = jest.spyOn(repo, "listFlaggedIds").mockResolvedValue([3, 8]);
-        await expect(new ConsultationSuspensionImpactProvider().listFlaggedConsultations(suspension, conn)).resolves.toEqual([3, 8]);
+        await expect(provider.listFlaggedConsultations(suspension, conn)).resolves.toEqual([3, 8]);
         expect(list).toHaveBeenCalledWith(202, "doctor_suspended", NOW, conn);
+        expect(enqueue).not.toHaveBeenCalled();
     });
 });

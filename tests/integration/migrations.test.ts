@@ -17,6 +17,8 @@ import * as consultationTypesMigration from "../../src/migrations/20261008120200
 import * as auditReadIndexesMigration from "../../src/migrations/20261009120000_add_audit_logs_read_indexes";
 import * as consultationsMigration from "../../src/migrations/20261011130000_create_consultations";
 import * as notificationOutboxMigration from "../../src/migrations/20261011130100_create_notification_outbox";
+import * as outboxDeliveryMigration from "../../src/migrations/20261012120000_notification_outbox_delivery";
+import * as reminderIndexMigration from "../../src/migrations/20261012120100_consultations_reminder_index";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -290,6 +292,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         try {
             // The schedules tables reference doctor_profiles (ON DELETE RESTRICT): they go first and come back last;
             // consultations reference consultation_types and the outbox references consultations, so those go before them.
+            await reminderIndexMigration.down(migrator);
+            await outboxDeliveryMigration.down(migrator);
             await notificationOutboxMigration.down(migrator);
             await consultationsMigration.down(migrator);
             await consultationTypesMigration.down(migrator);
@@ -317,6 +321,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await consultationTypesMigration.up(migrator);
             await consultationsMigration.up(migrator);
             await notificationOutboxMigration.up(migrator);
+            await outboxDeliveryMigration.up(migrator);
+            await reminderIndexMigration.up(migrator);
         }
         const result = await migrator.raw<{ rows: Array<{ name: string }> }>(
             "SELECT indexname AS name FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'",
@@ -357,21 +363,28 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             "consultations_pkey", "excl_consultations_doctor_no_overlap", "idx_consultations_consultation_type_id", "idx_consultations_doctor_user_id_patient_user_id",
             "idx_consultations_doctor_user_id_starts_at_id", "idx_consultations_follow_up_of_record_id", "idx_consultations_followup_starts_at_id",
             "idx_consultations_patient_user_id_starts_at_id", "idx_consultations_starts_at_id", "uq_consultations_idempotency",
-        ];
+        ].concat("idx_consultations_booked_starts_at").sort();
         const expectedConsultationConstraints = [
             "chk_consultations_cancel_shape", "chk_consultations_cancelled_by", "chk_consultations_followup_reason", "chk_consultations_price",
             "chk_consultations_status", "chk_consultations_time_order", "consultations_pkey", "excl_consultations_doctor_no_overlap",
             "fk_consultations_consultation_type_id", "uq_consultations_idempotency",
         ];
         const expectedOutboxConstraints = [
-            "chk_notification_outbox_kind", "chk_notification_outbox_payload_object", "chk_notification_outbox_status",
-            "fk_notification_outbox_consultation_id", "notification_outbox_pkey",
+            "chk_notification_outbox_attempts", "chk_notification_outbox_kind", "chk_notification_outbox_payload_object", "chk_notification_outbox_sent_shape",
+            "chk_notification_outbox_status", "fk_notification_outbox_consultation_id", "notification_outbox_pkey",
+        ];
+        const expectedOutboxIndexes = [
+            "idx_notification_outbox_consultation_id", "idx_notification_outbox_pending_next_attempt_at_id", "idx_notification_outbox_sent_at", "notification_outbox_pkey",
         ];
         expect(await names("consultations", "indexes")).toEqual(expectedConsultationIndexes);
         expect(await names("consultations", "constraints")).toEqual(expectedConsultationConstraints);
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
-        expect(await names("notification_outbox", "indexes")).toEqual(["idx_notification_outbox_consultation_id", "notification_outbox_pkey"]);
+        expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);
 
+        await reminderIndexMigration.down(migrator);
+        await outboxDeliveryMigration.down(migrator);
+        expect(await names("notification_outbox", "indexes")).toEqual(["idx_notification_outbox_consultation_id", "notification_outbox_pkey"]);
+        expect(await names("consultations", "indexes")).not.toContain("idx_consultations_booked_starts_at");
         await notificationOutboxMigration.down(migrator);
         await consultationsMigration.down(migrator);
         const absent = await migrator.raw<{ rows: Array<{ consultations: string | null; outbox: string | null }> }>(
@@ -379,11 +392,14 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         expect(absent.rows[0]).toEqual({ consultations: null, outbox: null });
         await consultationsMigration.up(migrator);
         await notificationOutboxMigration.up(migrator);
+        await outboxDeliveryMigration.up(migrator);
+        await reminderIndexMigration.up(migrator);
         expect(await names("consultations", "indexes")).toEqual(expectedConsultationIndexes);
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
+        expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);
     });
 
-    it("should grant consultations select/insert/update and the outbox select/insert only", async () => {
+    it("should grant consultations select/insert/update and the outbox select/insert/delete with column-level update only", async () => {
         const result = await migrator.raw<{ rows: Array<{ table_name: string; can_select: boolean; can_insert: boolean; can_update: boolean; can_delete: boolean }> }>(
             `SELECT name AS table_name,
                     has_table_privilege('vcare_app', name, 'SELECT') AS can_select,
@@ -395,8 +411,59 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         );
         expect(result.rows).toEqual([
             { table_name: "consultations", can_select: true, can_insert: true, can_update: true, can_delete: false },
-            { table_name: "notification_outbox", can_select: true, can_insert: true, can_update: false, can_delete: false },
+            { table_name: "notification_outbox", can_select: true, can_insert: true, can_update: false, can_delete: true },
         ]);
+        const columns = await migrator.raw<{ rows: Array<{ column_name: string }> }>(
+            `SELECT a.attname AS column_name FROM pg_attribute a
+             WHERE a.attrelid = 'public.notification_outbox'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+               AND has_column_privilege('vcare_app', 'public.notification_outbox', a.attname, 'UPDATE') ORDER BY a.attname`);
+        expect(columns.rows.map((row) => row.column_name)).toEqual(["attempts", "last_error_code", "next_attempt_at", "sent_at", "status"]);
+    });
+
+    describe("notification outbox delivery migration (20261012120000)", () => {
+        const insert = (conn: Knex, changes: Record<string, unknown> = {}): Promise<Array<{ id: number }>> =>
+            conn("notification_outbox").insert({ kind: "doctor_suspended", recipient_user_id: 101, payload: "{}", status: "pending", next_attempt_at: new Date(), ...changes }).returning("id");
+
+        it("should accept doctor_suspended and reject an unknown kind, a sent row without sent_at and negative attempts", async () => {
+            await truncateAll();
+            await expect(insert(ownerDb)).resolves.toHaveLength(1);
+            await expect(insert(ownerDb, { kind: "unknown_kind" })).rejects.toMatchObject({ code: "23514", constraint: "chk_notification_outbox_kind" });
+            await expect(insert(ownerDb, { status: "sent" })).rejects.toMatchObject({ code: "23514", constraint: "chk_notification_outbox_sent_shape" });
+            await expect(insert(ownerDb, { status: "pending", sent_at: new Date() })).rejects.toMatchObject({ code: "23514", constraint: "chk_notification_outbox_sent_shape" });
+            await expect(insert(ownerDb, { status: "sent", sent_at: new Date() })).resolves.toHaveLength(1);
+            await expect(insert(ownerDb, { attempts: -1 })).rejects.toMatchObject({ code: "23514", constraint: "chk_notification_outbox_attempts" });
+            await truncateAll();
+        });
+
+        it("should let care_app update only the state columns, delete, and still insert", async () => {
+            await truncateAll();
+            const [created] = await insert(db);
+            const id = created?.id ?? 0;
+            await expect(db("notification_outbox").where({ id }).update({ status: "sent", attempts: 1, next_attempt_at: new Date(), last_error_code: null, sent_at: new Date() })).resolves.toBe(1);
+            await expect(db("notification_outbox").where({ id }).update({ payload: "{}" })).rejects.toMatchObject({ code: "42501" });
+            await expect(db("notification_outbox").where({ id }).update({ kind: "cancelled" })).rejects.toMatchObject({ code: "42501" });
+            await expect(db("notification_outbox").where({ id }).update({ recipient_user_id: 5 })).rejects.toMatchObject({ code: "42501" });
+            await expect(db("notification_outbox").where({ id }).delete()).resolves.toBe(1);
+            await truncateAll();
+        });
+
+        it("should step the delivery migration down and up, dropping doctor_suspended rows on down", async () => {
+            await truncateAll();
+            try {
+                await insert(ownerDb);
+                await insert(ownerDb, { kind: "cancelled" });
+                await reminderIndexMigration.down(migrator);
+                await outboxDeliveryMigration.down(migrator);
+                expect((await ownerDb("notification_outbox").select("kind")).map((row: { kind: string }) => row.kind)).toEqual(["cancelled"]);
+                await expect(insert(ownerDb)).rejects.toMatchObject({ code: "23514" });
+            } finally {
+                await outboxDeliveryMigration.up(migrator);
+                await reminderIndexMigration.up(migrator);
+                await truncateAll();
+            }
+            await expect(insert(ownerDb)).resolves.toHaveLength(1);
+            await truncateAll();
+        });
     });
 
     describe("excl_consultations_doctor_no_overlap", () => {

@@ -10,7 +10,7 @@ import type { WorkerLoop } from "./lib/worker/types";
 import { buildWorkerLoops } from "./worker-loops";
 
 // Session advisory locks pin connections (singleton purge + per-intent/per-doctor), so keep headroom for transactions.
-const WORKER_POOL_MAX = 4;
+const WORKER_POOL_MAX = 6;
 const WORKER_STATEMENT_TIMEOUT_MS = 5_000;
 
 /**
