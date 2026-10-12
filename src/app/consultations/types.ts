@@ -19,7 +19,11 @@ export interface ConsultationRow {
     type_name?: string;
 }
 /** A list row with the microsecond cursor text of `starts_at`. */
-export interface ConsultationListDbRow extends ConsultationRow { starts_at_cursor: string }
+/** Columns a list item never needs (`CONSULTATION_LIST_COLUMNS` leaves them out); `toEntity` defaults them. */
+type ListOmittedColumn = "complaint_text" | "room_id" | "no_show_marked_at" | "cancelled_by_user_id" | "reminder_24h_sent_at" | "reminder_1h_sent_at"
+    | "idempotency_key" | "request_hash";
+export type ConsultationListRow = Omit<ConsultationRow, ListOmittedColumn> & Partial<Pick<ConsultationRow, ListOmittedColumn>>;
+export interface ConsultationListDbRow extends ConsultationListRow { starts_at_cursor: string }
 export interface CandidateRow { id: number; starts_at: Date; ends_at: Date }
 export interface FlaggedRow { id: number; patient_user_id: number; starts_at: Date; ends_at: Date }
 

@@ -20,6 +20,7 @@ function properties(name: string): string[] {
 describe("consultations contract conformance (integration: real responses against contracts/openapi.yaml)", () => {
     const h = useConsultationsHarness("consultations-contract");
     const seen = new Map<string, Set<string>>();
+    const operations = new Map<string, { path: string; method: Method }>();
 
     /** Every response is checked against the operation's declared status set and the envelope. */
     function conforms(res: Response, path: string, method: Method, expectedStatus: number, errorCode?: string): void {
@@ -28,11 +29,12 @@ describe("consultations contract conformance (integration: real responses agains
         expect(contractResponseCodes(path, method)).toContain(String(res.status));
         expect(res.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
         const set = seen.get(key) ?? new Set<string>(); set.add(String(res.status)); seen.set(key, set);
+        operations.set(key, { path, method });
+        expect(res.headers["cache-control"]).toBe(contractNoStoreValue());
         if (errorCode !== undefined) {
             expectErrorEnvelope(res.body, errorCode, res.headers["x-request-id"]);
             return;
         }
-        expect(res.headers["cache-control"]).toBe(contractNoStoreValue());
     }
 
     function expectConsultation(data: Record<string, unknown>, options: { complaint: boolean }): void {
@@ -179,9 +181,19 @@ describe("consultations contract conformance (integration: real responses agains
         expect(limited.headers["cache-control"]).toBe(contractNoStoreValue());
     });
 
+    it("should answer 404 NotFound, as the contract describes, for a non-numeric id on get-one, reschedule and cancel", async () => {
+        conforms(await h.call("get", "/api/consultations/abc", "patient"), "/api/consultations/{id}", "get", 404, "NotFound");
+        conforms(await h.reschedule("abc" as unknown as number, "patient", { startsAt: localStart(5, "11:00") }), "/api/consultations/{id}/reschedule", "patch", 404, "NotFound");
+        conforms(await h.cancel("abc" as unknown as number, "patient", {}), "/api/consultations/{id}/cancel", "patch", 404, "NotFound");
+        for (const path of ["/api/consultations/{id}", "/api/consultations/{id}/reschedule", "/api/consultations/{id}/cancel"]) {
+            expect(contractOperationBlock(path, path.endsWith("{id}") ? "get" : "patch")).toContain("A non-numeric `id` is `404 NotFound`");
+        }
+    });
+
     it("should have exercised only statuses each operation declares", () => {
-        const ops: Array<[string, string, Method]> = [["POST /api/consultations", "/api/consultations", "post"], ["GET /api/consultations", "/api/consultations", "get"]];
-        for (const [key, path, method] of ops) {
+        expect([...operations.keys()].sort()).toEqual(["GET /api/consultations", "GET /api/consultations/{id}", "GET /api/patients/{patientUserId}",
+            "PATCH /api/consultations/{id}/cancel", "PATCH /api/consultations/{id}/reschedule", "POST /api/consultations"]);
+        for (const [key, { path, method }] of operations) {
             for (const status of seen.get(key) ?? []) expect(contractResponseCodes(path, method)).toContain(status);
         }
         expect(contractOperationBlock("/api/consultations", "post")).toContain("bookConsultation");

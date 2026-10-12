@@ -11,6 +11,9 @@ import {
 } from "../helpers/consultations-harness";
 import { ownerDb } from "../helpers/db";
 import { captureLogs } from "../helpers/log-capture";
+import { redis } from "../../src/lib/redis/redis";
+import type { ConsultationsService } from "../../src/app/consultations/service/consultations.service";
+import type { AuthContext } from "../../src/lib/types/types";
 
 jest.setTimeout(120_000);
 
@@ -147,6 +150,30 @@ describe("consultations business rules (integration: real routes, Postgres, Redi
             expect(retriedWithNewKey.status).toBe(409); expectErrorEnvelope(retriedWithNewKey.body, "InvalidTransition");
             const conflicting = await h.cancel(id, "doctor", { reason: `${REASON} changed` }, key);
             expect(conflicting.status).toBe(422); expectErrorEnvelope(conflicting.body, "IdempotencyConflict");
+        });
+
+        it("should answer both of two concurrent same-key bookings with one consultation when the Redis idempotency record is bypassed", async () => {
+            const service = container.resolve<ConsultationsService>(TOKENS.ConsultationsService);
+            const actor: AuthContext = { userId: PATIENT, role: "patient", status: "active", emailVerified: true };
+            const input = { doctorId: DOCTOR, typeId: 1, startsAtMs: Date.parse(localStart(3, "10:00")), complaintText: COMPLAINT, patientTimezone: "America/New_York" };
+            const key = randomUUID();
+            const results = await Promise.allSettled([service.book(actor, input, key, "a".repeat(64)), service.book(actor, input, key, "a".repeat(64))]);
+            expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+            const ids = results.map((result) => (result as PromiseFulfilledResult<{ id: number }>).value.id);
+            expect(ids[0]).toBe(ids[1]);
+            expect(await h.consultationRows()).toHaveLength(1);
+            expect(await h.outbox()).toHaveLength(2);
+        });
+
+        it("should keep the full response, complaint text included, in the Redis idempotency record for at most 24 hours (documented retention)", async () => {
+            const key = randomUUID();
+            expect((await h.book("patient", bookingBody(), key)).status).toBe(201);
+            const keys = await redis.keys(`idem:*${key}`);
+            expect(keys).toHaveLength(1);
+            const stored = await redis.get(keys[0] ?? "");
+            expect(stored).toContain(COMPLAINT);
+            expect(await redis.ttl(keys[0] ?? "")).toBeLessThanOrEqual(86_400);
+            expect(await redis.ttl(keys[0] ?? "")).toBeGreaterThan(0);
         });
 
         it("should scope a key to its principal so another patient can use the same key", async () => {

@@ -499,6 +499,22 @@ describe("consultations (integration: real routes, Postgres, Redis and a fake Id
             expect(queue.body.data[0]).toMatchObject({ needsAdminFollowup: true, followupReason: "schedule_blocked" });
         });
 
+        it("should queue exactly one schedule_blocked row when two successive confirmed changes leave the same booking uncovered", async () => {
+            const id = (await book()).body.data.id as number;
+            const weekday = DateTime.fromISO(body().startsAt as string, { setZone: true }).setZone("Africa/Cairo").weekday;
+            const other = weekday === 1 ? 2 : 1;
+            const first = [{ weekday: other, intervals: [{ startTime: "09:00", endTime: "17:00" }] }];
+            const second = [{ weekday: other, intervals: [{ startTime: "10:00", endTime: "16:00" }] }];
+            expect((await call("put", HOURS, "doctor", { days: first, confirmConflicts: true })).status).toBe(200);
+            const refused = await call("put", HOURS, "doctor", { days: second });
+            expect(refused.status).toBe(409);
+            expect(refused.body.conflicts).toEqual({ consultationIds: [id], count: 1 });
+            expect((await call("put", HOURS, "doctor", { days: second, confirmConflicts: true })).status).toBe(200);
+            const blocked = (await outbox()).filter((entry) => entry.kind === "schedule_blocked");
+            expect(blocked.map((entry) => Number(entry.recipient_user_id))).toEqual([PATIENT]);
+            expect(await audits("schedule.conflicts_confirmed")).toHaveLength(2);
+        });
+
         it("should not flag a booking that stays inside the new hours", async () => {
             await book();
             const all = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, intervals: [{ startTime: "08:00", endTime: "18:00" }] }));

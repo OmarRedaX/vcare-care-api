@@ -2093,7 +2093,7 @@ paths:
       description: |
         Participants receive `complaintText` and the read is audited as a clinical read. Admins receive the admin view
         (no `complaintText`, not audited). Anyone else → `404 NotFound`. `timezone` is honored for every role (defaults as
-        in `Consultation`); an invalid zone is `400 ValidationFailed`.
+        in `Consultation`); an invalid zone is `400 ValidationFailed`. A non-numeric `id` is `404 NotFound` (existence is private), not `400`.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
@@ -2138,7 +2138,7 @@ paths:
         length and passes Domain rules 1–5 inside one transaction that updates the same row, releasing the old interval
         atomically. Every successful call writes a `consultation.rescheduled` audit row for any caller (`byRole` in the
         metadata); `x-audit: admin-action` is the policy class, not a restriction to admins. A new start equal to the current
-        one is a `200` no-op (no write, no audit).
+        one is a `200` no-op (no write, no audit). A non-numeric `id` is `404 NotFound` (existence is private), not `400`.
       security:
         - bearerUser: []
       x-roles: [patient, admin]
@@ -2188,7 +2188,7 @@ paths:
         suspended doctor gets `403 Forbidden`.
         Terminal consultations → `409 InvalidTransition`. The interval is released by the status change; both parties are
         notified asynchronously. Every successful call writes a `consultation.cancelled` audit row for any caller
-        (`byRole` in the metadata); `x-audit: admin-action` is the policy class.
+        (`byRole` in the metadata); `x-audit: admin-action` is the policy class. A non-numeric `id` is `404 NotFound` (existence is private), not `400`.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
@@ -3546,6 +3546,8 @@ components:
     BookingForbidden:
       description: '`EmailNotVerified` (token `ev=false`) or `Forbidden` (wrong role or non-active account).'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3616,6 +3618,8 @@ components:
     BookingConflict:
       description: '`DoctorNotBookable` (not approved+synced, suspended, not accepting, or no active type) or `SlotUnavailable` (taken, incl. exclusion violation). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
         Retry-After:
@@ -3634,6 +3638,8 @@ components:
     RescheduleConflict:
       description: '`PolicyWindowViolation`, `InvalidTransition`, `DoctorNotBookable`, or `SlotUnavailable`. Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
         Retry-After:
@@ -3652,6 +3658,8 @@ components:
     CancelConflict:
       description: '`PolicyWindowViolation` (patient inside the window) or `InvalidTransition` (terminal or not cancellable). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
         Retry-After:
@@ -3869,6 +3877,8 @@ components:
     BookingUnprocessable:
       description: '`OutsideWorkingHours`, `BookingInPast`, `BeyondBookingHorizon`, or `IdempotencyConflict`.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:

@@ -6,7 +6,7 @@ import { Consultation } from "../entity/consultation.entity";
 import { ConsultationScope, ConsultationStatus } from "../enums";
 import type { FollowupReason } from "../enums";
 import type {
-    CandidateRow, CandidateWindow, ConsultationListDbRow, ConsultationListEntry, ConsultationListFilter, ConsultationRow, FlaggedRow,
+    CandidateRow, CandidateWindow, ConsultationListDbRow, ConsultationListRow, ConsultationListEntry, ConsultationListFilter, ConsultationRow, FlaggedRow,
     NewConsultation, TransitionChanges,
 } from "../types";
 
@@ -17,29 +17,41 @@ export const CONSULTATION_COLUMNS = [
     "reminder_1h_sent_at", "idempotency_key", "request_hash", "created_at", "updated_at",
 ] as const;
 
+/**
+ * Columns a list item renders. `complaint_text`, `request_hash`, `idempotency_key`, `room_id`, the reminder marks, `no_show_marked_at` and
+ * `cancelled_by_user_id` are never emitted by a list, so they are not read (clinical text stays in the row). `cancel_reason` and
+ * `follow_up_of_record_id` stay because the list DTO emits them.
+ */
+export const CONSULTATION_LIST_COLUMNS = [
+    "id", "doctor_user_id", "patient_user_id", "consultation_type_id", "starts_at", "ends_at", "status", "patient_timezone", "price", "currency",
+    "joined_at", "started_at", "completed_at", "cancelled_at", "cancel_reason", "cancelled_by", "needs_admin_followup", "followup_reason",
+    "follow_up_of_record_id", "created_at", "updated_at",
+] as const;
+
 const QUALIFIED_COLUMNS = CONSULTATION_COLUMNS.map((column) => `consultations.${column}`);
+const QUALIFIED_LIST_COLUMNS = CONSULTATION_LIST_COLUMNS.map((column) => `consultations.${column}`);
 const TYPE_NAME_COLUMN = "consultation_types.name as type_name";
 /** Statuses of a consultation that can still happen (the impact checks and the follow-up queue). */
 export const NON_TERMINAL_STATUSES: readonly ConsultationStatus[] = [ConsultationStatus.Booked, ConsultationStatus.Waiting, ConsultationStatus.InProgress];
 const RELATIONSHIP_STATUSES: readonly ConsultationStatus[] = [...NON_TERMINAL_STATUSES, ConsultationStatus.Completed];
 const MINUTE_MS = 60_000;
 
-function toEntity(row: ConsultationRow, typeName?: string): Consultation {
+function toEntity(row: ConsultationListRow, typeName?: string): Consultation {
     return new Consultation({
         id: row.id, doctorUserId: row.doctor_user_id, patientUserId: row.patient_user_id, consultationTypeId: row.consultation_type_id,
         consultationTypeName: typeName ?? row.type_name ?? "", startsAt: row.starts_at, endsAt: row.ends_at, status: row.status,
-        complaintText: row.complaint_text, patientTimezone: row.patient_timezone, price: row.price, currency: row.currency, roomId: row.room_id,
+        complaintText: row.complaint_text ?? "", patientTimezone: row.patient_timezone, price: row.price, currency: row.currency, roomId: row.room_id ?? null,
         joinedAt: row.joined_at, startedAt: row.started_at, completedAt: row.completed_at, cancelledAt: row.cancelled_at,
-        cancelReason: row.cancel_reason, cancelledBy: row.cancelled_by, cancelledByUserId: row.cancelled_by_user_id,
-        noShowMarkedAt: row.no_show_marked_at, needsAdminFollowup: row.needs_admin_followup, followupReason: row.followup_reason,
-        followUpOfRecordId: row.follow_up_of_record_id, reminder24hSentAt: row.reminder_24h_sent_at, reminder1hSentAt: row.reminder_1h_sent_at,
-        idempotencyKey: row.idempotency_key, requestHash: row.request_hash, createdAt: row.created_at, updatedAt: row.updated_at,
+        cancelReason: row.cancel_reason, cancelledBy: row.cancelled_by, cancelledByUserId: row.cancelled_by_user_id ?? null,
+        noShowMarkedAt: row.no_show_marked_at ?? null, needsAdminFollowup: row.needs_admin_followup, followupReason: row.followup_reason,
+        followUpOfRecordId: row.follow_up_of_record_id, reminder24hSentAt: row.reminder_24h_sent_at ?? null,
+        reminder1hSentAt: row.reminder_1h_sent_at ?? null, idempotencyKey: row.idempotency_key ?? "", requestHash: row.request_hash ?? "", createdAt: row.created_at, updatedAt: row.updated_at,
     });
 }
 
-function joined(conn: Knex): Knex.QueryBuilder {
+function joined(conn: Knex, columns: readonly string[] = QUALIFIED_COLUMNS): Knex.QueryBuilder {
     return conn("consultations").join("consultation_types", "consultation_types.id", "consultations.consultation_type_id")
-        .select(...QUALIFIED_COLUMNS, TYPE_NAME_COLUMN);
+        .select(...columns, TYPE_NAME_COLUMN);
 }
 
 /** One live row with its type name; absent or soft-deleted -> `undefined`. */
@@ -107,7 +119,7 @@ export async function applyTransition(current: Consultation, from: readonly Cons
  * `upcoming` adds `starts_at >= now - 240 min` (durations are capped at 240) so the range scan on `starts_at` is bounded.
  */
 export function listPageQuery(filter: ConsultationListFilter, conn: Knex = db): Knex.QueryBuilder {
-    const query = joined(conn).select(timestampCursorSelect(conn, "consultations.starts_at", "starts_at_cursor"))
+    const query = joined(conn, QUALIFIED_LIST_COLUMNS).select(timestampCursorSelect(conn, "consultations.starts_at", "starts_at_cursor"))
         .whereNull("consultations.deleted_at");
     if (filter.doctorUserId !== null) query.where("consultations.doctor_user_id", filter.doctorUserId);
     if (filter.patientUserId !== null) query.where("consultations.patient_user_id", filter.patientUserId);
@@ -177,11 +189,15 @@ export async function listAffectedCandidates(doctorUserId: number, now: Date, wi
     return (await query.orderBy("id", "asc")) as CandidateRow[];
 }
 
-/** Flags the given rows for admin follow-up; rows that left a non-terminal status meanwhile are skipped. Ascending ids. */
+/**
+ * Flags the given rows for admin follow-up; rows that left a non-terminal status meanwhile are skipped, and so are rows already flagged
+ * with the same `reason` (the predicate keeps `RETURNING` to the newly flagged rows, so a patient is notified once). Ascending ids.
+ */
 export async function flagConsultations(ids: readonly number[], doctorUserId: number, reason: FollowupReason, trx: Knex.Transaction): Promise<FlaggedRow[]> {
     if (ids.length === 0) return [];
     const rows: FlaggedRow[] = await trx("consultations").whereIn("id", [...ids]).where("doctor_user_id", doctorUserId).whereIn("status", [...NON_TERMINAL_STATUSES])
-        .whereNull("deleted_at").update({ needs_admin_followup: true, followup_reason: reason, updated_at: trx.fn.now() })
+        .whereNull("deleted_at").whereRaw("NOT (needs_admin_followup AND followup_reason IS NOT DISTINCT FROM ?)", [reason])
+        .update({ needs_admin_followup: true, followup_reason: reason, updated_at: trx.fn.now() })
         .returning(["id", "patient_user_id", "starts_at", "ends_at"]);
     return rows.sort((a, b) => a.id - b.id);
 }

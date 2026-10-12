@@ -91,14 +91,18 @@ export class IdentityClient {
                     if (response.statusCode !== 200) continue;
                     const envelope = await validateBody(UsersEnvelopeDto, response.body, { unknownMembers: "strip" });
                     if (envelope.data.length > 100 || envelope.data.some((user) => !chunk.includes(user.id))) continue;
-                    for (const user of envelope.data) {
-                        users.set(user.id, { displayName: user.fullName, avatarUrl: user.avatarUrl, status: user.status });
-                        if (isRedisUsable(redis)) {
-                            try {
-                                await withRedis(redis, () => redis.setex(`identity:user:${user.id}`, 300,
-                                    JSON.stringify({ fullName: user.fullName, avatarUrl: user.avatarUrl, status: user.status })));
-                            } catch { /* Redis is Tier 2. */ }
-                        }
+                    for (const user of envelope.data) users.set(user.id, { displayName: user.fullName, avatarUrl: user.avatarUrl, status: user.status });
+                    if (envelope.data.length > 0 && isRedisUsable(redis)) {
+                        try {
+                            // One round trip for the whole chunk, not one per user.
+                            await withRedis(redis, () => {
+                                const pipeline = redis.pipeline();
+                                for (const user of envelope.data) {
+                                    pipeline.setex(`identity:user:${user.id}`, 300, JSON.stringify({ fullName: user.fullName, avatarUrl: user.avatarUrl, status: user.status }));
+                                }
+                                return pipeline.exec();
+                            });
+                        } catch { /* Redis is Tier 2. */ }
                     }
                     done = true;
                 } catch { /* Retry once, then degrade. */ }
