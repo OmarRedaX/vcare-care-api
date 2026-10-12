@@ -27,6 +27,8 @@ export interface IdentityClientOptions {
 export interface ServiceTokenCacheOptions {
     pool: Pool;
     env: Env;
+    /** Scopes requested and required in the answer; defaults to the status scopes. */
+    scopes?: readonly string[];
     now?: () => number;
 }
 export interface RawIdentityResponse { statusCode: number; body: unknown }

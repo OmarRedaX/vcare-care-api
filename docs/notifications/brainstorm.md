@@ -33,8 +33,10 @@ the email adapter choice below.
   recipient user id; never address, subject or body). A real provider (SES, SMTP) is a later `/system-design` + ADR
   and swaps in behind the port without touching the loop. *(Owner decision.)*
 - `lib/identity-client`: `getContacts(ids)` for `GET /internal/users/contacts` (≤ 100 per call, `no-store`, result held
-  in memory for one batch only, never cached, stored or logged). The service-token request gains scope
-  `users:contact:read` (today hard-coded to `users:read users:status:write` in `service-token-cache.ts`).
+  in memory for one batch only, never cached, stored or logged). The contacts call uses its **own** service token
+  with scope `users:contact:read` only (`CONTACT_SERVICE_SCOPES`), separate from the status token, so a missing grant
+  cannot break suspension or verification. *Groundwork done 2026-10-12: `ServiceTokenCache` takes a `scopes` option
+  (default unchanged) and validates the granted scopes; the second cache and `getContacts` land with this unit.*
 - `notifications` worker loop **`notification-outbox`**: claim 20 due `pending` rows with `FOR UPDATE SKIP LOCKED`,
   one batched contacts call, render, send (5 s timeout), then `sent` / backoff / `dead` / `skipped` per ADR 0011
   (`attempts++`, backoff `30 s · 2^attempt` capped at 30 min, `dead` after 8; unknown or non-active recipient →
@@ -43,8 +45,9 @@ the email adapter choice below.
   within 24 h (and 1 h) with the matching `reminder_*_sent_at` null, insert the outbox rows and set the column in one
   transaction. **Both patient and doctor** get both reminders. *(Owner decision.)* A consultation booked inside the
   window is skipped (the confirmation covers it).
-- **Reschedule resets both reminder columns** in its transaction (ADR 0011 says so; `consultations` does not do it yet
-  because nothing sent reminders). Cancel needs no cleanup.
+- **Reschedule resets both reminder columns** in its transaction (ADR 0011). Already built in `consultations`
+  (`rescheduleRow`, asserted in `tests/integration/consultations.test.ts`); this unit adds a reminder-specific test.
+  Cancel needs no cleanup.
 - **Purge**: `sent` rows older than 30 days deleted in batches by the worker.
 - **Templates**: a locale-keyed table with **`en` filled in** and fallback to `en` for any other locale (`locale` comes
   from Identity). Kinds: `booking_confirmed`, `reminder_24h`, `reminder_1h`, `rescheduled`, `cancelled`,
@@ -120,13 +123,17 @@ env vars (poll seconds, batch size, retention days) in `infrastructure.md`. Hub:
 volume is a `/system-design` follow-up, not part of this brief.
 
 ## Open questions
-1. Is Identity's `GET /internal/users/contacts` implemented and is `care-service` provisioned with
-   `users:contact:read`? (The contract is defined; the hub landscape still labels it "planned".)
-2. Reminder windows: send at "within 24 h / within 1 h" as soon as the scan sees it, or at "≈ 24 h / ≈ 1 h before"
-   with a tolerance? Proposed: first scan where `starts_at - now <= 24 h`, never later than start.
-3. `doctor_suspended` wording and whether it lists alternatives (rebook) or only says an admin will contact the
-   patient. Proposed: neutral notice that the appointment needs follow-up, no reason.
-4. Platform deltas for `/system-design` afterwards: outbox volume in hub `capacity.md`, a real email provider ADR.
+Resolved 2026-10-12 with the recommended defaults (owner: "do what you recommend").
+1. **Identity contacts availability** — resolved: Identity implements `GET /internal/users/contacts`, the
+   `internalContactsPolicy` and the `users:contact:read` scope (identity ADR 0024; checked in `../vcare-identity-api`).
+   Whether the deployed `care-service` client is provisioned with the scope is an environment check for manual QA,
+   which uses the fake Identity.
+2. **Reminder timing** — resolved: the first scan where `starts_at - now <= 24 h` (or `<= 1 h`) sends the reminder,
+   never after `starts_at`. A consultation booked inside the window is skipped.
+3. **`doctor_suspended` wording** — resolved: a neutral notice that the appointment needs follow-up and an admin will
+   be in touch; no reason, no rebooking link.
+4. **Platform deltas for `/system-design` afterwards** (not part of this unit): outbox volume in hub `capacity.md`;
+   the real email provider ADR.
 
 ## Success criteria
 - A booked, rescheduled or cancelled consultation produces exactly one email per recipient in the log-adapter record,
