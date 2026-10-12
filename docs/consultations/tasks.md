@@ -3,7 +3,7 @@ title: consultations — Tasks
 owner: care-team
 service: care-service
 module: consultations
-status: tested
+status: done
 last_verified: 2026-10-12
 tags: [tasks, consultations]
 related: [consultations-spec, consultations-brainstorm]
@@ -36,8 +36,10 @@ Source: [spec.md](./spec.md) (ready, owner-approved 2026-10-11). Issue #38, bran
 - [x] (routes) `consultations/routes.ts`, `GET /patients/:patientUserId` after `/patients/me`
 - [x] (mount) `src/routes.ts`
 - [x] (tests) unit (pure `slot-fit`, `toIsoInZone`, generic helpers, DTOs, response viewer matrix, policies, env, service rules with mocks, providers incl. `findAffected` benchmark, queries service), contract (`tests/unit/contract/consultations-contract.test.ts` + `tests/integration/consultations-contract.test.ts`), and integration (`consultations.test.ts` smoke, `consultations-rbac`, `consultations-rules`: concurrency, idempotency, DST with a fake clock, suspension race, outbox/audit atomicity, audit, log hygiene, budgets; `consultations-reads`: pagination per scope, Case 2 degrade). Shared harness `tests/helpers/consultations-harness.ts`
-- [ ] (manual-qa) <- /manual-qa (`scripts/curl-test-consultations.sh`)
-- [~] (docs) service card and INDEX updated; as-built refresh of `data-model.md`, `api.md`, `rbac.md`, `consultation-lifecycle.md`, `scheduling-slots.md`, `integration.md`, `patients/spec.md`, `schedules/spec.md` is `/update-docs`
+- [x] (manual-qa) `scripts/curl-test-consultations.sh` + `docs/consultations/manual-qa.md` (384 pass / 0 fail, 2026-10-12)
+- [x] (docs) `/update-docs` 2026-10-12: `data-model`, `api`, `rbac`, `consultation-lifecycle`, `scheduling-slots`, `integration`, `infrastructure`, `resilience`, `clinical-records`, `runbook`, `patients/spec.md` (1.2.0), `schedules/spec.md` (1.2.0), `consultations/spec.md` section 13, service card, INDEX; CLAUDE.md D-R4 wording aligned
+
+- [x] (fix-review) review-20261012-0500: schedule_blocked once per booking, list column subset, hydration pipeline, contract no-store/404 notes, conformance coverage, same-key race and idempotency-retention tests; decisions D-R2/R4/R7/R8 in spec 11 (unit 125/2322, integration 33/1062 +2 skipped). Docs item 16 done at `/update-docs`
 
 ## Notes
 - Out of this slice (spec 10): sessions, records, discovery cache, outbox delivery/reminder scan.

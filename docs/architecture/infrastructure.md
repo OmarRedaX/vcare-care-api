@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -41,8 +41,8 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `UPLOAD_POLICY_TTL_SECONDS` / `UPLOAD_INTENT_TTL_SECONDS` / `DOWNLOAD_URL_TTL_SECONDS` | `300` / `900` / `60` | | Validated positive integers; fixed outside tests |
 | `IDENTITY_SYNC_POLL_SECONDS` / `IDENTITY_SYNC_RETRY_CAP_SECONDS` / `IDENTITY_SYNC_ALERT_AFTER_SECONDS` | `10` / `60` / `900` | | Validated positive integer worker intervals |
 | `UPLOAD_INTENT_PURGE_SECONDS` | `300` | | Validated positive integer: the `upload-intent-purge` loop interval |
-| `BOOKING_HORIZON_DAYS` | `60` | | 1–365; furthest bookable start from now (Domain rule 3) |
-| `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10) |
+| `BOOKING_HORIZON_DAYS` | `60` | | 1–365; furthest bookable start from now (Domain rule 3); read by `consultations` (built 2026-10-12) |
+| `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10); exactly this many minutes before the start is still allowed; read by `consultations` (built 2026-10-12) |
 | `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | `CORS_ORIGINS` | `""` (none) | | comma-separated origins (`scheme://host[:port]`, no path), honoured only when `NODE_ENV=development`; production is single-origin with CORS disabled (hub ADR 0005). `.env.example` sets `http://localhost:5173` |
 | `LOG_LEVEL` | `info` | | `debug` \| `info` \| `warn` \| `error`; `debug` is rejected when `NODE_ENV=production` |
@@ -56,8 +56,6 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 |---|---|---|---|
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
-| `BOOKING_HORIZON_DAYS` | `60` | | Domain rule 3 |
-| `CANCELLATION_POLICY_MINUTES` | `120` | | Domain rule 10 |
 | `NO_SHOW_GRACE_MINUTES` | `10` | | Domain rule 11 |
 | `WAITING_ROOM_OPEN_MINUTES` | `10` | | Domain rule 12 (window opens before start) |
 | `SESSION_OVERRUN_MINUTES` | `15` | | Domain rule 12 (window closes after end) |
@@ -243,7 +241,7 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
   `NODE_ENV=development` only) → `OPTIONS` → 404 → `express.json` (100 kB, strict) → routers → 404 → error handler.
   `x-powered-by` is disabled; Express `trust proxy` stays off.
 - CORS allowlist from `CORS_ORIGINS` in development only (single origin in production, hub ADR 0005); never on the
-  internal listener. `Cache-Control: no-store` on health and on clinical and consultation responses.
+  internal listener. `Cache-Control: no-store` on health and on clinical and consultation responses. The prefixes `/api/patients`, `/api/consultations`, `/api/admin` and `/api/audit-logs` (`NO_STORE_PREFIXES` in `src/routes.ts`) get it from a pre-auth middleware mounted **before** `express.json`, so parser errors (malformed JSON, oversize, wrong content type), `401`s and `404`s under them also carry it; the doctor routes keep their own per-router `noStore()`.
 - Body size limits: JSON 100 kB; no multipart routes, because file bytes go straight to object storage (ADR 0013).
 - Redis sliding-window rate limits as listed above (mounted by their modules).
 - Node server timeouts: `keepAliveTimeout` 65 s, `headersTimeout` 66 s, `requestTimeout` 30 s.

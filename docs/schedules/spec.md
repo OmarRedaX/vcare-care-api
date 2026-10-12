@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 module: schedules
 status: implemented
-version: 1.1.0
+version: 1.2.0
 diataxis: reference
-last_verified: 2026-10-09
+last_verified: 2026-10-12
 tags: [spec, schedules, working-hours, exceptions, consultation-types, pkg-slots, dst, conflicts, audit, migration]
 related: [schedules-brainstorm, doctors-spec, verification-spec, access-spec, scheduling-slots, data-model, api, rbac, adr-0002-slots-never-stored, adr-0010-next-available-lazy-cache-worker-refresh, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, adr-0019-luxon-for-doctor-timezone-validation]
 contracts: [contracts/openapi.yaml]
@@ -845,7 +845,7 @@ The module is implemented as specified: eight routes, three migrations (`2026100
 **Tests (2026-10-09).** Unit: 1541 tests in total across the repository (all green); the schedules share is `tests/unit/pkg/slots/*` (five files: `instant`, `intervals`, `local-date`, `local-time`, `resolve-open-intervals`, with the DST reference table), `tests/unit/app/schedules/*` (DTO, rules, response DTO, service, policies, routes, resolver, no-op defaults), `tests/unit/contract/schedules-contract.test.ts`, `tests/unit/lib/validation/date-decorator.test.ts`, and the doctors unit changes (five queries, `isBookable` from the view flag). Integration: `tests/integration/schedules.test.ts` has **116** tests (RBAC for all eight routes including the locally-suspended doctor, ownership, working-hours PUT race, exceptions, types, stub-provider and stub-listener flows, rate limits, grants and schema checks, EXPLAIN, log and audit hygiene, contract conformance); additions to `boot.test.ts`, `db-roles.test.ts` and `doctors.test.ts` (the `isBookable` flip). Targeted integration run (schedules, doctors, boot, db-roles): 226 green. The full integration run fails only on the MinIO storage-adapter suite (no MinIO locally) and the known `migrations` flake under load (passes alone).
 
 **Manual QA (2026-10-09).** [manual-qa.md](./manual-qa.md): **220 pass / 0 fail** against a real Care listener (`care_app`, real Postgres and Redis, fake JWKS Identity). Not verified end to end, by design or environment:
-- `409 ScheduleConflictsUnconfirmed` and the `schedule.conflicts_confirmed` audit row: the default `ScheduleImpactProvider` is a no-op until `consultations` exists, so these are covered only through the stub provider (unit and integration). The end-to-end test remains a task of the `consultations` spec (section 10).
+- `409 ScheduleConflictsUnconfirmed` and the `schedule.conflicts_confirmed` audit row: covered through the stub provider at 2026-10-09; **superseded 2026-10-12**, see the as-built delta below (the real provider and the end-to-end tests exist).
 - The in-flight duplicate `Idempotency-Key` path (`409 Conflict` + `Retry-After: 1`): needs a deterministic race over HTTP.
 - The Redis-down fallback limiter.
 - Behaviour on a real Identity (fake JWKS only) and the production build (`dist/`).
@@ -857,3 +857,12 @@ The module is implemented as specified: eight routes, three migrations (`2026100
 - Section 8 says the `listTypesPage` EXPLAIN uses `uq_consultation_types_doctor_profile_id_name`. As built, the planner may use that index or the primary key (a <= 20-row set filtered by profile), never a sequential scan; the integration test asserts "an index scan, not a seq scan" and does not pin the index name.
 
 **Doctors consequence.** `GET /api/doctors/me` and the `apply`/`PATCH` views now issue five queries and `isBookable` needs a live active consultation type (doctors spec v1.3.0, section 14). The doctors timezone-change impact on schedules is recorded as deferred there.
+
+### 14.1 As-built delta from `consultations` (2026-10-12, version 1.2.0)
+- **`ScheduleImpactProvider` is filled** (section 10 task done). `consultations` rebinds `TOKENS.ScheduleImpactProvider` in `bootstrap.ts` (lazy `SchedulesService` factory); the no-op class remains for tests.
+  `findAffected` considers future `booked`, `waiting` and `in_progress` consultations of the doctor (narrowed to the changed UTC window for exception changes), resolves the new open intervals inside the write's transaction
+  and reports those not contained in one open interval (`isCoveredByOpenIntervals`; the slot grid is not re-checked). Its ids ascend and fill the `409` body (`conflicts.consultationIds`).
+- **Flag-only-newly-flagged outbox behaviour.** `flagAffected` flags rows with `followup_reason='schedule_blocked'` and enqueues one `schedule_blocked` outbox row per patient **only for rows not already flagged with that reason**. A later confirmed change that still strands a booking neither re-notifies the patient nor rewrites the flag; the `409` body keeps listing already-flagged ids, so the admin sees every stranded booking. No per-consultation audit row (the port has no actor); `schedule.conflicts_confirmed` already lists the first 20 ids.
+- **End-to-end tests exist** in the consultations integration suites: `PUT working-hours`, `POST exceptions` and `DELETE` of a `custom_hours` exception each return the real `409`, then `confirmConflicts=true` flags rows, queues outbox rows and audits.
+- New `SchedulesService` methods used by booking: `findBookableType(profileId, typeId, conn)` and `resolveOpenDays(profileId, timezone, fromDate, toDate, conn)`; new repository function `listExceptionsInRange`.
+- The doctor-timezone-change impact check remains deferred (consultations spec section 10).

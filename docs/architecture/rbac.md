@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, schedules-spec, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [api, consultations-spec, schedules-spec, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # RBAC and Ownership
@@ -85,8 +85,8 @@ rateLimit(byUser)? → idempotency()? → handler`; every module `routes.ts` ret
 The local `suspended_at` check closes the up-to-15-minute window in which a suspended doctor's access token is
 still valid. It is a policy `AccessCheck` named `doctor_not_suspended` (`appliesTo: ["doctor"]`) supplied by the
 doctors module. It is live on `PATCH /doctors/me` and, since 2026-10-09, on all eight `schedules` routes (re-read under the profile row lock on writes); the other three onboarding routes stay readable or usable by a
-locally suspended doctor when their token state allows it. Later practising routes must add this check. Booking's check of the **target** doctor is a consultations service rule,
-not a policy check.
+locally suspended doctor when their token state allows it. Since 2026-10-12 it is also on `PATCH /consultations/:id/cancel` and `GET /patients/:patientUserId` (doctor callers). Reads of a doctor's own consultations (`GET /consultations`, `GET /consultations/:id`) stay open to a locally suspended doctor. Later practising routes must add this check. Booking's check of the **target** doctor is a consultations service rule,
+not a policy check (`FOR SHARE` on the profile row, so it serializes with a suspension).
 
 ## Per-route policy table
 | Route | Roles | Ownership (`x-ownership`) | Audit |
@@ -103,12 +103,13 @@ not a policy check.
 | `PATCH /admin/doctors/:doctorUserId/reinstate` (live, 2026-10-09, ADR 0012) | admin | none; same limiter | admin-action: `doctor.reinstated`, `identity_sync.*` |
 | `GET /patients/me` (live, 2026-10-11) | patient (token `status=active`; doctor and admin `403`) | self | clinical-read: `patient_profile.read`, metadata `{ patientUserId }` |
 | `PATCH /patients/me` (live, 2026-10-11) | patient (as above) | self | clinical-write: `patient_profile.updated`, metadata `{ created, changedFields }` (names only) |
-| `GET /patients/:patientUserId`, `GET /patients/:patientUserId/records` (**planned**) | patient, doctor | `consulted-patient-or-self`: patient `:id = auth.userId`; doctor has a `completed` or current consultation with the patient; else `deny-not-found` | clinical-read |
-| `POST /consultations` | patient (active, email verified) | `self` — `patient_user_id := auth.userId` | — |
-| `GET /consultations` | patient, doctor, admin | `participant-or-admin` — own rows; admin all with admin DTO | — |
-| `GET /consultations/:id` | patient, doctor, admin | `participant-or-admin`; others `deny-not-found` | clinical-read for participants |
-| `PATCH /consultations/:id/reschedule` | patient, admin | `patient-owner-or-admin` | admin-action for admin |
-| `PATCH /consultations/:id/cancel` | patient, doctor, admin | `participant-or-admin`; doctor/admin reason required | admin-action for admin |
+| `GET /patients/:patientUserId` (**live**, 2026-10-12) | patient, doctor (token `status=active`; doctor not locally suspended; admin `403`) | `consulted-patient-or-self`: patient `:id = auth.userId`; doctor has a `booked`, `waiting`, `in_progress` or `completed` consultation with the patient (decision D-R4; `EXISTS` over `idx_consultations_doctor_user_id_patient_user_id`); else `deny-not-found`; a non-numeric id is `404`; no profile yet `404` | clinical-read: `patient_profile.read`, metadata `{ patientUserId, viewerRole }` |
+| `GET /patients/:patientUserId/records` (**planned**, with `records`) | patient, doctor | same resolver | clinical-read |
+| `POST /consultations` (**live**, 2026-10-12) | patient (active, email verified) | `self` — `patient_user_id := auth.userId` | `consultation.booked` |
+| `GET /consultations` (**live**) | patient, doctor, admin | none at the guard; the repository `WHERE` comes from `auth` (patient own, doctor own, admin all with the admin DTO); admin-only filters (`doctorUserId`, `patientUserId`, `needsAdminFollowup`) by a non-admin → `403 Forbidden` | — (list items carry no clinical text) |
+| `GET /consultations/:id` (**live**) | patient, doctor, admin | resolver `consultation_participant_or_admin` (patient owner, assigned doctor, or admin; others and non-numeric ids `deny-not-found`) | `consultation.read` for participants; none for admin |
+| `PATCH /consultations/:id/reschedule` (**live**) | patient, admin | resolver `consultation_patient_or_admin`; admin `reason` required (`400`) | `consultation.rescheduled` for any caller (policy class admin-action) |
+| `PATCH /consultations/:id/cancel` (**live**) | patient, doctor, admin | resolver `consultation_participant_or_admin`; doctor (assigned only, not locally suspended) and admin `reason` required (`400`) | `consultation.cancelled` for any caller (policy class admin-action) |
 | `PATCH /consultations/:id/join` | patient, doctor | `participant` | — |
 | `PATCH /consultations/:id/start`, `/complete` | doctor | `assigned-doctor` | — |
 | `PATCH /consultations/:id/no-show` | doctor, admin | `assigned-doctor-or-admin` | admin-action for admin |
@@ -126,7 +127,9 @@ not a policy check.
 | `GET /audit-logs` | admin | none | — |
 | `GET /internal/doctors/:userId/summary` | service | scope `doctors:read` | — |
 
-Status changes on consultations are always audited (`consultation.<status>`) regardless of the audit class above.
+Status changes on consultations are always audited regardless of the audit class above. Built so far: `consultation.booked`, `.rescheduled`, `.cancelled` (any caller role, `byRole` in the metadata) and `consultation.read`; the session transitions (`waiting`, `started`, `completed`, `no-show`) arrive with `sessions`.
+
+**Doctor-patient relationship (decision D-R4, 2026-10-12).** A doctor "has consulted" a patient when a non-deleted consultation in `booked`, `waiting`, `in_progress` or `completed` links them. `booked` is included so a doctor can read the intake profile before the visit; a `cancelled` or `no_show`-only relationship grants nothing. Every read is audited. The records routes reuse the same resolver once `records` ships.
 
 ## Deny-not-found vs forbidden
 | Situation | Response | Why |
@@ -142,7 +145,7 @@ Response DTOs are built with `from(entity, viewer)`:
 
 | Resource | Patient (owner) | Doctor (participant / consulted) | Admin |
 |---|---|---|---|
-| Consultation | all fields incl. `complaintText`, local times in `patientTimezone` | all fields incl. `complaintText`, local times in doctor tz | **no `complaintText`**; lifecycle, parties, times, `needsAdminFollowup` |
+| Consultation | get-one and own write responses: all fields incl. `complaintText`, local times in `patientTimezone`; list items omit `complaintText` | same, local times in the doctor's zone | **no `complaintText`** (also on write responses); lifecycle, parties, times, `cancelReason`, `needsAdminFollowup` (decision D-R7: `cancelReason` is administrative context, clients must not put clinical detail in it) |
 | Patient profile | all fields | all fields | not served |
 | Medical record / amendments / attachments | all fields | all fields | not served |
 | Doctor profile | public view | own full view on `/doctors/me` | public view + `status` (bookable/not) |

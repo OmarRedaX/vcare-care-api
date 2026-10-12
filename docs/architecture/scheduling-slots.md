@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-09
+last_verified: 2026-10-12
 tags: [scheduling, slots, timezones, booking, caching, performance]
-related: [schedules-spec, data-model, consultation-lifecycle, resilience, capacity, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh]
+related: [consultations-spec, schedules-spec, data-model, consultation-lifecycle, resilience, capacity, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh]
 ---
 
 # Scheduling and Slot Computation
@@ -68,12 +68,21 @@ both stay with `availability` (steps 1, 5-7) and `consultations` (booking re-val
 | `parseTimeOfDay` / `formatTimeOfDay` / `addDays` / `localDateOf` / `isoWeekday` / `isCalendarDate` | wall-clock and calendar helpers on `YYYY-MM-DD` strings and minutes since midnight (luxon; no `Date` arithmetic) |
 
 Two in-process ports, both with no-op defaults registered in `bootstrap.ts`, are the seams for the next modules:
-- `ScheduleImpactProvider` (`findAffected`, `flagAffected`; inside the write's transaction): `consultations` binds it to find future non-terminal consultations that fall outside the new open intervals (using `resolveOpenIntervals`) and to flag them; the default returns `[]`, so a schedule write is never blocked until then.
+- `ScheduleImpactProvider` (`findAffected`, `flagAffected`; inside the write's transaction): **bound by `consultations` since 2026-10-12** (the no-op default remains for tests). `findAffected` reads the future `booked`/`waiting`/`in_progress` rows of the doctor (narrowed to the changed UTC window for an exception change), resolves the **new** open intervals through the write's transaction (`SchedulesService.resolveOpenDays`, 3 queries) and returns the ids whose interval is not contained in one open interval (`isCoveredByOpenIntervals`; the slot grid is deliberately not re-checked, so a shifted shift anchor does not flag every booking). `flagAffected` flags only rows not already flagged `schedule_blocked` and enqueues one `schedule_blocked` outbox row per newly flagged patient, so a patient is notified once; the `409` body still lists already-flagged ids.
 - `ScheduleChangeListener` (after commit; a failure is logged and never fails the write): `availability` binds it to invalidate `slots:*` / `next-available:*` and enqueue the coalesced refresh ([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)). The default does nothing.
 
 A third port, `ScheduleOwnerResolver`, only breaks the `doctors` / `schedules` construction cycle.
 
 **Resolved performance finding (2026-10-09).** `resolveOpenIntervals` (14 days x 3 shifts x 7 weekdays) took about 11 to 13 ms because `IANAZone.isValidZone` rebuilt an `Intl.DateTimeFormat` on every `assertValidZone` call. Validated zone names are now memoized in a pure module-level `Set` (successes only), `localInstant` skips the candidate re-check when there is no transition within a day, and the local midnight is computed arithmetically. Measured 3.4 to 4.3 ms in jest on the dev machine (isolated; up to 6 to 8 ms under full parallel suite load, hence the separate benchmark). The 5 ms budget is unchanged and is verified by `npm run test:bench` (opt-in, run alone: 3.07 to 3.30 ms best of 100); `npm test` keeps only deterministic guards (constant zone-validation count, < 50 ms regression guard).
+
+## As built: booking re-validation (consultations, 2026-10-12)
+Implemented by `ConsultationsService` ([spec](../consultations/spec.md) sections 3.6-3.7) with pure code in `pkg/slots/slot-fit.ts`; the order below supersedes the table that follows where they differ.
+- Order inside the transaction: idempotency replay lookup → `SELECT … FOR SHARE` on the live doctor profile (`DoctorsService.lockBookingTarget`; suspension and schedule writes take `FOR UPDATE`, so a booking and a suspension serialize) → bookable → type (404 when absent or inactive) → past → horizon → grid → insert → outbox → audit. Everything the checks read is read **after** the lock. Patient email verification is a policy check (`authorize`), before the service.
+- `isSlotOnGrid(days, startMs, durationMinutes)`: some single open interval has `start <= startMs`, `startMs + duration <= end`, and `(startMs - intervalStart) % duration === 0`. The grid is anchored on the working interval's start and busy consultations do **not** move it, so "resume at the next grid point" is the next point of the same grid; overlap is the exclusion constraint's job. Intervals are per doctor-local date and are **not merged across dates** (a slot cannot straddle local midnight). The future `availability` module must use these same functions so the slot list and the booking check cannot disagree.
+- Days are resolved for `[localDate - 1, localDate + 1]` (`resolveOpenDays`: two queries, hours and exceptions in range, then `resolveOpenIntervals`); the timezone is the doctor's.
+- Reschedule re-validates the same way using the **stored** interval length (a later type edit never changes an existing row) and the same lock order (profile, then consultation).
+- `toIsoInZone(ms, timezone)` in `pkg/utils/time.ts` renders `startsAtLocal`/`endsAtLocal` (ISO with offset in the viewer zone).
+- Cache invalidation after commit goes through the `ConsultationChangeListener` seam, a no-op until `availability`/discovery fills it.
 
 ## Booking re-validation
 The slot list shows what *looked* free. `POST /api/consultations` re-proves it in one transaction:

@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-14
+last_verified: 2026-10-12
 tags: [consultations, lifecycle, state-machine, reschedule, cancellation, sessions]
-related: [scheduling-slots, clinical-records, rbac, data-model, api]
+related: [consultations-spec, scheduling-slots, clinical-records, rbac, data-model, api]
 ---
 
 # Consultation Lifecycle
@@ -60,6 +60,25 @@ stateDiagram-v2
 | Session window | `[starts_at − 10 min, ends_at + 15 min]` | `WAITING_ROOM_OPEN_MINUTES=10`, `SESSION_OVERRUN_MINUTES=15` | join/start only inside it; video tokens issued only inside it |
 
 All comparisons are on UTC instants.
+
+## As built (consultations module, 2026-10-12)
+Built: create → `booked`, reschedule, cancel, list, get-one ([spec](../consultations/spec.md)). `join`, `start`, `complete`, `no-show`, `waiting-room`,
+`calendar` and the video port are the `sessions` unit; `applyTransition` (`WHERE id AND status = ANY($from) AND deleted_at IS NULL`, zero rows → `409 InvalidTransition`)
+is generic so `sessions` reuses it.
+- **Booking** is one transaction: replay lookup by `(patient_user_id, idempotency_key)` → `FOR SHARE` on the doctor profile (serializes with suspension and schedule
+  writes) → bookable, type, past, horizon, grid check (`isSlotOnGrid`, see [scheduling-slots.md](./scheduling-slots.md)) → insert → two `booking_confirmed` outbox rows → audit.
+  `23P01` → `409 SlotUnavailable`; `uq_consultations_idempotency` is the Redis-loss fallback (same `request_hash` replays, else `422 IdempotencyConflict`).
+- **Reschedule** only from `booked`; the patient window is `CANCELLATION_POLICY_MINUTES` (exactly 120:00 before start is allowed, a start already past is a violation); an
+  admin needs a `reason`; the new start equal to the current is a `200` no-op (no write, audit or outbox); a non-bookable doctor blocks it (decision D-R2, including
+  `is_accepting_patients=false`; cancel stays available); the stored interval length is kept; the reminder marks and the follow-up flag are cleared.
+- **Cancel** from `booked`/`waiting`; assigned doctor and admin need a `reason`; a locally suspended doctor gets `403`. A retry with a new key after the first success is
+  `409 InvalidTransition` (cancel's idempotency is Redis-only).
+- Every write enqueues `notification_outbox` rows in its transaction (`rescheduled`, `cancelled` to both parties); delivery is the notification unit. Slot and `next-available`
+  cache invalidation goes through the `ConsultationChangeListener` seam after commit, a no-op until discovery fills it; a listener failure is logged without data, never thrown.
+- **List scopes** (decision D-R8): `upcoming` = `endsAt > now`, `past` = `endsAt <= now`, `all` ascending; an `in_progress` row past its `endsAt` matches neither scope until
+  `sessions` decides.
+- **Follow-up flags** (`needs_admin_followup`) are set by the filled ports for future `booked`/`waiting`/`in_progress` rows: `schedule_blocked` (only rows not already flagged with that
+  reason, so the patient is notified once; the `409` body still lists every stranded id) and `doctor_suspended` (all rows). Nothing is auto-cancelled; reschedule clears the flag, cancel ends the row.
 
 ## Session (waiting room and video)
 1. The patient calls `/join` inside the window: `booked → waiting`, `joined_at` set, the room is created lazily at

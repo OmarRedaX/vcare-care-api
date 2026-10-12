@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -16,7 +16,7 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
 (see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
-`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE). `knex_migrations` records migration names without the file extension. Everything else below is the design the
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
 remaining modules will build. Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
@@ -401,10 +401,15 @@ CREATE INDEX idx_consultations_doctor_user_id_patient_user_id ON consultations (
 CREATE INDEX idx_consultations_consultation_type_id ON consultations (consultation_type_id);
 
 -- Admin follow-up queue GET /consultations?needsAdminFollowup=true ORDER BY starts_at, id
+-- (as built the predicate includes 'in_progress': schedule blocks and suspension flag in_progress rows too)
 CREATE INDEX idx_consultations_followup_starts_at_id ON consultations (starts_at, id)
-    WHERE needs_admin_followup AND deleted_at IS NULL AND status IN ('booked', 'waiting');
+    WHERE needs_admin_followup AND deleted_at IS NULL AND status IN ('booked', 'waiting', 'in_progress');
 
--- Reminder scan (care-worker, every minute, ADR 0011):
+-- Admin list with no participant filter (as built, added by consultations):
+--   WHERE deleted_at IS NULL [scope/status/from/to] ORDER BY starts_at, id LIMIT $n + 1
+CREATE INDEX idx_consultations_starts_at_id ON consultations (starts_at, id) WHERE deleted_at IS NULL;
+
+-- Reminder scan (care-worker, every minute, ADR 0011) — NOT created yet; the notification/worker unit adds it with its query:
 --   WHERE status = 'booked' AND deleted_at IS NULL AND starts_at BETWEEN now() AND now() + interval '24 hours'
 --     AND (reminder_24h_sent_at IS NULL OR reminder_1h_sent_at IS NULL) ORDER BY starts_at LIMIT 200
 CREATE INDEX idx_consultations_booked_starts_at ON consultations (starts_at) WHERE status = 'booked' AND deleted_at IS NULL;
@@ -412,9 +417,17 @@ CREATE INDEX idx_consultations_booked_starts_at ON consultations (starts_at) WHE
 -- FK index for follow-up bookings: WHERE follow_up_of_record_id = $1
 CREATE INDEX idx_consultations_follow_up_of_record_id ON consultations (follow_up_of_record_id) WHERE follow_up_of_record_id IS NOT NULL;
 -- fk_consultations_follow_up_of_record_id is added after medical_records exists (circular reference):
+-- NOT created yet (medical_records does not exist): the records migration adds it.
 ALTER TABLE consultations ADD CONSTRAINT fk_consultations_follow_up_of_record_id
     FOREIGN KEY (follow_up_of_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT;
 ```
+**Built** by `consultations` (migrations `20261011130000`, `20261011130100`). As built: everything above except the deferred pieces
+marked in the comments — `idx_consultations_booked_starts_at` (reminder scan) and `fk_consultations_follow_up_of_record_id` are not created
+yet; `idx_consultations_follow_up_of_record_id` is. `vcare_app` holds `SELECT, INSERT, UPDATE` and sequence `USAGE` (no `DELETE`: soft delete only,
+no route sets `deleted_at`). Reads that render a list item use the explicit `CONSULTATION_LIST_COLUMNS` projection (21 columns): it omits
+`complaint_text`, `request_hash`, `idempotency_key`, `room_id`, the reminder marks, `no_show_marked_at` and `cancelled_by_user_id`, so clinical text is
+not even read by a bulk list; get-one and the write paths use `CONSULTATION_COLUMNS`. Flagging (`needs_admin_followup`, `followup_reason`) skips rows
+already flagged with the same reason, so a schedule-change flag notifies a patient once. Detail: [consultations spec](../consultations/spec.md) section 2.
 Status updates are guarded: `UPDATE … SET status=$new WHERE id=$1 AND status = ANY($allowedFrom)` — zero rows
 updated means `409 InvalidTransition` (Domain rule 9). SQLSTATE `23P01` on insert or reschedule maps to
 `409 SlotUnavailable`.
@@ -725,13 +738,17 @@ CREATE TABLE notification_outbox (
     CONSTRAINT chk_notification_outbox_payload_object CHECK (jsonb_typeof(payload) = 'object')
 );
 -- Worker claim: WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at
---   FOR UPDATE SKIP LOCKED LIMIT 20
+--   FOR UPDATE SKIP LOCKED LIMIT 20   (NOT created yet: the delivery unit adds it with its UPDATE grant)
 CREATE INDEX idx_notification_outbox_pending_next_attempt_at ON notification_outbox (next_attempt_at) WHERE status = 'pending';
 -- FK index + support lookup by consultation
 CREATE INDEX idx_notification_outbox_consultation_id ON notification_outbox (consultation_id) WHERE consultation_id IS NOT NULL;
--- Purge: WHERE status='sent' AND sent_at < now() - OUTBOX_RETENTION_DAYS, batches of 5 k
+-- Purge: WHERE status='sent' AND sent_at < now() - OUTBOX_RETENTION_DAYS, batches of 5 k   (NOT created yet: delivery unit, with DELETE grant)
 CREATE INDEX idx_notification_outbox_sent_at ON notification_outbox (sent_at) WHERE status = 'sent';
 ```
+**Built, insert side only** (`consultations`, migration `20261011130100`): the table, its three CHECKs and `idx_notification_outbox_consultation_id` exist;
+`vcare_app` holds `SELECT, INSERT` (no `UPDATE`/`DELETE`). Writers are `NotificationsService.enqueue` calls inside the booking, reschedule and cancel
+transactions and the schedule-block port (`booking_confirmed`, `rescheduled`, `cancelled`, `schedule_blocked`; payloads are an allowlist of ids, ISO instants and roles).
+The claim and purge indexes, the status-changing grants, delivery and the reminder scan belong to the notification/worker unit.
 
 ## Not stored
 - **Slots / availability** — computed per request ([scheduling-slots.md](./scheduling-slots.md)).

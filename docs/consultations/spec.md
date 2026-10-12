@@ -3,8 +3,8 @@ title: consultations — Spec
 owner: care-team
 service: care-service
 module: consultations
-status: ready
-version: 0.1.0
+status: implemented
+version: 0.2.0
 diataxis: reference
 last_verified: 2026-10-12
 tags: [spec, consultations, booking, reschedule, cancel, exclusion-constraint, idempotency, outbox, ports, clinical-privacy]
@@ -397,6 +397,8 @@ New codes: none (all exist in CLAUDE.md → API conventions); `errors.ts` export
 - **No-store** on every response of the four prefixes; patient timezone and times are not sensitive but are covered by the same header.
 - **Existence:** book answers `409 DoctorNotBookable` for an existing non-bookable doctor (contract-defined; a minor id-probe, accepted).
 - **Rate limits:** section 3.9. Files: not applicable.
+- **Redis idempotency retention (review 2026-10-12, item 6; decision):** the idempotency middleware stores the full success response of `POST /consultations`, reschedule and cancel in Redis for 24 h, so `complaintText` and `cancelReason` are retained there for up to 24 h beyond the database row. Accepted rather than rebuilding the replay body from the row: TTL-bound, same trust zone as Postgres, never logged, per-principal key. The middleware is unchanged; `consultations-rules.test.ts` pins that the stored value holds the response and the TTL is <= 24 h. Recorded in `architecture/clinical-records.md`.
+- **`cancelReason` guidance:** the reason is free text that admins can see (decision D-R7 below). Clients must not put clinical detail in a cancel reason; it is length-bounded, redacted from logs and kept out of audit metadata (only `reasonLength`).
 
 ## 8. Performance
 Budgets: booking write p95 < 200 ms; list/get are not in the budget table (target p95 < 150 ms).
@@ -440,6 +442,13 @@ No undecided design question remains; items below are the pending actions.
 
 **Platform changes required (/system-design):** none.
 
+**Decisions recorded from review 2026-10-12 (owner, "go with defaults"; current behaviour kept):**
+- **D-R2 Reschedule requires bookability.** A patient cannot reschedule while the doctor is not bookable, including `is_accepting_patients=false` (spec C-R6). Pausing intake therefore also pauses moves; cancel stays available.
+- **D-R4 A `booked` consultation counts as a doctor-patient relationship** for `GET /patients/{id}` (`booked`, `waiting`, `in_progress`, `completed`), supporting pre-visit intake. This is broader than the CLAUDE.md wording ("completed or current"); CLAUDE.md is to be reconciled by the owner. Every read is audited.
+- **D-R7 Admins see `cancelReason`** (it is administrative context, not a clinical note); see the `cancelReason` guidance in section 7.
+- **D-R8 An `in_progress` consultation whose `ends_at` has passed** matches neither `upcoming` nor `past` (literal C1). Deferred to the `sessions` unit, which decides whether `upcoming` includes `in_progress` regardless of `ends_at`.
+- **Schedule-change flagging notifies once.** `flagConsultations` skips rows already flagged with the same reason, so a later confirmed change that still strands a booking neither re-notifies the patient nor re-writes the flag; the `409 ScheduleConflictsUnconfirmed` body keeps listing already-flagged ids so the admin sees every stranded booking. Suspension keeps flagging everything (last writer wins on the reason).
+
 **Docs to refresh at `/update-docs`** (not contract/platform): `architecture/data-model.md` (follow-up index predicate, new `idx_consultations_starts_at_id`, outbox indexes deferred, deferred FK), `api.md`, `rbac.md`, `consultation-lifecycle.md`, `scheduling-slots.md` (as-built `slot-fit`, per-date intervals), `infrastructure.md` (two new env vars), `integration.md`, `docs/service-card.md` (**affected**: new tables, endpoints, dependencies), `patients/spec.md` (the planned `/patients/{id}` access is now built), `schedules/spec.md` §10 task done.
 
 ## 12. Task ordering (CLAUDE.md → Build order for a new module)
@@ -453,3 +462,14 @@ No undecided design question remains; items below are the pending actions.
 7. `policies.ts`; controller; `routes.ts`; mount (+ `patients` route/policy for `/patients/{id}`).
 8. Tests (unit, integration, RBAC, contract, concurrency, ports E2E, EXPLAIN).
 9. Manual QA with CURL (`scripts/curl-test-consultations.sh`), docs (section 11 list).
+
+## 13. As-built notes (2026-10-12, version 0.2.0)
+Built, tested (unit 125 suites / 2322 tests; integration 33 suites / 1062 passed + 2 skipped; typecheck and lint clean), manually QA'd (384 pass, 0 fail, [manual-qa.md](./manual-qa.md)) and review-clean. Contract edits C1-C9 are applied; the only later contract edits are description and header clarifications (non-numeric `{id}` is `404`; `Cache-Control: no-store` on the booking error responses).
+- **List projection.** List items are read with `CONSULTATION_LIST_COLUMNS` (21 columns): `complaint_text`, `request_hash`, `idempotency_key`, `room_id`, reminder marks, `no_show_marked_at` and `cancelled_by_user_id` are not read by a list; `toEntity` defaults them. Get-one and writes use `CONSULTATION_COLUMNS`.
+- **Hydration cache pipeline.** `getUsersBatch` writes each missed chunk back to Redis (`identity:user:<id>`, TTL 300 s) in one pipelined round trip instead of one `SETEX` per user.
+- **Follow-up index.** `idx_consultations_followup_starts_at_id` includes `in_progress`; `idx_consultations_starts_at_id` serves the unfiltered admin list (section 2.1). `data-model.md` is updated.
+- **Flag once.** `flagConsultations` skips rows already flagged with the same reason (decision recorded in section 11).
+- **Deviation:** `DoctorsService.findBookingTarget` (non-locking) is not built; `ConsultationQueriesService.renderOwn` renders the actor's own write responses.
+- **Owner decision D-R4 applied to CLAUDE.md** (2026-10-12): the wording "completed or current consultation" now names `booked`, `waiting`, `in_progress` or `completed`.
+- **Redis idempotency retention (24 h)** is accepted and recorded in section 7, `architecture/clinical-records.md` and `architecture/resilience.md`.
+- Docs refreshed at `/update-docs` (section 11 list): `data-model`, `api`, `rbac`, `consultation-lifecycle`, `scheduling-slots`, `integration`, `infrastructure`, `resilience`, `patients/spec.md` (1.2.0), `schedules/spec.md` (1.2.0), `runbook`, `service-card`, `INDEX`.

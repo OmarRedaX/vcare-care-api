@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-09
+last_verified: 2026-10-12
 tags: [runbook, operations, on-call, care]
 related: [resilience, integration, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -184,7 +184,7 @@ incident with the job id and request id only.
 `node dist/worker.js --once identity-sync` retries every due job of any kind (Case 1, Case 3, Case 4) once, suspensions first; `--once upload-intent-purge` closes expired open intents (deleting their quarantine objects) and removes intent rows older than 7 days. Both need the worker's normal env (`DATABASE_URL`, Identity and storage variables), use their own pool, and exit 0 on success. `upload-intent-purge` exits 1 (`worker_once_incomplete`) when another worker holds its singleton lock or a storage delete failed; rerun after the cause clears.
 
 ### Move or cancel flagged consultations after a suspension
-Until the `consultations` module exists, suspension flags nothing (a no-op port returns `flaggedConsultationIds: []`); this task applies once it does.
+Since 2026-10-12 (`consultations` built) suspension flags every future `booked`/`waiting`/`in_progress` consultation `doctor_suspended` (`flaggedConsultationIds` is real); nothing is cancelled or moved. The `reason` is required (3-1000 characters) and must not contain clinical detail. Suspension queues no patient notification (no outbox kind exists), and delivery is not built yet: `schedule_blocked`, `rescheduled` and `cancelled` rows in `notification_outbox` stay `pending` until the worker delivery unit ships, so tell affected patients by other means until then.
 1. List the queue: `GET /api/consultations?needsAdminFollowup=true&scope=upcoming` as an admin (admin view has no clinical fields).
 2. For each consultation either reschedule to another doctor's flow (patient rebooks) or cancel on behalf:
    `PATCH /api/consultations/{id}/cancel` with `Idempotency-Key` and `{"reason":"Doctor unavailable"}`.

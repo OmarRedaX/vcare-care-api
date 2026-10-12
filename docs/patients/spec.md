@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 module: patients
 status: implemented
-version: 1.1.0
+version: 1.2.0
 diataxis: reference
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 tags: [spec, patients, patient-profile, clinical-privacy, audit, migration, upsert]
 related: [patients-brainstorm, doctors-spec, schedules-spec, access-spec, audit-spec, data-model, api, rbac, clinical-records, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, adr-0019-luxon-for-doctor-timezone-validation]
 contracts: [contracts/openapi.yaml]
@@ -22,7 +22,7 @@ for upsert, race handling, DTO and test style.
 Scope follows [brainstorm.md](./brainstorm.md) (decided 2026-10-11). The doctor-facing `GET /api/patients/{patientUserId}`
 and `GET /api/patients/{patientUserId}/records` are **not** built here: both need the doctor-to-patient `EXISTS` on
 `consultations` (the timeline also needs `medical_records`) and ship with `consultations` / `records`. The contract
-operations stay as written; this module does not mount them.
+operations stay as written; this module does not mount them. *(As built: `GET /api/patients/{patientUserId}` shipped with `consultations` on 2026-10-12, see section 14; the `/records` timeline is still planned.)*
 
 Binding rules: CLAUDE.md → "Database rules", "API conventions", "Authorization — RBAC and ownership", "Privacy and
 logging", "Security rules", "Domain rules" (16, 17, 19, 20, 22), "Testing policy", "Build order for a new module".
@@ -336,7 +336,7 @@ No new codes. `Conflict`/`409` is never emitted by this module.
 ---
 
 ## 7. Security & privacy
-- **RBAC summary:** `patient` (self, active) only. Doctor: `403` (a doctor's access to a patient's profile arrives with `GET /patients/{id}` in `consultations`). Admin: `403` on both routes; admins never receive clinical fields.
+- **RBAC summary:** `patient` (self, active) only. Doctor: `403` on the two `/patients/me` routes (a doctor reads a patient through `GET /patients/{id}`, built in `consultations` on 2026-10-12, section 14). Admin: `403` on both routes; admins never receive clinical fields.
 - **Audit events:** `patient_profile.read` (entity `patient_profile`, entity id = profile id, metadata `{ patientUserId }`); `patient_profile.updated` (metadata `{ created, changedFields }`). Actor from the verified token via `actorFromAuth`; request id attached automatically.
 - **Never logged / never audited:** `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `gender` (the key list in `lib/logger/redact.ts`; `gender` is added by this module), and the request and response bodies of these routes. The controller and service pass no profile data to the logger; `AuditRecorder` already rejects redacted key names in metadata.
 - **Responses:** `Cache-Control: no-store` on both routes and on their error responses.
@@ -417,8 +417,9 @@ Intentional divergences from sections 1-13; the contract is unchanged.
 - **No lower bound on `dateOfBirth`.** The only date rules are a real calendar date (`IsCalendarDate`) and not after today in the effective timezone. A 1900 floor was considered but not built; do not read any minimum into the contract (`format: date` only).
 - **`IsTextList(maxLength)` replaces the planned per-item decorator stack.** Per-item rules for `allergies` / `chronicConditions` (1..200 code points, not blank, no control characters, no duplicates; non-arrays left to `IsArray`) live in one domain-free validator, `src/lib/validation/text-list-decorator.ts`, under the generic-helpers rule; the rejected value is never in the message. Unit-tested in `tests/unit/lib/validation/text-list-decorator.test.ts`. Section 3.5 behavior is unchanged.
 - **`dateOfBirth` is selected with `to_char(date_of_birth, 'YYYY-MM-DD')`** in `PATIENT_PROFILE_COLUMNS`, so the entity carries a string and no JS `Date` timezone shift is possible (as written in sections 3.4 and 3.7).
-- **`noStore()` is mounted twice.** Besides `router.use("/patients/me", noStore())`, `src/app.ts` mounts `app.use("/api/patients", markPreAuth(noStore()))` **before** `express.json`, so parser-level errors (malformed JSON, oversize body, wrong content type) on the whole `/api/patients` prefix also carry `Cache-Control: no-store` (found by manual QA). The prefix also covers the future `/api/patients/{patientUserId}` routes.
+- **`noStore()` is mounted twice.** Besides `router.use("/patients/me", noStore())`, `src/app.ts` mounts `app.use("/api/patients", markPreAuth(noStore()))` **before** `express.json`, so parser-level errors (malformed JSON, oversize body, wrong content type) on the whole `/api/patients` prefix also carry `Cache-Control: no-store` (found by manual QA). The prefix also covers `/api/patients/{patientUserId}`. **Superseded 2026-10-12 (consultations):** the per-router `router.use("/patients/me", noStore())` is gone; the prefix is now one entry of `NO_STORE_PREFIXES` (`src/routes.ts`: `/api/patients`, `/api/consultations`, `/api/admin`, `/api/audit-logs`), mounted by a loop in `src/app.ts` before `express.json`.
 - **Policies declare the audit class.** `PATIENTS_POLICIES` sets `audit: "clinical-read"` (`getMe`) and `audit: "clinical-write"` (`updateMe`), mirroring the contract's `x-audit`; the field is declarative, the service writes the rows (section 3.10 updated).
 - **`gender` added to `REDACTED_KEYS`** (`src/lib/logger/redact.ts`), as planned.
-- **Planned, not built:** `GET /api/patients/{patientUserId}` and `GET /api/patients/{patientUserId}/records` stay `planned` in the docs. When they ship (with `consultations` / `records`) they must keep the contract access: the patient themself, or a doctor with a `completed` or current consultation with that patient (`EXISTS` on `consultations`, else `404`); admins never; every successful call audited; register after `/patients/me`.
+- **`GET /api/patients/{patientUserId}` is built (2026-10-12, version 1.2.0, `consultations` module).** The route lives in this module's router, registered after `/patients/me`; policy `getById` (roles patient and doctor, resolver `consulted_patient_or_self`, check `doctor_not_suspended`, audit class `clinical-read`). Access: the patient only for their own id; a doctor with a non-deleted `booked`, `waiting`, `in_progress` or `completed` consultation with that patient (decision D-R4: a `booked` consultation counts, for pre-visit intake; `cancelled`/`no_show` alone do not); everyone else `404`; admin `403`; a suspended doctor `403`; a patient with no profile row yet `404`; a non-numeric id `404`. `PatientsService.getForViewer` loads the profile and writes `patient_profile.read` (`{ patientUserId, viewerRole }`) in a transaction before returning; `PatientProfileResponseDto.from` accepts the owning patient or a doctor viewer and still throws for an admin. The relationship comes through the `PatientRelationshipChecker` port (implemented by `ConsultationsService.hasConsultationRelationship`, `idx_consultations_doctor_user_id_patient_user_id`). Rate limit: the patients read limiter, 120/min per user, shared with `/patients/me`. [consultations spec](../consultations/spec.md) section 3.1.
+- **Still planned:** `GET /api/patients/{patientUserId}/records` (needs `medical_records`; ships with `records`) and its use of the same relationship resolver.
 - Verification: manual QA 135 pass / 0 fail ([manual-qa.md](./manual-qa.md)).

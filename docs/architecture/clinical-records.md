@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-10-12
 tags: [records, clinical, privacy, audit, attachments, amendments]
 related: [consultation-lifecycle, rbac, data-model, future, file-handling]
 ---
@@ -58,7 +58,7 @@ Full design: [file-handling.md](./file-handling.md) ([ADR 0013](../adr/0013-veri
 | Viewer | Records | Patient profile clinical fields |
 |---|---|---|
 | Patient | own only | own only |
-| Doctor | records of patients they have a `completed` or current consultation with (and records they authored) | same relationship |
+| Doctor | records of patients they have a `booked`, `waiting`, `in_progress` or `completed` consultation with (and records they authored) | same relationship |
 | Admin | **never** — absent from every record route's roles | **never** — admin DTOs omit clinical fields |
 
 Non-owners receive `404 NotFound` so existence cannot be probed. Patients never write record fields (Domain rule 16);
@@ -90,6 +90,13 @@ A doctor-initiated booking on the patient's behalf is a `/system-design` topic, 
 Audit `metadata` holds ids, statuses, and reasons only — never clinical text, codes, or names. Logs never contain
 record contents, complaint text, allergies, conditions, diagnosis text or code, object keys, or presigned URLs.
 Responses carry `Cache-Control: no-store`.
+
+**Idempotency replay records (accepted retention).** The Redis idempotency middleware stores the full success response of a
+write for 24 h so a retry replays it byte-for-byte. For `POST /consultations` (and reschedule/cancel) that response includes
+`complaintText` (and `cancelReason`), so clinical text lives in Redis for up to 24 h beyond the clinical store. Accepted: the
+record is TTL-bound, in the same trust zone as the database, never logged, and keyed per principal. The middleware is not
+changed for this; do not add a new route that returns clinical text under `idempotency(...)` without recording the same
+retention here. Pinned by a test in `tests/integration/consultations-rules.test.ts`.
 
 ## Phase-2 AI boundary
 Care guarantees the boundary the AI service must work within:
