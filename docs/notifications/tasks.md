@@ -3,7 +3,7 @@ title: notifications — Tasks
 owner: care-team
 service: care-service
 module: notifications
-status: built-awaiting-write-tests
+status: tests-green
 last_verified: 2026-10-12
 tags: [tasks, notifications, outbox, worker]
 related: [notifications-spec, notifications-brainstorm, adr-0011-notification-outbox-and-reminders]
@@ -33,6 +33,6 @@ Source: [spec.md](./spec.md) (ready, v0.1.0). Branch `feature/notifications`. No
 - [x] (mount) worker loops + worker-loops.ts registration + pool max 6
 - [x] (tests) unit tests per piece
 - [x] (tests) integration smoke: migrations, claim, reminder scan, purge, producer
-- [ ] (tests) full integration/concurrency/EXPLAIN/log hygiene suite <- /write-tests
+- [x] (tests) full integration/concurrency/EXPLAIN/log hygiene suite (tests/integration/notifications-delivery.test.ts, tests/unit/app/notifications/templates.matrix.test.ts)
 - [ ] (manual-qa) <- /manual-qa
 - [ ] (docs) architecture refresh <- /update-docs
