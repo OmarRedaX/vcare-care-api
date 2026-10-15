@@ -4,11 +4,15 @@ import { AuditService } from "./app/audit/service/audit.service";
 import { AdminDoctorsController } from "./app/admin-doctors/controller/admin-doctors.controller";
 import { AdminDoctorsService } from "./app/admin-doctors/service/admin-doctors.service";
 import { ConsultationsController } from "./app/consultations/controller/consultations.controller";
+import { ConsultationRowsService } from "./app/consultations/service/consultation-rows.service";
 import { ConsultationQueriesService } from "./app/consultations/service/consultation-queries.service";
 import { ConsultationsService } from "./app/consultations/service/consultations.service";
 import { NoopConsultationChangeListener } from "./app/consultations/service/noop-consultation-change.listener";
 import { buildScheduleImpactProvider } from "./app/consultations/service/schedule-impact.provider";
 import { ConsultationSuspensionImpactProvider } from "./app/consultations/service/suspension-impact.provider";
+import { SessionsController } from "./app/sessions/controller/sessions.controller";
+import { SessionQueriesService } from "./app/sessions/service/session-queries.service";
+import { SessionsService } from "./app/sessions/service/sessions.service";
 import { NotificationsService } from "./app/notifications/service/notifications.service";
 import { HealthController } from "./app/health/controller/health.controller";
 import { PatientsController } from "./app/patients/controller/patients.controller";
@@ -27,6 +31,7 @@ import { IdentitySyncService } from "./app/identity-sync/service/identity-sync.s
 import { VerificationController } from "./app/verification/controller/verification.controller";
 import { VerificationService } from "./app/verification/service/verification.service";
 import { IdentityClient } from "./lib/identity-client/identity-client";
+import { createVideoProvider } from "./lib/video/create-video-provider";
 import { S3Adapter } from "./lib/storage/s3.adapter";
 import type { Env } from "./lib/config/types";
 import { container } from "./lib/di/container";
@@ -74,9 +79,16 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.AuditController, AuditController);
     container.registerSingleton(TOKENS.PatientsService, PatientsService);
     container.registerSingleton(TOKENS.PatientsController, PatientsController);
+    container.registerSingleton(TOKENS.ConsultationRowsService, ConsultationRowsService);
     container.registerSingleton(TOKENS.ConsultationsService, ConsultationsService);
     container.registerSingleton(TOKENS.ConsultationQueriesService, ConsultationQueriesService);
     container.registerSingleton(TOKENS.ConsultationsController, ConsultationsController);
+    // Sessions: the provider is built lazily (first resolve is the router build at boot, so a production boot with the fake fails there);
+    // tests rebind `TOKENS.VideoProvider` to a stub.
+    container.register(TOKENS.VideoProvider, { useFactory: instanceCachingFactory(() => createVideoProvider(env)) });
+    container.registerSingleton(TOKENS.SessionsService, SessionsService);
+    container.registerSingleton(TOKENS.SessionQueriesService, SessionQueriesService);
+    container.registerSingleton(TOKENS.SessionsController, SessionsController);
     // Port for `patients`: the doctor-patient relationship is answered by the consultations service.
     container.register(TOKENS.PatientRelationship, { useFactory: (c) => c.resolve<ConsultationsService>(TOKENS.ConsultationsService) });
 }
