@@ -36,16 +36,17 @@ function setup(options: { maxAttempts?: number; send?: (message: EmailMessage, s
     const lost = new Set<number>();
     const claim = jest.spyOn(repo, "claimDue");
     jest.spyOn(repo, "oldestDueAgeSeconds").mockResolvedValue(0);
+    const pendingAge = jest.spyOn(repo, "oldestPendingAgeSeconds").mockResolvedValue(0);
     jest.spyOn(repo, "finishRows").mockImplementation((batch) => {
         finishes.push(...batch);
         return Promise.resolve(batch.filter((finish) => !lost.has(finish.id)).map((finish) => finish.id));
     });
     const service = new OutboxDeliveryService(db, { getContacts } as never, { send }, { findDeliveryContexts }, { OUTBOX_BATCH_SIZE: 20, OUTBOX_MAX_ATTEMPTS: options.maxAttempts ?? 8 }, log.logger, clock);
-    const run = async (rows: OutboxClaimedRow[]): Promise<{ claimed: number; leaseLost: number }> => {
+    const run = async (rows: OutboxClaimedRow[]): Promise<{ claimed: number; leaseLost: number; contactsUnavailable: boolean }> => {
         claim.mockResolvedValueOnce(rows);
         return service.deliverRound(new AbortController().signal);
     };
-    return { service, clock, log, getContacts, send, findDeliveryContexts, finishes, lost, claim, run };
+    return { service, clock, log, getContacts, send, findDeliveryContexts, finishes, lost, claim, run, pendingAge };
 }
 
 function contactsFor(ids: number[], contact = active): { contacts: Map<number, typeof active>; unavailable: Set<number> } {
@@ -59,7 +60,7 @@ describe("OutboxDeliveryService", () => {
         const t = setup();
         t.findDeliveryContexts.mockResolvedValue(new Map([[10, context()]]));
         t.getContacts.mockResolvedValue(contactsFor([PATIENT]));
-        await expect(t.run([row()])).resolves.toEqual({ claimed: 1, leaseLost: 0 });
+        await expect(t.run([row()])).resolves.toEqual({ claimed: 1, leaseLost: 0, contactsUnavailable: false });
         expect(t.send).toHaveBeenCalledTimes(1);
         const message = t.send.mock.calls[0]?.[0] as EmailMessage;
         expect(message.to).toBe(SYNTHETIC_ADDRESS);
@@ -264,7 +265,7 @@ describe("OutboxDeliveryService", () => {
         t.findDeliveryContexts.mockResolvedValue(new Map([[10, context()]]));
         t.getContacts.mockResolvedValue(contactsFor([PATIENT]));
         t.lost.add(1);
-        await expect(t.run([row()])).resolves.toEqual({ claimed: 1, leaseLost: 1 });
+        await expect(t.run([row()])).resolves.toEqual({ claimed: 1, leaseLost: 1, contactsUnavailable: false });
         expect(t.log.warn).toHaveBeenCalledWith("notification_lease_lost", { outboxId: 1 });
         expect(t.log.info).not.toHaveBeenCalledWith("notification_sent", expect.anything());
     });
@@ -281,6 +282,46 @@ describe("OutboxDeliveryService", () => {
         }
     });
 
+    describe("infrastructure failure after the claim", () => {
+        it("should hand the claimed rows back without consuming an attempt when the consultation lookup throws, then rethrow", async () => {
+            const t = setup();
+            t.findDeliveryContexts.mockRejectedValue(new Error("db down"));
+            t.claim.mockResolvedValueOnce([row({ id: 1, attempts: 4 }), row({ id: 2, attempts: 2 })]);
+            await expect(t.service.deliverRound(new AbortController().signal)).rejects.toThrow("db down");
+            expect(t.send).not.toHaveBeenCalled();
+            expect(t.finishes).toEqual([
+                { id: 1, expectedAttempts: 4, status: OutboxStatus.Pending, attemptsDelta: -1, nextAttemptAt: new Date(NOW), lastErrorCode: null, sentAt: null },
+                { id: 2, expectedAttempts: 2, status: OutboxStatus.Pending, attemptsDelta: -1, nextAttemptAt: new Date(NOW), lastErrorCode: null, sentAt: null },
+            ]);
+            expect(t.log.warn).toHaveBeenCalledWith("notification_claim_released", { count: 2 });
+        });
+
+        it("should still rethrow the original error when handing the rows back fails too", async () => {
+            const t = setup();
+            t.findDeliveryContexts.mockRejectedValue(new Error("db down"));
+            jest.spyOn(repo, "finishRows").mockRejectedValue(new Error("still down"));
+            t.claim.mockResolvedValueOnce([row()]);
+            await expect(t.service.deliverRound(new AbortController().signal)).rejects.toThrow("db down");
+            expect(t.log.warn).toHaveBeenCalledWith("notification_claim_release_failed", { count: 1 });
+        });
+
+        it("should hand back the rows not yet sent when persisting an outcome throws mid-batch", async () => {
+            const t = setup();
+            t.findDeliveryContexts.mockResolvedValue(new Map([[10, context()]]));
+            t.getContacts.mockResolvedValue(contactsFor([PATIENT]));
+            const written: OutboxFinish[] = [];
+            jest.spyOn(repo, "finishRows").mockImplementation((batch) => {
+                written.push(...batch);
+                return batch.some((finish) => finish.status === OutboxStatus.Sent && finish.id === 1) ? Promise.reject(new Error("db down")) : Promise.resolve(batch.map((finish) => finish.id));
+            });
+            t.claim.mockResolvedValueOnce([row({ id: 1 }), row({ id: 2 }), row({ id: 3 })]);
+            await expect(t.service.deliverRound(new AbortController().signal)).rejects.toThrow("db down");
+            expect(t.send).toHaveBeenCalledTimes(1);
+            const released = written.filter((finish) => finish.attemptsDelta === -1);
+            expect(released.map((finish) => finish.id)).toEqual([2, 3]);
+        });
+    });
+
     describe("tick", () => {
         it("should emit the lag gauge then keep claiming until a short batch", async () => {
             const t = setup();
@@ -293,6 +334,30 @@ describe("OutboxDeliveryService", () => {
             expect(t.log.metric).toHaveBeenCalledWith("notification_outbox_lag_seconds", 42, {});
             expect(t.claim).toHaveBeenCalledTimes(2);
             expect(t.claim.mock.calls[0]?.slice(1, 3)).toEqual([20, 300]);
+        });
+
+        it("should emit the oldest-pending-age gauge from created_at, so rows in backoff are counted", async () => {
+            const t = setup();
+            t.pendingAge.mockResolvedValue(5_400);
+            t.claim.mockResolvedValueOnce([]);
+            await t.service.tick(new AbortController().signal);
+            expect(t.log.metric).toHaveBeenCalledWith("notification_outbox_oldest_pending_age_seconds", 5_400, {});
+        });
+
+        it("should stop the tick after the first batch whose contacts lookup failed and take one backoff step (N-D1)", async () => {
+            const t = setup();
+            const full = (from: number): OutboxClaimedRow[] => Array.from({ length: 20 }, (_, index) => row({ id: from + index }));
+            t.claim.mockResolvedValueOnce(full(1)).mockResolvedValueOnce(full(21));
+            t.findDeliveryContexts.mockResolvedValue(new Map([[10, context()]]));
+            t.getContacts.mockResolvedValue({ contacts: new Map(), unavailable: new Set([PATIENT]) });
+            await t.service.tick(new AbortController().signal);
+            expect(t.claim).toHaveBeenCalledTimes(1);
+            expect(t.getContacts).toHaveBeenCalledTimes(1);
+            expect(new Set(t.finishes.map((finish) => (finish.nextAttemptAt?.getTime() ?? 0) - NOW))).toEqual(new Set([30_000]));
+            // The next tick takes the next step; a clean lookup resets it.
+            t.claim.mockResolvedValueOnce([row({ id: 100 })]);
+            await t.service.tick(new AbortController().signal);
+            expect((t.finishes.at(-1)?.nextAttemptAt?.getTime() ?? 0) - NOW).toBe(60_000);
         });
 
         it("should stop at the round cap", async () => {

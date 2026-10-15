@@ -74,6 +74,9 @@ export interface ReminderCandidate {
 /** The reminder column a scan reads and stamps. */
 export type ReminderKind = OutboxKind.Reminder24h | OutboxKind.Reminder1h;
 
+/** An existing `pending` or `sent` reminder row, identified by what makes a second one a duplicate. */
+export interface QueuedReminder { kind: OutboxKind; consultationId: number; recipientUserId: number; startsAt: string }
+
 /** Consultations-side read used by delivery (claim-time re-check and render inputs). */
 export interface ConsultationDeliveryPort {
     findDeliveryContexts(ids: readonly number[], conn: Knex): Promise<Map<number, DeliveryContext>>;
@@ -112,8 +115,11 @@ export interface TemplateParts {
 export type TemplateFunction = (parts: TemplateParts) => RenderedEmail;
 export type LocaleTemplates = Partial<Record<OutboxKind, Partial<Record<RecipientRole, TemplateFunction>>>>;
 
-/** Result of a tick's delivery rounds. */
-export interface DeliveryRoundResult { claimed: number; leaseLost: number }
+/** Result of one claim round; `contactsUnavailable` = the contacts lookup failed for at least one recipient (the tick stops, N-D1). */
+export interface DeliveryRoundResult { claimed: number; leaseLost: number; contactsUnavailable: boolean }
+
+/** A claimed batch after the pre-send phase: rows still to send, pre-send writes that lost their lease, and the contacts outcome. */
+export interface PreparedBatch { sendable: SendableRow[]; leaseLost: number; contactsUnavailable: boolean }
 
 /** The settings the delivery service reads. */
 export type DeliveryEnv = Pick<Env, "OUTBOX_BATCH_SIZE" | "OUTBOX_MAX_ATTEMPTS">;

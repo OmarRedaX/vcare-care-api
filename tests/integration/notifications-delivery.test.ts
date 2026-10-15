@@ -150,6 +150,46 @@ describe("notifications delivery (integration: remaining test-plan scenarios)", 
             expect((await outboxRows())[0]).toMatchObject({ status: "sent", attempts: 1, last_error_code: null });
         });
 
+        it("should take one backoff step per tick and leave the rest of the due rows due when Identity contacts is down for several batches (N-D1)", async () => {
+            const ids = await insertOutbox(45);
+            h.identityServer.options.contactsFailures = Infinity;
+            const before = clock.now();
+            await delivery().tick(signal());
+            const rows = await outboxRows();
+            const delayed = rows.filter((row) => row.last_error_code === "contacts_unavailable");
+            expect(delayed).toHaveLength(env.OUTBOX_BATCH_SIZE);
+            expect(delayed.every((row) => row.attempts === 0 && row.next_attempt_at.getTime() - before === 30_000)).toBe(true);
+            const untouched = rows.filter((row) => row.last_error_code === null);
+            expect(untouched).toHaveLength(ids.length - env.OUTBOX_BATCH_SIZE);
+            expect(untouched.every((row) => row.attempts === 0 && row.next_attempt_at.getTime() <= before)).toBe(true);
+            expect(h.identityServer.calls.filter((call) => call.path.startsWith("/internal/users/contacts"))).toHaveLength(1);
+        });
+
+        it("should count delayed rows in the oldest-pending-age gauge while the due-lag gauge reads zero (review Medium 2)", async () => {
+            const [id = 0] = await insertOutbox(1);
+            const now = new Date();
+            await ownerDb("notification_outbox").where({ id }).update({
+                created_at: new Date(now.getTime() - 90 * MINUTE), next_attempt_at: new Date(now.getTime() + 20 * MINUTE), last_error_code: "contacts_unavailable",
+            });
+            await expect(outboxRepo.oldestDueAgeSeconds(now, db)).resolves.toBe(0);
+            await expect(outboxRepo.oldestPendingAgeSeconds(now, db)).resolves.toBe(90 * 60);
+            await ownerDb("notification_outbox").where({ id }).update({ status: "skipped", last_error_code: "recipient_unknown" });
+            await expect(outboxRepo.oldestPendingAgeSeconds(now, db)).resolves.toBe(0);
+        });
+
+        it("should hand the claim back without consuming an attempt when the database fails after the claim (review Low 5)", async () => {
+            const [id = 0] = await insertOutbox(1);
+            const contexts = new ConsultationReminderService();
+            jest.spyOn(contexts, "findDeliveryContexts").mockRejectedValueOnce(new Error("synthetic database failure"));
+            const service = new OutboxDeliveryService(db, identity(), email, contexts, env, fakeLogger().logger, clock);
+            await expect(service.tick(signal())).rejects.toThrow("synthetic database failure");
+            const row = (await outboxRows()).find((candidate) => candidate.id === id);
+            expect(row).toMatchObject({ status: "pending", attempts: 0 });
+            expect(row?.next_attempt_at.getTime()).toBeLessThanOrEqual(clock.now());
+            await delivery().tick(signal());
+            expect((await outboxRows())[0]).toMatchObject({ status: "sent", attempts: 1 });
+        });
+
         it("should keep rows pending when the care-service client lacks the contact grant, while status changes keep working (own token, N-R7)", async () => {
             await insertOutbox(2);
             const fake = new FakeIdentityServer();
@@ -300,6 +340,25 @@ The Vcare team`);
             }
             expect(email.messages.map((message) => [message.meta.kind, message.meta.recipientUserId]).sort()).toEqual([["reminder_24h", PATIENT], ["reminder_24h", DOCTOR]]);
         });
+
+        it("should not queue a second reminder for the same start while the first is still pending or already sent (reschedule A to B to A, N-R11)", async () => {
+            const T = Math.floor(Date.now() / 1000) * 1000;
+            const id = await h.seedConsultation(at(T + 20 * HOUR));
+            const scanClock = new FakeClock(T);
+            await scanner(scanClock).tick(signal());
+            expect(await reminders()).toHaveLength(2);
+            // A -> B -> A: both stamps are reset while the start is unchanged and the first reminders still sit in the outbox.
+            await ownerDb("consultations").where({ id }).update({ reminder_24h_sent_at: null, reminder_1h_sent_at: null });
+            await scanner(scanClock).tick(signal());
+            expect(await reminders()).toHaveLength(2);
+            expect((await stamp(id)).reminder_24h_sent_at).not.toBeNull();
+            // Once delivered, a repeat is still suppressed.
+            await delivery({ clock: new FakeClock(T + 10_000) }).tick(signal());
+            await ownerDb("consultations").where({ id }).update({ reminder_24h_sent_at: null });
+            await scanner(scanClock).tick(signal());
+            expect(await reminders()).toHaveLength(2);
+            expect(email.messages).toHaveLength(2);
+        });
     });
 
     describe("doctor_suspended payload", () => {
@@ -355,6 +414,7 @@ The Vcare team`);
                 // Plan the claim without leasing rows: capture it, then roll the effect back by resetting afterwards is unnecessary (EXPLAIN only).
                 await outboxRepo.claimDue(now, 20, 300, db);
                 await outboxRepo.oldestDueAgeSeconds(now, db);
+                await outboxRepo.oldestPendingAgeSeconds(now, db);
                 await outboxRepo.deleteSentOlderThan(new Date(now.getTime() - 30 * DAY), 5000, db);
                 await scanner(new FakeClock(now.getTime())).tick(signal());
             } finally { db.removeListener("query", listener); }
@@ -372,6 +432,9 @@ The Vcare team`);
             const lag = await explain(/min\("next_attempt_at"\)/i);
             expect(lag).toContain("idx_notification_outbox_pending_next_attempt_at_id");
             expect(lag).not.toMatch(/Seq Scan/);
+            const pendingAge = await explain(/min\("created_at"\)/i);
+            expect(pendingAge).toContain("idx_notification_outbox_pending_created_at");
+            expect(pendingAge).not.toMatch(/Seq Scan/);
             const purge = await explain(/DELETE FROM notification_outbox/);
             expect(purge).toContain("idx_notification_outbox_sent_at");
             const reminder = await explain(/from "consultations" as "c"/i);

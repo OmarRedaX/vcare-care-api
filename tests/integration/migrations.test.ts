@@ -18,6 +18,8 @@ import * as auditReadIndexesMigration from "../../src/migrations/20261009120000_
 import * as consultationsMigration from "../../src/migrations/20261011130000_create_consultations";
 import * as notificationOutboxMigration from "../../src/migrations/20261011130100_create_notification_outbox";
 import * as outboxDeliveryMigration from "../../src/migrations/20261012120000_notification_outbox_delivery";
+import * as outboxPendingCreatedAtMigration from "../../src/migrations/20261015120000_notification_outbox_pending_created_at_index";
+import * as outboxDeleteSentOnlyMigration from "../../src/migrations/20261015120100_notification_outbox_delete_sent_only";
 import * as reminderIndexMigration from "../../src/migrations/20261012120100_consultations_reminder_index";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
@@ -292,6 +294,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         try {
             // The schedules tables reference doctor_profiles (ON DELETE RESTRICT): they go first and come back last;
             // consultations reference consultation_types and the outbox references consultations, so those go before them.
+            await outboxDeleteSentOnlyMigration.down(migrator);
+            await outboxPendingCreatedAtMigration.down(migrator);
             await reminderIndexMigration.down(migrator);
             await outboxDeliveryMigration.down(migrator);
             await notificationOutboxMigration.down(migrator);
@@ -323,6 +327,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await notificationOutboxMigration.up(migrator);
             await outboxDeliveryMigration.up(migrator);
             await reminderIndexMigration.up(migrator);
+            await outboxPendingCreatedAtMigration.up(migrator);
+            await outboxDeleteSentOnlyMigration.up(migrator);
         }
         const result = await migrator.raw<{ rows: Array<{ name: string }> }>(
             "SELECT indexname AS name FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'",
@@ -374,13 +380,15 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             "chk_notification_outbox_status", "fk_notification_outbox_consultation_id", "notification_outbox_pkey",
         ];
         const expectedOutboxIndexes = [
-            "idx_notification_outbox_consultation_id", "idx_notification_outbox_pending_next_attempt_at_id", "idx_notification_outbox_sent_at", "notification_outbox_pkey",
+            "idx_notification_outbox_consultation_id", "idx_notification_outbox_pending_created_at", "idx_notification_outbox_pending_next_attempt_at_id", "idx_notification_outbox_sent_at", "notification_outbox_pkey",
         ];
         expect(await names("consultations", "indexes")).toEqual(expectedConsultationIndexes);
         expect(await names("consultations", "constraints")).toEqual(expectedConsultationConstraints);
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
         expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);
 
+        await outboxDeleteSentOnlyMigration.down(migrator);
+        await outboxPendingCreatedAtMigration.down(migrator);
         await reminderIndexMigration.down(migrator);
         await outboxDeliveryMigration.down(migrator);
         expect(await names("notification_outbox", "indexes")).toEqual(["idx_notification_outbox_consultation_id", "notification_outbox_pkey"]);
@@ -394,6 +402,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         await notificationOutboxMigration.up(migrator);
         await outboxDeliveryMigration.up(migrator);
         await reminderIndexMigration.up(migrator);
+        await outboxPendingCreatedAtMigration.up(migrator);
+        await outboxDeleteSentOnlyMigration.up(migrator);
         expect(await names("consultations", "indexes")).toEqual(expectedConsultationIndexes);
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
         expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);
@@ -452,6 +462,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             try {
                 await insert(ownerDb);
                 await insert(ownerDb, { kind: "cancelled" });
+                await outboxDeleteSentOnlyMigration.down(migrator);
+                await outboxPendingCreatedAtMigration.down(migrator);
                 await reminderIndexMigration.down(migrator);
                 await outboxDeliveryMigration.down(migrator);
                 expect((await ownerDb("notification_outbox").select("kind")).map((row: { kind: string }) => row.kind)).toEqual(["cancelled"]);
@@ -459,10 +471,42 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             } finally {
                 await outboxDeliveryMigration.up(migrator);
                 await reminderIndexMigration.up(migrator);
+                await outboxPendingCreatedAtMigration.up(migrator);
+                await outboxDeleteSentOnlyMigration.up(migrator);
                 await truncateAll();
             }
             await expect(insert(ownerDb)).resolves.toHaveLength(1);
             await truncateAll();
+        });
+    });
+
+    describe("notification outbox delete-sent-only trigger (20261015120100)", () => {
+        const insert = (conn: Knex, changes: Record<string, unknown> = {}): Promise<Array<{ id: number }>> =>
+            conn("notification_outbox").insert({ kind: "cancelled", recipient_user_id: 101, payload: "{}", status: "pending", next_attempt_at: new Date(), ...changes }).returning("id");
+
+        it("should let care_app delete a sent row but refuse to delete pending, dead or skipped rows", async () => {
+            await truncateAll();
+            try {
+                const [pending] = await insert(db);
+                const [dead] = await insert(db, { status: "dead", last_error_code: "email_rejected" });
+                const [skipped] = await insert(db, { status: "skipped", last_error_code: "recipient_unknown" });
+                const [sent] = await insert(db, { status: "sent", sent_at: new Date() });
+                for (const row of [pending, dead, skipped]) {
+                    await expect(db("notification_outbox").where({ id: row?.id ?? 0 }).delete()).rejects.toMatchObject({ code: "23514" });
+                }
+                await expect(db("notification_outbox").where({ id: sent?.id ?? 0 }).delete()).resolves.toBe(1);
+                expect(await ownerDb("notification_outbox").select("id")).toHaveLength(3);
+            } finally { await truncateAll(); }
+        });
+
+        it("should keep the app grants unchanged and create the stale-pending index", async () => {
+            const indexes = await migrator.raw<{ rows: Array<{ name: string }> }>(
+                "SELECT indexname AS name FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'notification_outbox'");
+            const grants = await migrator.raw<{ rows: Array<{ can_delete: boolean; can_update: boolean }> }>(
+                `SELECT has_table_privilege('vcare_app', 'notification_outbox', 'DELETE') AS can_delete,
+                        has_table_privilege('vcare_app', 'notification_outbox', 'UPDATE') AS can_update`);
+            expect(grants.rows).toEqual([{ can_delete: true, can_update: false }]);
+            expect(indexes.rows.map((row) => row.name)).toContain("idx_notification_outbox_pending_created_at");
         });
     });
 

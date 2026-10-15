@@ -1,8 +1,9 @@
 import type { Knex } from "knex";
 import { OUTBOX_PAYLOAD_KEYS } from "../../../../src/app/notifications/constants";
 import { OutboxKind } from "../../../../src/app/notifications/enums";
+import * as repo from "../../../../src/app/notifications/repository/notification-outbox.repo";
 import { ReminderScanService } from "../../../../src/app/notifications/service/reminder-scan.service";
-import type { OutboxMessage, ReminderCandidate, ReminderKind } from "../../../../src/app/notifications/types";
+import type { OutboxMessage, QueuedReminder, ReminderCandidate, ReminderKind } from "../../../../src/app/notifications/types";
 import { FakeClock } from "../../../helpers/fake-clock";
 import { fakeLogger } from "../../../helpers/fake-logger";
 
@@ -15,7 +16,8 @@ function candidate(id: number, startsInMs: number, bookedBeforeStartMs: number):
     return { id, patientUserId: 100 + id, doctorUserId: 900, startsAt, endsAt: new Date(startsAt.getTime() + 1_800_000), createdAt: new Date(startsAt.getTime() - bookedBeforeStartMs) };
 }
 
-function setup(due: { h24?: ReminderCandidate[]; h1?: ReminderCandidate[] }) {
+function setup(due: { h24?: ReminderCandidate[]; h1?: ReminderCandidate[]; queued?: QueuedReminder[] }) {
+    const findQueued = jest.spyOn(repo, "findQueuedReminders").mockResolvedValue(due.queued ?? []);
     const enqueued: OutboxMessage[] = [];
     const stamps: Array<[number[], number[]]> = [];
     const consultations = {
@@ -27,10 +29,34 @@ function setup(due: { h24?: ReminderCandidate[]; h1?: ReminderCandidate[] }) {
     const transaction = jest.fn((handler: (t: Knex.Transaction) => Promise<unknown>) => handler(trx));
     const log = fakeLogger();
     const service = new ReminderScanService({ transaction } as unknown as Knex, consultations, notifications, log.logger, new FakeClock(NOW));
-    return { service, consultations, notifications, enqueued, stamps, transaction, log };
+    return { service, consultations, notifications, enqueued, stamps, transaction, log, findQueued };
 }
 
+afterEach(() => { jest.restoreAllMocks(); });
+
 describe("ReminderScanService", () => {
+    it("should skip a reminder that is already pending or sent for the same kind, consultation, recipient and start, but still stamp (N-R11, reschedule A to B to A)", async () => {
+        const start = new Date(NOW + 20 * HOUR).toISOString();
+        const t = setup({
+            h24: [candidate(1, 20 * HOUR, 72 * HOUR)],
+            queued: [{ kind: OutboxKind.Reminder24h, consultationId: 1, recipientUserId: 101, startsAt: start }],
+        });
+        await t.service.scanOnce();
+        // The patient already has this reminder for this start; the doctor does not.
+        expect(t.enqueued.map((message) => message.recipientUserId)).toEqual([900]);
+        expect(t.stamps).toEqual([[[1], []]]);
+        expect(t.findQueued).toHaveBeenCalledTimes(1);
+    });
+
+    it("should still enqueue when the queued reminder is for a different start", async () => {
+        const t = setup({
+            h24: [candidate(1, 20 * HOUR, 72 * HOUR)],
+            queued: [{ kind: OutboxKind.Reminder24h, consultationId: 1, recipientUserId: 101, startsAt: new Date(NOW + 5 * HOUR).toISOString() }],
+        });
+        await t.service.scanOnce();
+        expect(t.enqueued).toHaveLength(2);
+    });
+
     it("should enqueue a 24 h reminder for both the patient and the doctor and stamp it", async () => {
         const t = setup({ h24: [candidate(1, 20 * HOUR, 72 * HOUR)] });
         await t.service.scanOnce();

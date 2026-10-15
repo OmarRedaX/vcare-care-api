@@ -273,7 +273,7 @@ describe("notifications (integration: real Postgres and Redis, fake Identity, re
             };
             await h.seedConsultation(startsIn(20 * HOUR));
             const one = await count();
-            await ownerDb.raw("DELETE FROM notification_outbox");
+            await ownerDb.raw("TRUNCATE notification_outbox");
             await ownerDb.raw(`INSERT INTO consultations (doctor_user_id, patient_user_id, consultation_type_id, starts_at, ends_at, status, complaint_text, patient_timezone, price, currency, idempotency_key, request_hash, created_at)
                 SELECT 5000 + i, 6000 + i, 1, now() + interval '20 hours' + (i || ' seconds')::interval, now() + interval '21 hours' + (i || ' seconds')::interval, 'booked', 'SYNTHETIC', 'UTC', 100, 'EGP', gen_random_uuid(), repeat('a', 64), now() - interval '3 days'
                 FROM generate_series(1, 150) AS i`);

@@ -47,7 +47,7 @@ export class ServiceTokenCache {
         const data = await validateBody(TokenEnvelopeDto, await response.body.json(), { unknownMembers: "strip" });
         const granted = data.data.scope.split(" ");
         if (!this.scopes.every((scope) => granted.includes(scope))) {
-            throw new Error("MalformedResponse");
+            throw new Error("InsufficientScope");
         }
         this.token = data.data.access_token;
         this.expiresAt = startedAt + data.data.expires_in * 1_000;

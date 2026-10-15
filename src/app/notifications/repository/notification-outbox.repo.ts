@@ -1,7 +1,7 @@
 import type { Knex } from "knex";
 import { db } from "../../../lib/knex/knex";
 import { OutboxStatus } from "../enums";
-import type { OutboxClaimedRow, OutboxFinish, OutboxInsertRow } from "../types";
+import type { OutboxClaimedRow, OutboxFinish, OutboxInsertRow, QueuedReminder } from "../types";
 
 /**
  * One multi-row INSERT inside the writer's transaction (the app role holds INSERT/SELECT only). `next_attempt_at` is the
@@ -43,6 +43,34 @@ export async function oldestDueAgeSeconds(now: Date, conn: Knex = db): Promise<n
         .min<{ oldest: Date | null }>({ oldest: "next_attempt_at" }).first();
     const oldest = row?.oldest ?? null;
     return oldest === null ? 0 : Math.max(0, Math.round((now.getTime() - oldest.getTime()) / 1000));
+}
+
+/**
+ * Age in whole seconds of the oldest `pending` row by `created_at`, due or not (rows in backoff or leased count); 0 when none is pending.
+ * Unlike `oldestDueAgeSeconds` it cannot be hidden by a future `next_attempt_at`. Served by `idx_notification_outbox_pending_created_at`.
+ */
+export async function oldestPendingAgeSeconds(now: Date, conn: Knex = db): Promise<number> {
+    const row = await conn("notification_outbox").where("status", OutboxStatus.Pending)
+        .min<{ oldest: Date | null }>({ oldest: "created_at" }).first();
+    const oldest = row?.oldest ?? null;
+    return oldest === null ? 0 : Math.max(0, Math.round((now.getTime() - oldest.getTime()) / 1000));
+}
+
+/**
+ * Reminder rows that already exist (`pending` or `sent`) for the given consultations: the reminder scan skips a message whose kind,
+ * consultation, recipient and payload `startsAt` match one of them (N-R11). Served by `idx_notification_outbox_consultation_id`.
+ */
+export async function findQueuedReminders(consultationIds: readonly number[], conn: Knex): Promise<QueuedReminder[]> {
+    if (consultationIds.length === 0) return [];
+    const result = await conn.raw<{ rows: Array<{ kind: QueuedReminder["kind"]; consultation_id: number; recipient_user_id: number; starts_at: string | null }> }>(
+        `SELECT kind, consultation_id, recipient_user_id, payload->>'startsAt' AS starts_at
+        FROM notification_outbox
+        WHERE consultation_id = ANY(?::bigint[]) AND kind IN ('reminder_24h', 'reminder_1h') AND status IN ('pending', 'sent')`,
+        [`{${consultationIds.join(",")}}`],
+    );
+    return result.rows.flatMap((row) => (row.starts_at === null ? [] : [{
+        kind: row.kind, consultationId: Number(row.consultation_id), recipientUserId: Number(row.recipient_user_id), startsAt: row.starts_at,
+    }]));
 }
 
 /**
