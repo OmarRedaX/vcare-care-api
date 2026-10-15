@@ -34,7 +34,7 @@ async function main() {
   const timing = { now: () => clock, random: () => 0.5 }; // 0.5 => jitter factor exactly 1.0
   const captured = [];
   const port = {
-    send: async (message, signal) => {
+    send: async (message) => {
       if (mode === "render") { captured.push(message); return { outcome: "sent" }; }
       if (mode === "throw") throw new Error("QA-SECRET-PROVIDER-MESSAGE-5521");
       if (mode === "permanent") return { outcome: "permanent", errorCode: "provider_rejected" };

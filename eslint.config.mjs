@@ -237,12 +237,12 @@ export default tseslint.config(
         },
     },
     {
-        files: ["**/*.mjs", "**/*.js"],
+        files: ["**/*.mjs", "**/*.js", "**/*.cjs"],
         extends: [tseslint.configs.disableTypeChecked],
     },
     {
-        // Jest configs are CommonJS.
-        files: ["**/*.js"],
+        // Jest configs and QA helper scripts are CommonJS.
+        files: ["**/*.js", "**/*.cjs"],
         languageOptions: {
             sourceType: "commonjs",
             globals: {
@@ -252,5 +252,22 @@ export default tseslint.config(
                 process: "readonly",
             },
         },
+    },
+    {
+        // QA helper scripts (scripts/*.cjs) run under Node and load the built dist/ with require().
+        files: ["**/*.cjs"],
+        languageOptions: {
+            sourceType: "commonjs",
+            globals: {
+                require: "readonly",
+                __dirname: "readonly",
+                process: "readonly",
+                console: "readonly",
+                setInterval: "readonly",
+                clearInterval: "readonly",
+                AbortController: "readonly",
+            },
+        },
+        rules: { "@typescript-eslint/no-require-imports": "off" },
     },
 );
