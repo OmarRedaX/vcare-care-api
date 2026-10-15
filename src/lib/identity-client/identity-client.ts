@@ -5,12 +5,14 @@ import { logger } from "../logger/logger";
 import { isRedisUsable, resolveRedis, withRedis } from "../redis/redis";
 import { validateBody } from "../validation/validate";
 import { CONTACT_SERVICE_SCOPES } from "./constants";
-import { CachedUserDto, ContactsEnvelopeDto, StatusEnvelopeDto, UsersEnvelopeDto } from "./identity.dto";
+import { CachedUserDto, ContactsEnvelopeDto, StatusEnvelopeDto, UserContactDto, UsersEnvelopeDto } from "./identity.dto";
 import { ServiceTokenCache } from "./service-token-cache";
-import type { BatchResult, ContactsResult, HydratedUser, IdentityClientOptions, IdentityStatus, StatusResult } from "./types";
+import type { BatchResult, Contact, ContactsChunkOutcome, ContactsResult, HydratedUser, IdentityClientOptions, IdentityStatus, StatusResult } from "./types";
 
 /** `setUserStatus` answers that are terminal. 404, 401 (after the one token refresh), 429, 5xx, network errors and malformed 200s stay transient. */
 const PERMANENT_STATUS_CODES: ReadonlySet<string> = new Set(["HTTP_400", "HTTP_403", "HTTP_422"]);
+/** Contacts failures that retrying cannot fix without an operator (credentials or the `users:contact:read` grant): alertable on their own. */
+const CONTACTS_FORBIDDEN_CODES: ReadonlySet<string> = new Set(["HTTP_401", "HTTP_403", "InsufficientScope"]);
 
 export class IdentityClient {
     private readonly options: Required<Pick<IdentityClientOptions, "now" | "sleep" | "random">> & IdentityClientOptions;
@@ -122,7 +124,8 @@ export class IdentityClient {
 
     /**
      * Case 5 (notification contacts, care-worker only): chunks of at most 100, one attempt per chunk, 2 s timeouts. Any failure of a
-     * chunk (network, timeout, 4xx/5xx, missing scope, malformed answer) puts its ids in `unavailable` (the caller delays the rows).
+     * chunk (network, timeout, 4xx/5xx, missing scope, malformed envelope) puts its ids in `unavailable` (the caller delays the rows). A
+     * malformed single entry makes only that id `unavailable`. A 401/403/scope failure also emits `notification_contacts_forbidden`.
      * Nothing is cached or stored, and no address or name is ever logged.
      */
     async getContacts(ids: readonly number[], requestId: string): Promise<ContactsResult> {
@@ -131,33 +134,55 @@ export class IdentityClient {
         const log = this.options.logger ?? logger;
         for (let offset = 0; offset < unique.length; offset += 100) {
             const chunk = unique.slice(offset, offset + 100);
-            const failure = await this.fetchContactsChunk(chunk, requestId, result);
-            if (failure !== null) {
+            const outcome = await this.fetchContactsChunk(chunk, requestId, result);
+            if (outcome.failure !== null) {
                 for (const id of chunk) result.unavailable.add(id);
-                log.warn("notification_contacts_unavailable", { errorCode: failure, ids: chunk.length });
+                log.warn("notification_contacts_unavailable", { errorCode: outcome.failure, ids: chunk.length });
+                log.metric("identity_call_failed", 1, { case: "contacts" });
+                if (CONTACTS_FORBIDDEN_CODES.has(outcome.failure)) {
+                    log.error("notification_contacts_forbidden", { errorCode: outcome.failure });
+                    log.metric("notification_contacts_forbidden", 1, {});
+                }
+            } else if (outcome.badEntries > 0) {
+                log.warn("notification_contacts_unavailable", { errorCode: "MalformedEntry", ids: outcome.badEntries });
                 log.metric("identity_call_failed", 1, { case: "contacts" });
             }
         }
         return result;
     }
 
-    /** Returns the failure code, or `null` after adding the chunk's contacts to `result`. */
-    private async fetchContactsChunk(chunk: readonly number[], requestId: string, result: ContactsResult): Promise<string | null> {
+    /** Adds the chunk's valid contacts to `result` (bad entries go to `unavailable` one by one); a non-null `failure` means the whole chunk failed. */
+    private async fetchContactsChunk(chunk: readonly number[], requestId: string, result: ContactsResult): Promise<ContactsChunkOutcome> {
         try {
             const response = await this.authorizedRequest("GET", `/internal/users/contacts?ids=${chunk.join(",")}`, requestId, undefined, this.contactTokens);
-            if (response.statusCode !== 200) return `HTTP_${response.statusCode}`;
+            if (response.statusCode !== 200) return { failure: `HTTP_${response.statusCode}`, badEntries: 0 };
             const envelope = await validateBody(ContactsEnvelopeDto, response.body, { unknownMembers: "strip" });
+            if (envelope.data.length > 100) return { failure: "MalformedResponse", badEntries: 0 };
+            const accepted = new Map<number, Contact>();
             const seen = new Set<number>();
-            for (const entry of envelope.data) {
-                if (!chunk.includes(entry.id) || seen.has(entry.id)) return "MalformedResponse";
-                seen.add(entry.id);
+            const bad = new Set<number>();
+            for (const raw of envelope.data) {
+                const id = this.entryId(raw, chunk);
+                // An entry that cannot be attributed to a requested id cannot be isolated: the chunk is malformed.
+                if (id === null) return { failure: "MalformedResponse", badEntries: 0 };
+                if (seen.has(id)) { bad.add(id); continue; }
+                seen.add(id);
+                try {
+                    const entry = await validateBody(UserContactDto, raw, { unknownMembers: "strip" });
+                    accepted.set(id, { email: entry.email, fullName: entry.fullName, locale: entry.locale, status: entry.status });
+                } catch { bad.add(id); }
             }
-            if (envelope.data.length > 100) return "MalformedResponse";
-            for (const entry of envelope.data) {
-                result.contacts.set(entry.id, { email: entry.email, fullName: entry.fullName, locale: entry.locale, status: entry.status });
-            }
-            return null;
-        } catch (error) { return this.errorCode(error); }
+            for (const [id, contact] of accepted) if (!bad.has(id)) result.contacts.set(id, contact);
+            for (const id of bad) result.unavailable.add(id);
+            return { failure: null, badEntries: bad.size };
+        } catch (error) { return { failure: this.errorCode(error), badEntries: 0 }; }
+    }
+
+    /** The entry's `id` when it is a requested one, else `null`. */
+    private entryId(raw: unknown, chunk: readonly number[]): number | null {
+        if (typeof raw !== "object" || raw === null || !("id" in raw)) return null;
+        const id = raw.id;
+        return typeof id === "number" && chunk.includes(id) ? id : null;
     }
 
     private async authorizedRequest(method: "GET" | "PATCH", path: string, requestId: string, body?: string, tokens: ServiceTokenCache = this.tokens): Promise<{ statusCode: number; body: unknown }> {
@@ -183,6 +208,7 @@ export class IdentityClient {
 
     private errorCode(error: unknown): string {
         if (error instanceof Error && /^HTTP_\d{3}$/.test(error.message)) return error.message;
+        if (error instanceof Error && error.message === "InsufficientScope") return "InsufficientScope";
         if (error instanceof SyntaxError || (error instanceof Error && error.name === "AppError")) return "MalformedResponse";
         if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return "TimeoutError";
         if (error instanceof Error && "code" in error && typeof error.code === "string" &&

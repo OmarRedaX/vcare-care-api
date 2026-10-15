@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 tags: [integration, identity, service-token, case-1, case-2, case-3, case-4, notifications]
 related: [resilience, rbac, runbook, adr-0004-cross-service-failure-policies, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec, consultations-spec, future, hub-adr-0006-doctor-account-status-via-care-only, hub-adr-0009-doctor-reinstatement-via-care, hub-adr-0010-notification-contact-lookup]
 ---
@@ -200,8 +200,8 @@ The `202` carries `identitySync` as a top-level sibling of `data` (unlike Case 1
 Hub ADR 0010, [ADR 0011](../adr/0011-notification-outbox-and-reminders.md). **Built 2026-10-12** (`notifications`; Identity provider: identity ADR 0024). Environment check: the `care-service` Identity client must hold `users:contact:read`.
 `care-worker` calls `GET /internal/users/contacts?ids=` (≤ 100 ids, scope `users:contact:read`, granted only to
 care-service) once per outbox batch (`IdentityClient.getContacts`, chunks of at most 100, one attempt per chunk, 2 s timeout, `X-Request-Id` forwarded). It uses a **second service-token cache** that asks for only `users:contact:read`; the status/hydration token (`users:read users:status:write`) is never merged with it. The response (email, locale, fullName) lives in worker memory for that batch
-only — never cached in Redis, never stored, never logged (the logger redacts `email`). Every response is validated through DTOs; one invalid entry, an id that was not requested or a duplicate makes the whole chunk malformed. Failure (network, timeout, 5xx, 429, 401 after one refresh, 403, 400, a token without the scope, malformed 200) → the chunk's outbox rows
-stay `pending`, the attempt is not consumed, and the delay grows 30 s, 60 s, 120 s ... (cap 30 min) per consecutive failed batch; users receive the email later. A failed chunk logs `notification_contacts_unavailable` (fixed error code, id count) and emits `identity_call_failed{case=contacts}`; the lag alert `OutboxLagHigh` is the operator signal. Unknown or non-active ids → `skipped`. The API
+only — never cached in Redis, never stored, never logged (the logger redacts `email`). Every response is validated through DTOs; each entry is validated on its own: an invalid or duplicated entry makes only that id unavailable (its rows are delayed, neighbours are delivered), while an id that was not requested or an entry without a usable id makes the whole chunk malformed. Failure (network, timeout, 5xx, 429, 401 after one refresh, 403, 400, a token without the scope, malformed 200) → the chunk's outbox rows
+stay `pending`, the attempt is not consumed, and the delay grows 30 s, 60 s, 120 s ... (cap 30 min) per consecutive failed **tick** (a batch whose lookup failed ends the tick, so one outage is one backoff step); users receive the email later. A failed chunk logs `notification_contacts_unavailable` (fixed error code, id count) and emits `identity_call_failed{case=contacts}`; a failure that retrying cannot fix without an operator (401 after the refresh, 403, a token without the scope) also logs `notification_contacts_forbidden` (error) and emits the counter of that name. Delayed rows have a future `next_attempt_at`, so `OutboxLagHigh` does not see them: the operator signals are `NotificationContactsForbidden` and `OutboxPendingStale` (`notification_outbox_oldest_pending_age_seconds`). Unknown or non-active ids → `skipped`. The API
 listener never calls this endpoint and its service token never requests the scope.
 
 ## Failure policy table

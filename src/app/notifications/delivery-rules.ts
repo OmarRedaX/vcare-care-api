@@ -1,4 +1,5 @@
 import { OutboxErrorCode, OutboxKind, RecipientRole } from "./enums";
+import { TERMINAL_CONSULTATION_STATUSES } from "./constants";
 import type { DeliveryContext, OutboxClaimedRow, PreSendDecision } from "./types";
 import { hasTemplate } from "./templates/registry";
 
@@ -27,7 +28,8 @@ export function payloadByRole(row: OutboxClaimedRow): "patient" | "doctor" | "ad
 
 /**
  * The claim-time re-check (spec 3.4 step 4). Reminders are derived from state, so one for a consultation that is gone, no longer
- * `booked`, moved, or started is dropped; event notifications describe something that happened and are sent regardless.
+ * `booked`, moved, or started is dropped. A delayed `rescheduled` notice is dropped once the consultation is terminal or has moved again,
+ * and a `doctor_suspended` notice once it is terminal (N-D14); other event notifications, and every `cancelled` notice, are sent regardless.
  */
 export function decidePreSend(row: OutboxClaimedRow, context: DeliveryContext | undefined, nowMs: number): PreSendDecision {
     if (context === undefined) return { send: false, errorCode: OutboxErrorCode.ConsultationMissing };
@@ -35,6 +37,15 @@ export function decidePreSend(row: OutboxClaimedRow, context: DeliveryContext | 
         if (context.deleted || context.status !== "booked") return { send: false, errorCode: OutboxErrorCode.ConsultationChanged };
         if (payloadInstantMs(row, "startsAt") !== context.startsAt.getTime()) return { send: false, errorCode: OutboxErrorCode.ConsultationChanged };
         if (nowMs >= context.startsAt.getTime()) return { send: false, errorCode: OutboxErrorCode.ReminderExpired };
+    }
+    if (row.kind === OutboxKind.Rescheduled) {
+        const payloadStart = payloadInstantMs(row, "startsAt");
+        if (TERMINAL_CONSULTATION_STATUSES.includes(context.status) || (payloadStart !== undefined && payloadStart !== context.startsAt.getTime())) {
+            return { send: false, errorCode: OutboxErrorCode.ConsultationChanged };
+        }
+    }
+    if (row.kind === OutboxKind.DoctorSuspended && TERMINAL_CONSULTATION_STATUSES.includes(context.status)) {
+        return { send: false, errorCode: OutboxErrorCode.ConsultationChanged };
     }
     const role = recipientRoleOf(row.recipient_user_id, context);
     if (role === undefined) return { send: false, errorCode: OutboxErrorCode.ConsultationChanged };

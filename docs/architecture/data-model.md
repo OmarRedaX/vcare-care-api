@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -422,8 +422,7 @@ ALTER TABLE consultations ADD CONSTRAINT fk_consultations_follow_up_of_record_id
     FOREIGN KEY (follow_up_of_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT;
 ```
 **Built** by `consultations` (migrations `20261011130000`, `20261011130100`). As built: everything above except the deferred pieces
-marked in the comments — `idx_consultations_booked_starts_at` (reminder scan) and `fk_consultations_follow_up_of_record_id` are not created
-yet; `idx_consultations_follow_up_of_record_id` is. `vcare_app` holds `SELECT, INSERT, UPDATE` and sequence `USAGE` (no `DELETE`: soft delete only,
+marked in the comments — `fk_consultations_follow_up_of_record_id` is not created yet (the records migration adds it); `idx_consultations_follow_up_of_record_id` and `idx_consultations_booked_starts_at` (reminder scan, migration `20261012120100`) are. `vcare_app` holds `SELECT, INSERT, UPDATE` and sequence `USAGE` (no `DELETE`: soft delete only,
 no route sets `deleted_at`). Reads that render a list item use the explicit `CONSULTATION_LIST_COLUMNS` projection (21 columns): it omits
 `complaint_text`, `request_hash`, `idempotency_key`, `room_id`, the reminder marks, `no_show_marked_at` and `cancelled_by_user_id`, so clinical text is
 not even read by a bulk list; get-one and the write paths use `CONSULTATION_COLUMNS`. Flagging (`needs_admin_followup`, `followup_reason`) skips rows
@@ -756,7 +755,7 @@ Grants to `vcare_app`: `SELECT, INSERT`, **column-level `UPDATE (status, attempt
 (used only by the purge of `sent` rows). Delivery state machine: a claim leases a row by moving `next_attempt_at` 300 s ahead and increments `attempts` (the claim number is the lease token); results are written only with
 the guard `status='pending' AND attempts = <claim number>`. `pending` -> `sent` | `skipped` | `dead`; `last_error_code` holds a fixed vocabulary (`contacts_unavailable`, `email_timeout`, `email_error`, `email_rejected`,
 `recipient_unknown`, `recipient_inactive`, `consultation_missing`, `consultation_changed`, `reminder_expired`, `template_missing`, `lease_expired`), never a provider message. Only `sent` rows older than `OUTBOX_RETENTION_DAYS` are purged;
-`pending`, `dead` and `skipped` rows are kept. Companion index on `consultations` (`20261012120100_consultations_reminder_index`):
+`pending`, `dead` and `skipped` rows are kept, and a `BEFORE DELETE` trigger (`trg_notification_outbox_delete_sent_only`, migration `20261015120100`) makes the database refuse deleting any other status although `DELETE` is granted table-wide. Review index `idx_notification_outbox_pending_created_at ON (created_at) WHERE status = 'pending'` (migration `20261015120000`) serves the stale-pending gauge `SELECT MIN(created_at) ... WHERE status = 'pending'`. Companion index on `consultations` (`20261012120100_consultations_reminder_index`):
 `idx_consultations_booked_starts_at ON consultations (starts_at) WHERE status = 'booked' AND deleted_at IS NULL` for the reminder scan.
 Measured on a 750 k-row outbox (manual QA 2026-10-14): claim 0.87 ms, lag 0.03 ms, guarded finish 0.10 ms, steady-state purge 6.4 ms. **Watch item:** the purge `DELETE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)`
 is planned as a Hash Semi Join over a sequential scan of the whole table (about 150 ms per 5 000-row batch while draining a large backlog; no effect in steady state). Acceptable; if a faster drain is ever needed,

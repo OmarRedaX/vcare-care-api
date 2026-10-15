@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -50,7 +50,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | | 1 000–60 000; deadline for draining requests **and** closing resources on `SIGTERM` (server and worker) |
 | `WORKER_POLL_INTERVAL_MS` | `1000` | | ≥ 100; default `care-worker` loop interval ([ADR 0008](../adr/0008-care-worker-component.md)) |
 | `OUTBOX_POLL_SECONDS` | `5` | | 1-86400; `notification-outbox` loop interval (`notifications`) |
-| `OUTBOX_BATCH_SIZE` | `20` | | 1-100; outbox rows claimed per round (also within the contacts cap of 100 ids) |
+| `OUTBOX_BATCH_SIZE` | `20` | | 1-59; outbox rows claimed per round; capped so `batch x 5 s send timeout + 2 s` stays below the 300 s claim lease (spec N-D12) |
 | `OUTBOX_MAX_ATTEMPTS` | `8` | | 1-20; send attempts before a row is `dead` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)) |
 | `OUTBOX_RETENTION_DAYS` | `30` | | 1-365; age after which `sent` outbox rows are purged |
 | `OUTBOX_PURGE_SECONDS` | `3600` | | 1-86400; `notification-outbox-purge` loop interval |

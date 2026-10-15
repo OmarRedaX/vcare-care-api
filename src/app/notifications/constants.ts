@@ -10,7 +10,10 @@ export const OUTBOX_LOOP_NAME = "notification-outbox";
 export const REMINDER_LOOP_NAME = "consultation-reminders";
 export const OUTBOX_PURGE_LOOP_NAME = "notification-outbox-purge";
 
-/** Lease taken by the claim (`next_attempt_at = now + lease`); exceeds one contacts call plus 20 sequential 5 s sends. */
+/** Consultation statuses that can no longer change (a delayed `rescheduled` or `doctor_suspended` notice is moot for them, N-D14). */
+export const TERMINAL_CONSULTATION_STATUSES: readonly string[] = ["cancelled", "completed", "no_show"];
+
+/** Lease taken by the claim (`next_attempt_at = now + lease`). Must exceed `OUTBOX_BATCH_SIZE x EMAIL_SEND_TIMEOUT_MS + 2 s` (contacts call): env.ts caps the batch at 59 for 300 s. */
 export const OUTBOX_LEASE_SECONDS = 300;
 export const EMAIL_SEND_TIMEOUT_MS = 5_000;
 export const OUTBOX_BACKOFF_BASE_MS = 30_000;

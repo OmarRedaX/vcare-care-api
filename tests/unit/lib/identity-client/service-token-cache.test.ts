@@ -36,8 +36,8 @@ describe("ServiceTokenCache scopes", () => {
 
     it("should reject a token that lacks a requested scope", async () => {
         const { pool } = stubPool("users:read");
-        await expect(new ServiceTokenCache({ pool, env: getEnv() }).get("r")).rejects.toThrow("MalformedResponse");
+        await expect(new ServiceTokenCache({ pool, env: getEnv() }).get("r")).rejects.toThrow("InsufficientScope");
         const contact = stubPool("users:read users:status:write");
-        await expect(new ServiceTokenCache({ pool: contact.pool, env: getEnv(), scopes: CONTACT_SERVICE_SCOPES }).get("r")).rejects.toThrow("MalformedResponse");
+        await expect(new ServiceTokenCache({ pool: contact.pool, env: getEnv(), scopes: CONTACT_SERVICE_SCOPES }).get("r")).rejects.toThrow("InsufficientScope");
     });
 });

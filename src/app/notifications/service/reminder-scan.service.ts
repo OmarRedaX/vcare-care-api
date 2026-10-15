@@ -3,6 +3,7 @@ import type { Logger } from "../../../lib/logger/logger";
 import type { TickOutcome } from "../../../lib/worker/types";
 import { REMINDER_BATCH_LIMIT, REMINDER_MAX_BATCHES, REMINDER_WINDOW_1H_MS, REMINDER_WINDOW_24H_MS } from "../constants";
 import { OutboxKind, RecipientRole } from "../enums";
+import { findQueuedReminders } from "../repository/notification-outbox.repo";
 import type { ConsultationReminderPort, NotificationTiming, OutboxMessage, ReminderCandidate, ReminderKind, ReminderScanCounts } from "../types";
 import type { NotificationsService } from "./notifications.service";
 
@@ -39,10 +40,13 @@ export class ReminderScanService {
 
             const enqueue24 = due24.filter((candidate) => !isStampOnly(OutboxKind.Reminder24h, candidate, now.getTime()));
             const enqueue1 = due1.filter((candidate) => !isStampOnly(OutboxKind.Reminder1h, candidate, now.getTime()));
+            // A reschedule A -> B -> A re-arms the stamps while the first reminder for A may still be queued or sent: one statement finds those.
+            const queued = await findQueuedReminders([...new Set([...enqueue24, ...enqueue1].map((candidate) => candidate.id))], trx);
+            const alreadyQueued = new Set(queued.map((reminder) => queuedKey(reminder.kind, reminder.consultationId, reminder.recipientUserId, reminder.startsAt)));
             await this.notifications.enqueue(trx, [
                 ...enqueue24.flatMap((candidate) => reminderMessages(OutboxKind.Reminder24h, candidate)),
                 ...enqueue1.flatMap((candidate) => reminderMessages(OutboxKind.Reminder1h, candidate)),
-            ]);
+            ].filter((message) => !alreadyQueued.has(queuedKey(message.kind, message.consultationId, message.recipientUserId, String(message.payload.startsAt)))));
             await this.consultations.stampReminders(due24.map((candidate) => candidate.id), due1.map((candidate) => candidate.id), now, trx);
             return {
                 enqueued24h: enqueue24.length, enqueued1h: enqueue1.length,
@@ -61,6 +65,10 @@ function isStampOnly(kind: ReminderKind, candidate: ReminderCandidate, nowMs: nu
     const windowMs = kind === OutboxKind.Reminder24h ? REMINDER_WINDOW_24H_MS : REMINDER_WINDOW_1H_MS;
     if (candidate.createdAt.getTime() >= startsAtMs - windowMs) return true;
     return kind === OutboxKind.Reminder24h && startsAtMs - nowMs <= REMINDER_WINDOW_1H_MS;
+}
+
+function queuedKey(kind: OutboxKind, consultationId: number, recipientUserId: number, startsAt: string): string {
+    return `${kind}|${consultationId}|${recipientUserId}|${startsAt}`;
 }
 
 function reminderMessages(kind: ReminderKind, candidate: ReminderCandidate): OutboxMessage[] {

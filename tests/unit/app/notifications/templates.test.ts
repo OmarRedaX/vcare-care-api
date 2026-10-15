@@ -60,6 +60,17 @@ describe("render", () => {
         }
     });
 
+    it("should render the in-progress doctor_suspended wording for a live consultation", () => {
+        expect(render(base({ kind: OutboxKind.DoctorSuspended, inProgress: true }))).toEqual({
+            subject: "We need to follow up on your consultation",
+            text: `Hello Sam Synthetic,
+
+Your consultation that began on Monday 14 October 2030, 12:30 (UTC) needs follow-up. A Vcare administrator will be in touch with you about the next steps.
+
+The Vcare team`,
+        });
+    });
+
     it("should render nothing for the doctor role of patient-only kinds", () => {
         for (const kind of [OutboxKind.ScheduleBlocked, OutboxKind.DoctorSuspended, OutboxKind.DoctorJoined]) {
             expect(render(base({ kind, role: RecipientRole.Doctor }))).toBeUndefined();
@@ -114,6 +125,26 @@ describe("render", () => {
         expect([...greeting.slice("Hello ".length, -1)].length).toBeLessThanOrEqual(80);
         expect(mail?.subject).not.toContain("Sam");
         expect(greeting).not.toContain("\u0007");
+    });
+
+    it.each([
+        ["bidi overrides and isolates", "Sam‮evil‪‫‬‭⁦⁧⁨⁩"],
+        ["zero-width characters, direction marks and BOM", "Sam​‌‍‎‏﻿evil"],
+        ["line and paragraph separators", "Sam  evil"],
+    ])("should strip %s from the greeting name", (_label, name) => {
+        const greeting = render(base({ recipientName: name }))?.text.split("\n")[0] ?? "";
+        expect(greeting).toBe("Hello Samevil,");
+    });
+
+    it.each([
+        ["a scheme URL", "Sam http://evil.example/login now", "Hello Sam now,"],
+        ["a https URL with a path and query", "https://evil.example/a?b=c Sam", "Hello Sam,"],
+        ["a www host", "Sam www.evil.example", "Hello Sam,"],
+        ["a name that is only a URL", "http://evil.example", "Hello,"],
+    ])("should neutralise %s in the greeting name", (_label, name, expected) => {
+        const mail = render(base({ recipientName: name }));
+        expect(mail?.text.split("\n")[0]).toBe(expected);
+        expect(mail?.text).not.toContain("evil");
     });
 
     it("should greet without a name when the name is blank", () => {

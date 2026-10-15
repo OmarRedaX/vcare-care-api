@@ -122,7 +122,8 @@ export const envSchema = z
         UPLOAD_INTENT_PURGE_SECONDS: positiveSeconds.default(300),
         /** Notification delivery (ADR 0011): outbox poll, claim batch, attempts before `dead`, sent-row retention, purge and reminder-scan cadence. */
         OUTBOX_POLL_SECONDS: positiveSeconds.default(5),
-        OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
+        /** Max 59: a batch of sequential sends (5 s timeout each) plus 2 s for the contacts call must stay below the 300 s claim lease (spec N-D3, `OUTBOX_LEASE_SECONDS`). */
+        OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(59).default(20),
         OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(8),
         OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
         OUTBOX_PURGE_SECONDS: positiveSeconds.default(3600),

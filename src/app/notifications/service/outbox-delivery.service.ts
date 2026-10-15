@@ -11,10 +11,10 @@ import {
 } from "../constants";
 import { decidePreSend, payloadByRole, payloadInstantMs } from "../delivery-rules";
 import { OutboxErrorCode, OutboxStatus, RecipientRole } from "../enums";
-import { claimDue, finishRows, oldestDueAgeSeconds } from "../repository/notification-outbox.repo";
+import { claimDue, finishRows, oldestDueAgeSeconds, oldestPendingAgeSeconds } from "../repository/notification-outbox.repo";
 import { render } from "../templates/registry";
 import type {
-    ConsultationDeliveryPort, DeliveryCandidate, DeliveryEnv, DeliveryRoundResult, NotificationTiming, OutboxClaimedRow, OutboxFinish, SendableRow,
+    ConsultationDeliveryPort, DeliveryCandidate, DeliveryEnv, DeliveryRoundResult, NotificationTiming, OutboxClaimedRow, OutboxFinish, PreparedBatch, SendableRow,
 } from "../types";
 
 const TIMEOUT_RESULT: EmailSendResult = { outcome: "transient", errorCode: OutboxErrorCode.EmailTimeout };
@@ -27,7 +27,7 @@ const THROWN_RESULT: EmailSendResult = { outcome: "transient", errorCode: Outbox
  * memory for one batch and is never logged, cached or stored.
  */
 export class OutboxDeliveryService {
-    /** Consecutive batches whose contacts lookup failed; drives the delay of the next one and resets on a clean lookup. */
+    /** Consecutive ticks whose contacts lookup failed (a failing tick stops after its first failing batch); resets on a clean lookup. */
     private contactFailures = 0;
 
     constructor(
@@ -40,14 +40,19 @@ export class OutboxDeliveryService {
         private readonly timing: NotificationTiming,
     ) {}
 
-    /** Emits the lag gauge, then claims and processes up to `OUTBOX_MAX_ROUNDS` batches. Throws only on a database failure. */
+    /**
+     * Emits the two age gauges, then claims and processes up to `OUTBOX_MAX_ROUNDS` batches. A batch whose contacts lookup failed ends the
+     * tick (N-D1): one outage is one backoff step, and the rest of the due rows stay due for the next tick. Throws only on a database failure.
+     */
     async tick(signal: AbortSignal): Promise<TickOutcome> {
-        this.logger.metric("notification_outbox_lag_seconds", await oldestDueAgeSeconds(new Date(this.timing.now()), this.db), {});
+        const now = new Date(this.timing.now());
+        this.logger.metric("notification_outbox_lag_seconds", await oldestDueAgeSeconds(now, this.db), {});
+        this.logger.metric("notification_outbox_oldest_pending_age_seconds", await oldestPendingAgeSeconds(now, this.db), {});
         let leaseLost = 0;
         for (let round = 0; round < OUTBOX_MAX_ROUNDS && !signal.aborted; round++) {
             const result = await this.deliverRound(signal);
             leaseLost += result.leaseLost;
-            if (result.claimed < this.env.OUTBOX_BATCH_SIZE) break;
+            if (result.contactsUnavailable || result.claimed < this.env.OUTBOX_BATCH_SIZE) break;
         }
         return leaseLost === 0 ? "done" : "incomplete";
     }
@@ -55,12 +60,31 @@ export class OutboxDeliveryService {
     /** One claim and its processing. */
     async deliverRound(signal: AbortSignal): Promise<DeliveryRoundResult> {
         const rows = await claimDue(new Date(this.timing.now()), this.env.OUTBOX_BATCH_SIZE, OUTBOX_LEASE_SECONDS, this.db);
-        if (rows.length === 0) return { claimed: 0, leaseLost: 0 };
-        const leaseLost = await this.process(rows, signal);
-        return { claimed: rows.length, leaseLost };
+        if (rows.length === 0) return { claimed: 0, leaseLost: 0, contactsUnavailable: false };
+        let prepared: PreparedBatch;
+        try {
+            prepared = await this.prepare(rows);
+        } catch (error) {
+            // Nothing was sent: give the claim back without burning an attempt, then let the runner log the failure.
+            await this.release(rows);
+            throw error;
+        }
+        let leaseLost = prepared.leaseLost;
+        for (let index = 0; index < prepared.sendable.length; index++) {
+            const item = prepared.sendable[index];
+            if (item === undefined) continue;
+            try {
+                leaseLost += await this.send(item, signal);
+            } catch (error) {
+                await this.release(prepared.sendable.slice(index + 1).map((later) => later.row));
+                throw error;
+            }
+        }
+        return { claimed: rows.length, leaseLost, contactsUnavailable: prepared.contactsUnavailable };
     }
 
-    private async process(rows: readonly OutboxClaimedRow[], signal: AbortSignal): Promise<number> {
+    /** Everything before the first send: crash-loop guard, claim-time re-check, contacts lookup and the batched pre-send writes. */
+    private async prepare(rows: readonly OutboxClaimedRow[]): Promise<PreparedBatch> {
         const early: OutboxFinish[] = [];
         const reasons = new Map<number, OutboxErrorCode>();
         const candidates: DeliveryCandidate[] = [];
@@ -86,9 +110,11 @@ export class OutboxDeliveryService {
 
         const delayed: OutboxFinish[] = [];
         const sendable: SendableRow[] = [];
+        let contactsUnavailable = false;
         if (candidates.length > 0) {
             const contacts = await this.identity.getContacts([...new Set(candidates.map((candidate) => candidate.row.recipient_user_id))], randomUUID());
             if (contacts.unavailable.size > 0) {
+                contactsUnavailable = true;
                 const delayMs = exponentialBackoffMs(OUTBOX_BACKOFF_BASE_MS, this.contactFailures, OUTBOX_BACKOFF_CAP_MS, () => this.timing.random());
                 this.contactFailures += 1;
                 for (const candidate of candidates) {
@@ -124,10 +150,22 @@ export class OutboxDeliveryService {
             this.logOutcome(rows, finish, reasons.get(finish.id));
         }
 
-        for (const item of sendable) {
-            leaseLost += await this.send(item, signal);
+        return { sendable, leaseLost, contactsUnavailable };
+    }
+
+    /** Best effort: returns claimed rows to the queue as due now, with the claim's attempt handed back (guarded on the claim number). */
+    private async release(rows: readonly OutboxClaimedRow[]): Promise<void> {
+        if (rows.length === 0) return;
+        const nextAttemptAt = new Date(this.timing.now());
+        try {
+            await finishRows(rows.map((row) => ({
+                id: row.id, expectedAttempts: row.attempts, status: OutboxStatus.Pending, attemptsDelta: -1,
+                nextAttemptAt, lastErrorCode: null, sentAt: null,
+            })), this.db);
+            this.logger.warn("notification_claim_released", { count: rows.length });
+        } catch {
+            this.logger.warn("notification_claim_release_failed", { count: rows.length });
         }
-        return leaseLost;
     }
 
     /** Renders and sends one row, then persists the outcome immediately (N-D3). Returns 1 when the lease was lost. */
@@ -139,7 +177,7 @@ export class OutboxDeliveryService {
         const rendered = render({
             kind: row.kind, role, locale: item.locale, recipientName: item.fullName,
             timezone: role === RecipientRole.Patient ? context.patientTimezone : (context.doctorTimezone ?? "UTC"),
-            startsAtMs, ...(previousStartsAtMs === undefined ? {} : { previousStartsAtMs }), ...(byRole === undefined ? {} : { byRole }),
+            startsAtMs, ...(previousStartsAtMs === undefined ? {} : { previousStartsAtMs }), ...(byRole === undefined ? {} : { byRole }), inProgress: context.status === "in_progress",
         });
         if (rendered === undefined) return this.finishOne(row, this.skipped(row, OutboxErrorCode.TemplateMissing), OutboxErrorCode.TemplateMissing);
 

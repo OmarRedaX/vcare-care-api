@@ -126,12 +126,42 @@ describe("IdentityClient.getContacts (Case 5)", () => {
         expect([...(await client.getContacts([1], "req-13")).unavailable]).toEqual([1]);
     });
 
-    it.each(["bad-email", "extra-id", "duplicate-id"] as const)("should reject the whole chunk on %s", async (mode) => {
-        const { client } = make();
+    it.each(["bad-email", "duplicate-id"] as const)("should isolate the bad entry and keep its valid neighbours on %s", async (mode) => {
+        const { client, log } = make();
         fake.options.contactsMalformed = mode;
         const result = await client.getContacts([1, 2], "req-14");
+        // The malformed or duplicated entry is id 1: only it is delayed, id 2 is delivered.
+        expect([...result.unavailable]).toEqual([1]);
+        expect([...result.contacts.keys()]).toEqual([2]);
+        expect(log.messages("warn")).toContain("notification_contacts_unavailable");
+        expect(log.messages("error")).not.toContain("notification_contacts_forbidden");
+    });
+
+    it("should reject the whole chunk when an entry carries an id that was not requested", async () => {
+        const { client } = make();
+        fake.options.contactsMalformed = "extra-id";
+        const result = await client.getContacts([1, 2], "req-14b");
         expect([...result.unavailable].sort()).toEqual([1, 2]);
         expect(result.contacts.size).toBe(0);
+    });
+
+    it.each([
+        ["a 403 answer", (): void => { fake.options.contactsFailures = 1; fake.options.contactsStatus = 403; }],
+        ["a token without the contact scope", (): void => { fake.options.withholdContactScope = true; }],
+    ])("should emit the permanent-failure signal on %s", async (_label, arrange) => {
+        const { client, log } = make();
+        arrange();
+        expect([...(await client.getContacts([1], "req-14c")).unavailable]).toEqual([1]);
+        expect(log.messages("error")).toContain("notification_contacts_forbidden");
+        expect(log.metric).toHaveBeenCalledWith("notification_contacts_forbidden", 1, {});
+    });
+
+    it("should not emit the permanent-failure signal on a transient 503", async () => {
+        const { client, log } = make();
+        fake.options.contactsFailures = 1;
+        fake.options.contactsStatus = 503;
+        await client.getContacts([1], "req-14d");
+        expect(log.messages("error")).not.toContain("notification_contacts_forbidden");
     });
 
     it("should fail only the failing chunk", async () => {

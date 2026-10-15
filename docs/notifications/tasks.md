@@ -35,6 +35,21 @@ Source: [spec.md](./spec.md) (implemented, v0.2.0). Branch `feature/notification
 - [x] (tests) integration smoke: migrations, claim, reminder scan, purge, producer
 - [x] (tests) full integration/concurrency/EXPLAIN/log hygiene suite (tests/integration/notifications-delivery.test.ts, tests/unit/app/notifications/templates.matrix.test.ts)
 - [x] (manual-qa) <- /manual-qa  (2026-10-14: 155 pass / 1 fail; rerun 2026-10-15 after the `runOnce` shutdown fix: 156 pass / 0 fail, 120 stress `--once` runs clean; see manual-qa.md)
+- [x] (migration) 20261015120000_notification_outbox_pending_created_at_index (review Medium 2/6: stale-pending gauge index)
+- [x] (migration) 20261015120100_notification_outbox_delete_sent_only (review Low 8: BEFORE DELETE trigger, sent rows only)
+- [x] (service) review Medium 1: contacts failure ends the tick, one backoff step per tick (OutboxDeliveryService)
+- [x] (service) review Medium 2/6: notification_outbox_oldest_pending_age_seconds gauge, notification_contacts_forbidden signal, alerts OutboxPendingStale / NotificationContactsForbidden (spec N-D11, deployment.md, runbook.md)
+- [x] (service) review Low 3: per-entry contact validation (identity-client getContacts)
+- [x] (enums-errors-types) review Low 4: OUTBOX_BATCH_SIZE max 59 (env.ts, .env.example, spec N-D12)
+- [x] (service) review Low 5: release claimed rows without consuming an attempt on a post-claim infrastructure error (spec N-D10)
+- [x] (service) review Low 7: greeting-name sanitiser (bidi, zero-width, BOM, separators, URLs)
+- [x] (service) review Low 11: reminder dedupe at enqueue (spec N-D13)
+- [x] (tests) review fixes: unit (delivery, scan, templates, identity-client, env, lease invariant) and integration (tick backoff, pending-age, release, reminder dedupe, trigger, EXPLAIN)
+- [x] (docs) review docs findings: data-model reminder index, INDEX tasks row, brainstorm status
+- [x] (decision) review Low 9 and Low 10: owner approved the recommended behaviour 2026-10-15 (spec 0.4.0, N-D14)
+- [x] (service) review Low 9: skip delayed `rescheduled` (terminal or moved) and `doctor_suspended` (terminal) at claim time (delivery-rules.ts)
+- [x] (service) review Low 10: in-progress wording variant for `doctor_suspended` (templates/en.ts, `inProgress` on RenderInput)
+- [x] (tests) review Low 9/10: unit (delivery rules, template matrix with inProgress, exact copy) and integration (notifications-delivery N-D14)
 - [x] (docs) architecture refresh <- /update-docs (2026-10-14: spec as-built section 14, data-model, infrastructure, integration, resilience, deployment, capacity, overview, runbook, service card, INDEX; hub landscape, deployment, capacity, data-ownership rows)
 
 ## Open items

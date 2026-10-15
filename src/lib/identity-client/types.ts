@@ -18,6 +18,8 @@ export interface HydratedUser { displayName: string; avatarUrl: string | null; s
 export interface Contact { email: string; fullName: string; locale: string; status: IdentityStatus }
 /** `unavailable` = the chunk containing the id could not be read (transient: delay the row); an id in neither set is unknown to Identity. */
 export interface ContactsResult { contacts: Map<number, Contact>; unavailable: Set<number> }
+/** One contacts chunk: `failure` set = the whole chunk failed; `badEntries` = entries isolated as unavailable inside an otherwise valid answer. */
+export interface ContactsChunkOutcome { failure: string | null; badEntries: number }
 export interface BatchResult { users: Map<number, HydratedUser>; degraded: boolean }
 export interface IdentityClientOptions {
     env?: Env;

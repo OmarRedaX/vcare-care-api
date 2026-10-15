@@ -26,6 +26,17 @@ describe("templates: kind x role x locale", () => {
         }
     });
 
+    it.each(combos)("should render %s for the %s with the in-progress variant only for doctor_suspended", (kind, role) => {
+        const live = render(base({ kind, role, previousStartsAtMs: PREVIOUS, byRole: "admin", inProgress: true }));
+        const normal = render(base({ kind, role, previousStartsAtMs: PREVIOUS, byRole: "admin" }));
+        if (kind === OutboxKind.DoctorSuspended && role === RecipientRole.Patient) {
+            expect(live?.text).not.toEqual(normal?.text);
+            expect(live?.text).not.toMatch(/scheduled for|not been cancelled/);
+        } else {
+            expect(live).toEqual(normal);
+        }
+    });
+
     it("should have a template for exactly the documented (kind, role) pairs", () => {
         const present = combos.filter(([kind, role]) => hasTemplate(kind, role)).map(([kind, role]) => `${kind}:${role}`).sort();
         expect(present).toEqual([
@@ -67,10 +78,13 @@ describe("templates: no reason, PII or counterpart in any copy (N-R16)", () => {
         for (const kind of Object.values(OutboxKind)) {
             for (const role of Object.values(RecipientRole)) {
                 for (const byRole of ["patient", "doctor", "admin", undefined] as const) {
-                    const mail = render(base({ kind, role, previousStartsAtMs: PREVIOUS, ...(byRole === undefined ? {} : { byRole }) }));
-                    if (mail === undefined) continue;
-                    const body = mail.text.replace("Hello Sam Synthetic,", "");
-                    expect(`${mail.subject}\n${body}`).not.toMatch(/reason|complaint|diagnos|allerg|suspend|@|https?:|Synthetic/i);
+                    for (const inProgress of [false, true]) {
+                        const mail = render(base({ kind, role, previousStartsAtMs: PREVIOUS, inProgress, ...(byRole === undefined ? {} : { byRole }) }));
+                        if (mail === undefined) continue;
+                        const body = mail.text.replace("Hello Sam Synthetic,", "");
+                        expect(`${mail.subject}
+${body}`).not.toMatch(/reason|complaint|diagnos|allerg|suspend|@|https?:|Synthetic/i);
+                    }
                 }
             }
         }

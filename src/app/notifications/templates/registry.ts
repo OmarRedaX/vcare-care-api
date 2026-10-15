@@ -13,13 +13,15 @@ export function resolveLocale(tag: string): SupportedLocale {
     return Object.prototype.hasOwnProperty.call(TEMPLATES, primary) ? (primary as SupportedLocale) : DEFAULT_LOCALE;
 }
 
-/** Control characters removed, trimmed, clamped to 80 code points; used only in the body. */
+/** Controls, format characters (bidi overrides and isolates, zero-width, BOM, soft hyphen) and line or paragraph separators. */
+const UNSAFE_NAME_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+/** A scheme URL (`scheme://...`) or a `www.` host, up to the next space: a link inside a trusted mail is a phishing vector. */
+const URL_LIKE = /[^\s]*:\/\/[^\s]*|www\.[^\s]*/giu;
+
+/** Unsafe characters and URLs removed, whitespace collapsed, trimmed, clamped to 80 code points; used only in the body. */
 function greetingName(name: string): string {
-    const printable = [...name].filter((character) => {
-        const code = character.codePointAt(0) ?? 0;
-        return code > 0x1f && (code < 0x7f || code > 0x9f);
-    });
-    return [...printable.join("").trim()].slice(0, GREETING_NAME_MAX_CODE_POINTS).join("").trim();
+    const cleaned = name.replace(UNSAFE_NAME_CHARACTERS, "").replace(URL_LIKE, " ").replace(/\s+/gu, " ").trim();
+    return [...cleaned].slice(0, GREETING_NAME_MAX_CODE_POINTS).join("").trim();
 }
 
 /** Pure. `undefined` = no template for (kind, role): the caller marks the row `template_missing`. */
@@ -32,6 +34,7 @@ export function render(input: RenderInput): RenderedEmail | undefined {
         when: formatLocal(input.startsAtMs, input.timezone),
         previous: input.previousStartsAtMs === undefined ? undefined : formatLocal(input.previousStartsAtMs, input.timezone),
         byRole: input.byRole,
+        inProgress: input.inProgress === true,
     });
 }
 

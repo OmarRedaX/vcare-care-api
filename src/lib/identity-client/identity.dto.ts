@@ -45,7 +45,8 @@ export class UserContactDto {
     @IsString() @IsNotEmpty() locale!: string;
     @IsIn(["active", "rejected", "pending", "suspended"]) status!: "active" | "rejected" | "pending" | "suspended";
 }
+/** Entries stay unvalidated here: the client validates each against `UserContactDto` so one bad entry does not fail its chunk. */
 export class ContactsEnvelopeDto {
     @Equals(true) success!: true;
-    @IsArray() @ValidateNested({ each: true }) @Type(() => UserContactDto) data!: UserContactDto[];
+    @IsArray() data!: unknown[];
 }
