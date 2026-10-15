@@ -5,8 +5,6 @@ import type { Env } from "../../../lib/config/types";
 import { TOKENS } from "../../../lib/di/tokens";
 import { Conflict, IdempotencyConflict, NotFound } from "../../../lib/error/errors";
 import { exclusionViolationConstraint, uniqueViolationConstraint } from "../../../lib/knex/pg-errors";
-import type { Logger } from "../../../lib/logger/logger";
-import { currentRequestId } from "../../../lib/logger/request-context";
 import type { AuthContext, Clock } from "../../../lib/types/types";
 import { canonicalIanaTimezone } from "../../../lib/validation/timezone-decorator";
 import { addDays, localDateOf } from "../../../pkg/slots/local-date";
@@ -30,7 +28,8 @@ import {
 import {
     applyTransition, findById, findByIdempotencyKey, findByIdForUpdate, hasRelationship, insertConsultation, rescheduleRow,
 } from "../repository/consultations.repo";
-import type { BookInput, CancelInput, ConsultationChangeListener, RescheduleInput, WriteResult } from "../types";
+import type { BookInput, CancelInput, RescheduleInput, WriteResult } from "../types";
+import { ConsultationRowsService } from "./consultation-rows.service";
 
 const MINUTE_MS = 60_000;
 
@@ -49,12 +48,11 @@ export class ConsultationsService implements PatientRelationshipChecker {
         @inject(TOKENS.Db) private readonly db: Knex,
         @inject(TOKENS.AuditRecorder) private readonly audit: AuditRecorder,
         @inject(TOKENS.Env) private readonly env: Env,
-        @inject(TOKENS.Logger) private readonly logger: Logger,
         @inject(TOKENS.Clock) private readonly clock: Clock,
         @inject(TOKENS.DoctorsService) private readonly doctors: DoctorsService,
         @inject(TOKENS.SchedulesService) private readonly schedules: SchedulesService,
         @inject(TOKENS.NotificationsService) private readonly notifications: NotificationsService,
-        @inject(TOKENS.ConsultationChangeListener) private readonly listener: ConsultationChangeListener,
+        @inject(TOKENS.ConsultationRowsService) private readonly rows: ConsultationRowsService,
     ) {}
 
     async book(actor: AuthContext, input: BookInput, idempotencyKey: string, requestHash: string): Promise<Consultation> {
@@ -68,7 +66,7 @@ export class ConsultationsService implements PatientRelationshipChecker {
             if (uniqueViolationConstraint(error) !== UQ_CONSULTATIONS_IDEMPOTENCY) throw error;
             result = { consultation: await this.replayAfterRace(actor.userId, idempotencyKey, requestHash), changed: false };
         }
-        if (result.changed) await this.notifyChanged(ConsultationChangeKind.Booked, result.consultation);
+        if (result.changed) await this.rows.notifyChanged(ConsultationChangeKind.Booked, result.consultation);
         return result.consultation;
     }
 
@@ -122,7 +120,7 @@ export class ConsultationsService implements PatientRelationshipChecker {
             if (exclusionViolationConstraint(error) === EXCL_CONSULTATIONS_DOCTOR_NO_OVERLAP) throw SlotUnavailable;
             throw error;
         }
-        if (result.changed) await this.notifyChanged(ConsultationChangeKind.Rescheduled, result.consultation);
+        if (result.changed) await this.rows.notifyChanged(ConsultationChangeKind.Rescheduled, result.consultation);
         return result.consultation;
     }
 
@@ -176,7 +174,7 @@ export class ConsultationsService implements PatientRelationshipChecker {
                 entityId: updated.id, metadata: { byRole: actor.role, fromStatus: row.status, ...this.reasonMetadata(input.reason) } });
             return { consultation: updated, changed: true };
         });
-        await this.notifyChanged(ConsultationChangeKind.Cancelled, result.consultation);
+        await this.rows.notifyChanged(ConsultationChangeKind.Cancelled, result.consultation);
         return result.consultation;
     }
 
@@ -215,14 +213,5 @@ export class ConsultationsService implements PatientRelationshipChecker {
             { kind, consultationId: consultation.id, recipientUserId: consultation.patientUserId, payload: { ...payload, recipientRole: "patient" } },
             { kind, consultationId: consultation.id, recipientUserId: consultation.doctorUserId, payload: { ...payload, recipientRole: "doctor" } },
         ];
-    }
-
-    /** After commit; a listener failure is logged (no data) and never fails the committed write. */
-    private async notifyChanged(kind: ConsultationChangeKind, consultation: Consultation): Promise<void> {
-        try {
-            await this.listener.onConsultationChanged({ kind, doctorUserId: consultation.doctorUserId, consultationId: consultation.id });
-        } catch {
-            this.logger.error("consultation_change_listener_failed", { requestId: currentRequestId(), consultationId: consultation.id, kind });
-        }
     }
 }

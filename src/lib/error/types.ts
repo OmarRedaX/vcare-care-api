@@ -24,6 +24,7 @@ export type ErrorCode =
     | "UploadIntentExpired"
     | "ScheduleConflictsUnconfirmed"
     | "IdentityUnavailable"
+    | "VideoUnavailable"
     | "IdempotencyConflict"
     | "NotFound"
     | "Conflict"
@@ -56,6 +57,7 @@ export const ERROR_CODES = [
     "UploadIntentExpired",
     "ScheduleConflictsUnconfirmed",
     "IdentityUnavailable",
+    "VideoUnavailable",
     "IdempotencyConflict",
     "NotFound",
     "Conflict",
