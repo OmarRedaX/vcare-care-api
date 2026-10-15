@@ -51,6 +51,8 @@ STORAGE_ENDPOINT=http://localhost:9002
 STORAGE_ACCESS_KEY_ID=care-local
 STORAGE_SECRET_ACCESS_KEY=synthetic-minio-secret
 STORAGE_FORCE_PATH_STYLE=true
+VIDEO_PROVIDER=fake                                                   # only the deterministic fake exists; refused when NODE_ENV=production
+VIDEO_PROVIDER_KEY=synthetic-video-provider-key-0123456789abcdef      # >= 32 chars, no default (signs the fake join tokens)
 AUDIT_PARTITION_MONTHS_AHEAD=2
 CORS_ORIGINS=http://localhost:5173                       # honoured only in development
 ```
@@ -59,7 +61,7 @@ The two database URLs must name **different** roles: migrations run as the owner
 ([ADR 0018](./adr/0018-db-role-split-explicit-grants-partition-function.md)). Neither URL may carry `options`,
 `statement_timeout`, `query_timeout`, or `application_name` in its query string. `IDENTITY_JWKS_URL` has no default:
 Care boots without Identity (readiness shows `identityJwks: "down"`), but every authenticated request answers `401`
-until the JWKS can be fetched. `IDENTITY_INTERNAL_URL`, `SERVICE_CLIENT_ID`, `SERVICE_CLIENT_SECRET` and the `STORAGE_*` variables are required (verification, 2026-10-08); the TTL and worker-interval variables have defaults (see the full list in the infrastructure shard). If a value is invalid, the process
+until the JWKS can be fetched. `IDENTITY_INTERNAL_URL`, `SERVICE_CLIENT_ID`, `SERVICE_CLIENT_SECRET`, `VIDEO_PROVIDER`, `VIDEO_PROVIDER_KEY` and the `STORAGE_*` variables are required (sessions, 2026-10-15; verification, 2026-10-08); the TTL and worker-interval variables have defaults (see the full list in the infrastructure shard). If a value is invalid, the process
 exits at once with one `invalid_environment` line naming the key (see [runbook.md](./runbook.md) → Boot and
 shutdown log lines).
 

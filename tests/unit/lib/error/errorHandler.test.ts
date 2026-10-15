@@ -186,6 +186,16 @@ describe("lib/error/errorHandler", () => {
         expect(line?.error).toBeUndefined();
     });
 
+    it("should log a declared VideoUnavailable 503 as a warn handled_error without a stack", async () => {
+        const res = await request(harness(() => { throw new AppError("VideoUnavailable", 503, "The video service is temporarily unavailable"); })).get("/t");
+        expect(res.status).toBe(503);
+        expect(res.body.error.code).toBe("VideoUnavailable");
+        expect(logs.lines().some((entry) => entry.message === "unhandled_error")).toBe(false);
+        const line = logs.lines().find((entry) => entry.message === "handled_error");
+        expect(line).toMatchObject({ level: "warn", status: 503, code: "VideoUnavailable", requestId: REQUEST_ID });
+        expect(line?.error).toBeUndefined();
+    });
+
     it("should log a database error without its message or the rejected value when an unknown error is a pg error (F7)", async () => {
         await request(
             harness(() => {

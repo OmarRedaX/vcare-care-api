@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 tags: [rbac, authorization, ownership, privacy, security]
 related: [api, consultations-spec, schedules-spec, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -110,9 +110,9 @@ not a policy check (`FOR SHARE` on the profile row, so it serializes with a susp
 | `GET /consultations/:id` (**live**) | patient, doctor, admin | resolver `consultation_participant_or_admin` (patient owner, assigned doctor, or admin; others and non-numeric ids `deny-not-found`) | `consultation.read` for participants; none for admin |
 | `PATCH /consultations/:id/reschedule` (**live**) | patient, admin | resolver `consultation_patient_or_admin`; admin `reason` required (`400`) | `consultation.rescheduled` for any caller (policy class admin-action) |
 | `PATCH /consultations/:id/cancel` (**live**) | patient, doctor, admin | resolver `consultation_participant_or_admin`; doctor (assigned only, not locally suspended) and admin `reason` required (`400`) | `consultation.cancelled` for any caller (policy class admin-action) |
-| `PATCH /consultations/:id/join` | patient, doctor | `participant` | — |
+| `PATCH /consultations/:id/join` | patient, doctor | `participant` | `consultation.waiting` on the patient transition only |
 | `PATCH /consultations/:id/start`, `/complete` | doctor | `assigned-doctor` | — |
-| `PATCH /consultations/:id/no-show` | doctor, admin | `assigned-doctor-or-admin` | admin-action for admin |
+| `PATCH /consultations/:id/no-show` | doctor, admin | `assigned-doctor-or-admin` (admin passes; other doctors `404`) | admin-action for admin; admin exempt from the local-suspension check |
 | `GET /consultations/waiting-room`, `GET /consultations/calendar` | doctor | self | — |
 | `POST /consultations/:id/record` | doctor | `assigned-doctor` + consultation `completed` | clinical-write |
 | `GET /records/:id` | patient, doctor | owning patient, author, or doctor who consulted the patient; else `deny-not-found` | clinical-read |
@@ -127,7 +127,7 @@ not a policy check (`FOR SHARE` on the profile row, so it serializes with a susp
 | `GET /audit-logs` | admin | none | — |
 | `GET /internal/doctors/:userId/summary` | service | scope `doctors:read` | — |
 
-Status changes on consultations are always audited regardless of the audit class above. Built so far: `consultation.booked`, `.rescheduled`, `.cancelled` (any caller role, `byRole` in the metadata) and `consultation.read`; the session transitions (`waiting`, `started`, `completed`, `no-show`) arrive with `sessions`.
+Status changes on consultations are always audited regardless of the audit class above. Built so far: `consultation.booked`, `.rescheduled`, `.cancelled` (any caller role, `byRole` in the metadata) and `consultation.read`; since 2026-10-15 (`sessions`) also `consultation.waiting` (patient `booked → waiting` only), `.started`, `.completed` and `.no_show` (metadata `byRole`, `fromStatus`, `noteLength?`; never the note, tokens or room ids). Token-only re-joins and the waiting-room and calendar views write no audit row (no clinical field is returned).
 
 **Doctor-patient relationship (decision D-R4, 2026-10-12).** A doctor "has consulted" a patient when a non-deleted consultation in `booked`, `waiting`, `in_progress` or `completed` links them. `booked` is included so a doctor can read the intake profile before the visit; a `cancelled` or `no_show`-only relationship grants nothing. Every read is audited. The records routes reuse the same resolver once `records` ships.
 

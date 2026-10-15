@@ -8,6 +8,9 @@ import { AdminDoctorsService } from "../../src/app/admin-doctors/service/admin-d
 import { ConsultationsController } from "../../src/app/consultations/controller/consultations.controller";
 import { ConsultationQueriesService } from "../../src/app/consultations/service/consultation-queries.service";
 import { ConsultationsService } from "../../src/app/consultations/service/consultations.service";
+import { SessionsController } from "../../src/app/sessions/controller/sessions.controller";
+import { SessionQueriesService } from "../../src/app/sessions/service/session-queries.service";
+import { SessionsService } from "../../src/app/sessions/service/sessions.service";
 import { IdentitySyncService } from "../../src/app/identity-sync/service/identity-sync.service";
 import { getEnv } from "../../src/lib/config/env";
 import { container } from "../../src/lib/di/container";
@@ -20,6 +23,7 @@ import { closeDb, ownerDb, truncateAll } from "./db";
 import { FakeIdentityServer } from "./fake-identity-server";
 import { buildFakeJwksWiring, startFakeJwks } from "./fake-jwks";
 import { closeRedis, ensureRedisReady, flushByPrefix } from "./redis";
+import { StubVideoProvider } from "./stub-video-provider";
 import { signUserToken } from "./tokens";
 import type { FakeJwks, FakeJwksWiring } from "./types";
 
@@ -58,11 +62,13 @@ export interface ConsultationsHarness {
     clock: ControlledClock;
     identityServer: FakeIdentityServer;
     tokens: Record<Actor, string>;
+    /** The video provider bound for the app under test (system-external): call log plus failing/slow modes; reset before each test. */
+    video: StubVideoProvider;
     app(): Express;
     call(verb: "get" | "post" | "patch" | "put", path: string, actor?: Actor, payload?: object, headers?: Record<string, string>): Test;
     write(verb: "post" | "patch", path: string, actor: Actor, payload: object, key?: string): Test;
     /** A signed token for an ad hoc principal (more patients than the fixed actors). */
-    signFor(userId: number, role?: "patient" | "doctor" | "admin"): Promise<string>;
+    signFor(userId: number, role?: "patient" | "doctor" | "admin", status?: "active" | "pending" | "rejected" | "suspended"): Promise<string>;
     /** Like `call` with a raw bearer token. */
     callWith(token: string, verb: "get" | "post" | "patch" | "put", path: string, payload?: object, headers?: Record<string, string>): Test;
     book(actor?: Actor, payload?: object, key?: string): Test;
@@ -88,6 +94,7 @@ export function useConsultationsHarness(suite: string): ConsultationsHarness {
     const clock = new ControlledClock();
     const identityServer = new FakeIdentityServer();
     const tokens = {} as Record<Actor, string>;
+    const video = new StubVideoProvider(getEnv().VIDEO_PROVIDER_KEY);
     const previous: Array<{ token: symbol; value: unknown }> = [];
 
     const call: ConsultationsHarness["call"] = (verb, path, actor, payload, headers = {}) => {
@@ -99,8 +106,8 @@ export function useConsultationsHarness(suite: string): ConsultationsHarness {
     const write: ConsultationsHarness["write"] = (verb, path, actor, payload, key = randomUUID()) => call(verb, path, actor, payload, { "Idempotency-Key": key });
 
     const harness: ConsultationsHarness = {
-        clock, identityServer, tokens, call, write,
-        signFor: (userId, role = "patient") => signUserToken(fake.key(suite), { sub: String(userId), role, status: "active", ev: true }),
+        clock, identityServer, tokens, video, call, write,
+        signFor: (userId, role = "patient", status = "active") => signUserToken(fake.key(suite), { sub: String(userId), role, status, ev: true }),
         callWith: (token, verb, path, payload, headers = {}) => {
             let test = request(app)[verb](path).set(headers).set("Authorization", `Bearer ${token}`);
             if (payload !== undefined) test = test.send(payload);
@@ -145,7 +152,8 @@ export function useConsultationsHarness(suite: string): ConsultationsHarness {
         const url = await identityServer.start();
         identity = new IdentityClient({ env: { ...getEnv(), IDENTITY_INTERNAL_URL: url }, redis, sleep: () => Promise.resolve() });
         for (const token of [TOKENS.JwksCache, TOKENS.UserTokenVerifier, TOKENS.IDENTITY_CLIENT, TOKENS.Clock, TOKENS.IdentitySyncService, TOKENS.AdminDoctorsService,
-            TOKENS.AdminDoctorsController, TOKENS.ConsultationsService, TOKENS.ConsultationQueriesService, TOKENS.ConsultationsController])
+            TOKENS.AdminDoctorsController, TOKENS.ConsultationsService, TOKENS.ConsultationQueriesService, TOKENS.ConsultationsController,
+            TOKENS.VideoProvider, TOKENS.SessionsService, TOKENS.SessionQueriesService, TOKENS.SessionsController])
             previous.push({ token, value: container.isRegistered(token) ? container.resolve(token) : undefined });
         container.registerInstance(TOKENS.JwksCache, wiring.cache);
         container.registerInstance(TOKENS.UserTokenVerifier, wiring.verifier);
@@ -158,6 +166,11 @@ export function useConsultationsHarness(suite: string): ConsultationsHarness {
         container.registerSingleton(TOKENS.ConsultationsService, ConsultationsService);
         container.registerSingleton(TOKENS.ConsultationQueriesService, ConsultationQueriesService);
         container.registerSingleton(TOKENS.ConsultationsController, ConsultationsController);
+        // Sessions hold the clock and the Identity client too; the provider is external, so the stub takes its place.
+        container.registerInstance(TOKENS.VideoProvider, video);
+        container.registerSingleton(TOKENS.SessionsService, SessionsService);
+        container.registerSingleton(TOKENS.SessionQueriesService, SessionQueriesService);
+        container.registerSingleton(TOKENS.SessionsController, SessionsController);
         app = buildTestApps().publicApp;
         const claims: Array<[Actor, string, "doctor" | "patient" | "admin", "active" | "suspended", boolean]> = [
             ["patient", String(PATIENT), "patient", "active", true], ["otherPatient", String(OTHER_PATIENT), "patient", "active", true],
@@ -169,6 +182,7 @@ export function useConsultationsHarness(suite: string): ConsultationsHarness {
     });
     beforeEach(async () => {
         clock.release();
+        video.reset();
         await truncateAll(); await flushByPrefix(["idem:", "rl:", "identity:"]);
         identityServer.users.clear(); identityServer.calls.length = 0; identityServer.statusBodies.length = 0;
         for (const key of Object.keys(identityServer.options)) delete (identityServer.options as Record<string, unknown>)[key];

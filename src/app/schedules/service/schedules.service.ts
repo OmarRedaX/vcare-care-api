@@ -32,7 +32,7 @@ import { findExceptionById, insertExceptions, listExceptionsInRange, listExcepti
 import { insertHours, listLiveHours, softDeleteLiveHours } from "../repository/working-hours.repo";
 import { assertExceptionShape, assertValidHours, diffConsultationType, expandExceptionDates, groupHours, normalizeHours, sameHours, toExceptionRules, toWeeklyRules } from "../rules";
 import type {
-    ConsultationTypeChanges, ConsultationTypeInput, ExceptionInput, ScheduleChange, ScheduleChangeListener, ScheduleChangedEvent,
+    CalendarExceptions, ConsultationTypeChanges, ConsultationTypeInput, ExceptionInput, ScheduleChange, ScheduleChangeListener, ScheduleChangedEvent,
     ScheduleImpactContext, ScheduleImpactProvider, ScheduleOwner, ScheduleOwnerResolver, WorkingHoursInput, WorkingHoursView,
 } from "../types";
 
@@ -225,6 +225,17 @@ export class SchedulesService {
             start = addDays(end, 1);
         }
         return days;
+    }
+
+    /**
+     * The doctor's zone and live exceptions for the doctor-local dates covering the UTC window `[fromMs, toMs)` (calendar view; two
+     * queries). Exceptions are keyed by doctor-local date whatever zone the caller renders in. Absent profile -> 404.
+     */
+    async listExceptionsForCalendar(doctorUserId: number, fromMs: number, toMs: number, conn: Knex = this.db): Promise<CalendarExceptions> {
+        const owner = await this.owners.find(doctorUserId, conn);
+        if (owner === undefined) throw NotFound;
+        const exceptions = await listExceptionsInRange(owner.profileId, localDateOf(fromMs, owner.timezone), localDateOf(toMs - 1, owner.timezone), conn);
+        return { timezone: owner.timezone, exceptions };
     }
 
     /** The caller's live profile without a lock (reads); absent -> 404. */

@@ -58,7 +58,7 @@ function mapClientError(error: unknown): AppError | undefined {
  * non-`AppError` error.
  */
 /** 5xx codes that are designed, documented responses. */
-const DECLARED_SERVER_ERRORS: ReadonlySet<string> = new Set(["IdentityUnavailable"]);
+const DECLARED_SERVER_ERRORS: ReadonlySet<string> = new Set(["IdentityUnavailable", "VideoUnavailable"]);
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
     if (res.headersSent) {

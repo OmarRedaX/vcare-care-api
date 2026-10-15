@@ -63,7 +63,7 @@ environment or a request.
 | `message` (level) | Meaning | First action |
 |---|---|---|
 | `invalid_environment` (error, stderr) | env validation failed; `keys` lists the offending variables (never values); exit 1 | Fix the named keys in the task definition. When the key is **`DATABASE_URL`**, check its scheme (`postgres:`/`postgresql:`) **and its query string**: it must not carry `options`, `statement_timeout`, `query_timeout`, or `application_name` (Care sets them per pool). `INTERNAL_HOST` must be an IP literal, not a host name. |
-| `boot_failed` (error) | an entrypoint (`care-api`, `care-worker`, `care-migrate`) threw during boot; `error` holds the serialized error (name, code, frames — for a database error, no message); exit 1 | Read `error.name`/`error.code`; a crash loop right after a deploy → roll back. |
+| `boot_failed` (error) | an entrypoint (`care-api`, `care-worker`, `care-migrate`) threw during boot; `error` holds the serialized error (name, code, frames — for a database error, no message); exit 1 | Read `error.name`/`error.code`; a crash loop right after a deploy → roll back. When the error is `video_provider_fake_not_allowed_in_production`: `VIDEO_PROVIDER=fake` with `NODE_ENV=production` is refused by design (sessions SS-R22) because the fake adapter signs tokens with a local key and talks to no real provider. Do not work around it by changing `NODE_ENV`; deploy with the real provider adapter (a later unit). Known consequence: the repo's `docker-compose.yml` sets `NODE_ENV: production` for `care-api` together with `VIDEO_PROVIDER: fake`, so that stack does not boot `care-api` until the owner decides how the local stack selects the fake (open owner decision). |
 | `server_listen_failed` (error) | a listener could not bind (e.g. `EADDRINUSE`); exit 1 | Check `PORT`/`INTERNAL_PORT`/`INTERNAL_HOST` against the task networking. |
 | `server_started` (info) | both listeners are up (`port`, `internalPort`) | — |
 | `redis_unavailable` (warn) / `redis_recovered` (info) | one line per Redis transition (the first `ready` at boot also logs `redis_recovered`) | Tier 2: requests continue with fallbacks; see `RateLimiterDegraded`. |
@@ -221,6 +221,10 @@ lifecycle rule still expires quarantine objects after 24 h. Do not delete final 
 3. Search Identity logs for the same id: every Care → Identity call forwards it.
 4. Audit rows carry `request_id`; `GET /api/audit-logs?entityType=consultation&entityId=<id>` shows the actions.
 5. Report findings with ids only.
+
+### Join or start answers 503 VideoUnavailable
+
+The video room provider failed or exceeded its 2 s bound while creating the room or issuing the join token (log `warn video_provider_failed`, fields `operation`, `code`; never a token or URL). No metric or alert is defined for it yet. Bookings, cancel, complete and no-show are unaffected. Before the commit nothing changed; after it the consultation is already `waiting` (patient) or `in_progress` (doctor) and the client repairs it by repeating `PATCH /api/consultations/{id}/join` (repeating `start` is `409 InvalidTransition` by design). Check the provider status and `VIDEO_PROVIDER_KEY`; never paste tokens into tickets.
 
 ### Check why a doctor is not bookable
 `GET /internal/doctors/{userId}/summary` (service token) or the admin application view: `isBookable` requires

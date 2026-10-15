@@ -5,6 +5,7 @@ import { buildConsultationsRouter } from "./app/consultations/routes";
 import { buildDoctorsRouter } from "./app/doctors/routes";
 import { buildPatientsRouter } from "./app/patients/routes";
 import { buildSchedulesRouter } from "./app/schedules/routes";
+import { buildSessionsRouter } from "./app/sessions/routes";
 import { buildSpecialtiesRouter } from "./app/specialties/routes";
 import { buildVerificationRouter } from "./app/verification/routes";
 
@@ -24,6 +25,8 @@ export function buildPublicRoutes(): Router {
     router.use(buildAuditRouter());
     // Self-owned `/patients/me`: before any future `GET /patients/:patientUserId` (consultations) so `me` is never captured.
     router.use(buildPatientsRouter());
+    // Sessions first: its literals `/consultations/waiting-room` and `/consultations/calendar` must precede `GET /consultations/:id`.
+    router.use(buildSessionsRouter());
     router.use(buildConsultationsRouter());
     return router;
 }

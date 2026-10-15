@@ -3,6 +3,7 @@ import type { Knex } from "knex";
 import { Consultation } from "../../../../src/app/consultations/entity/consultation.entity";
 import { ConsultationStatus } from "../../../../src/app/consultations/enums";
 import * as repo from "../../../../src/app/consultations/repository/consultations.repo";
+import { ConsultationRowsService } from "../../../../src/app/consultations/service/consultation-rows.service";
 import { ConsultationsService } from "../../../../src/app/consultations/service/consultations.service";
 import type { BookInput } from "../../../../src/app/consultations/types";
 import type { ConsultationType } from "../../../../src/app/schedules/entity/consultation-type.entity";
@@ -61,8 +62,8 @@ function setup(env: Partial<Env> = {}) {
     const enqueue = jest.fn().mockResolvedValue(undefined);
     const listener = { onConsultationChanged: jest.fn().mockImplementation(() => { events.push("listener"); return Promise.resolve(); }) };
     const service = new ConsultationsService(db, { record } as unknown as AuditRecorder,
-        { BOOKING_HORIZON_DAYS: 60, CANCELLATION_POLICY_MINUTES: 120, ...env } as Env, logger, clock,
-        doctors as never, schedules as never, { enqueue }, listener);
+        { BOOKING_HORIZON_DAYS: 60, CANCELLATION_POLICY_MINUTES: 120, ...env } as Env, clock,
+        doctors as never, schedules as never, { enqueue }, new ConsultationRowsService(db, logger, listener));
     const mocks = {
         findById: jest.spyOn(repo, "findById").mockResolvedValue(consultation()),
         findForUpdate: jest.spyOn(repo, "findByIdForUpdate").mockResolvedValue(consultation()),
