@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 tags: [api, reference, routes, rbac]
-related: [rbac, consultations-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
+related: [rbac, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
 
 # API — care-service (human view)
@@ -126,21 +126,21 @@ All admin routes: admin, token status `active`, 120/min per user, `no-store`. `a
 | GET | `/api/patients/{patientUserId}/records` | patient, doctor | consulted-patient-or-self (else 404) | clinical-read | **planned** (ships with `records`); timeline: profile + records newest first |
 
 ## consultations
-Live (2026-10-12, `consultations` module, [spec](../consultations/spec.md)): `POST` book, `GET` list, `GET /{id}`, `PATCH /{id}/reschedule`, `PATCH /{id}/cancel`; every response of the `/api/consultations` prefix is `no-store`, including parser-level `400`s and `401`s. The three writes require `Idempotency-Key` (Redis, 24 h; a replay returns the stored body; booking also replays from `uq_consultations_idempotency` after a Redis loss). A non-numeric `{id}` is `404`, not `400`. Rate limits: the three writes share 10/min per patient or doctor (admin 60/min), reads 120/min per user. `complaintText` is returned by get-one and by the actor's own write response, never by list items and never to admins; `cancelReason` is visible to participants and admins. List items are read through the `CONSULTATION_LIST_COLUMNS` projection. Write responses carry unhydrated `doctor`/`patient` participants (`profileHydrated: false`); list and get-one hydrate through Case 2. Planned rows (waiting-room, calendar, join, start, complete, no-show) belong to `sessions`.
+Live (2026-10-12, `consultations` module, [spec](../consultations/spec.md)): `POST` book, `GET` list, `GET /{id}`, `PATCH /{id}/reschedule`, `PATCH /{id}/cancel`; every response of the `/api/consultations` prefix is `no-store`, including parser-level `400`s and `401`s. The three writes require `Idempotency-Key` (Redis, 24 h; a replay returns the stored body; booking also replays from `uq_consultations_idempotency` after a Redis loss). A non-numeric `{id}` is `404`, not `400`. Rate limits: the three writes share 10/min per patient or doctor (admin 60/min), reads 120/min per user. `complaintText` is returned by get-one and by the actor's own write response, never by list items and never to admins; `cancelReason` is visible to participants and admins. List items are read through the `CONSULTATION_LIST_COLUMNS` projection. Write responses carry unhydrated `doctor`/`patient` participants (`profileHydrated: false`); list and get-one hydrate through Case 2. The six session routes (waiting-room, calendar, join, start, complete, no-show; live 2026-10-15, `sessions` module, [spec](../sessions/spec.md)) take no `Idempotency-Key` (the status guard makes a retry safe), are `no-store`, and never return `complaintText`. `join` and `start` share a 10/min per user bucket (`consultations-session-user`); `complete` and `no-show` use the write buckets; waiting-room and calendar the read bucket. `join`/`start` answer `503 VideoUnavailable` when the video provider fails or exceeds its 2 s bound (state unchanged before commit, repairable by repeating `join` after it). The session window is half-open `opensAt <= now < closesAt`; a terminal row answers `InvalidTransition` before `RoomNotOpen`. A locally suspended doctor gets `403` on all doctor session routes (an admin no-show is exempt).
 
 | Method | Path | Roles | Ownership | Idem | Audit / Case | Errors |
 |---|---|---|---|---|---|---|
 | POST | `/api/consultations` | patient (active, `emailVerified`) | self (`patient_user_id := auth.userId`) | **req** | `consultation.booked` | 400, 403 `EmailNotVerified`/`Forbidden`, 404, 409 `DoctorNotBookable`/`SlotUnavailable`, 422 `OutsideWorkingHours`/`BookingInPast`/`BeyondBookingHorizon`/`IdempotencyConflict`, 429 (10/min) |
 | GET | `/api/consultations` | patient, doctor, admin | own; admin all (no `complaintText`) | — | Case 2 degrade | filters `scope` (`upcoming`: `endsAt > now`, `past`: `endsAt <= now`, `all`; D-R8: an overdue `in_progress` row matches neither until `sessions`), `status`, `from`, `to`, `timezone`; admin-only `doctorUserId, patientUserId, needsAdminFollowup` (a non-admin gets `403`) |
-| GET | `/api/consultations/waiting-room` | doctor | self | — | Case 2 | literal path, not an id |
-| GET | `/api/consultations/calendar` | doctor | self | — | Case 2 | `from`, `to` (≤ 7 days), `timezone`; p95 < 200 ms |
+| GET | `/api/consultations/waiting-room` | doctor | self | — | Case 2 degrade | literal path, not an id; `booked`/`waiting` rows whose window is open now, `(startsAt, id)`, at most 100, not paginated; any query member `400`; `403` when suspended |
+| GET | `/api/consultations/calendar` | doctor | self | — | Case 2 | `from`, `to` required (`[from, to)`, `from < to`, at most 7 days inclusive, else `400`), optional `timezone` (echo of `from`/`to`); every status plus the doctor's exceptions (`exceptions[].date` doctor-local), at most 1000 rows; p95 < 200 ms |
 | GET | `/api/consultations/{id}` | patient, doctor, admin | participant-or-admin (else 404) | — | clinical-read (participants); Case 2 | admin view omits `complaintText` |
 | PATCH | `/api/consultations/{id}/reschedule` | patient, admin | patient-owner (outside window) or admin (reason) | **req** | admin-action | 409 `PolicyWindowViolation`/`InvalidTransition`/`DoctorNotBookable`/`SlotUnavailable`, 422 booking codes |
 | PATCH | `/api/consultations/{id}/cancel` | patient, doctor, admin | participant (doctor reason) or admin (reason) | **req** | admin-action | 409 `PolicyWindowViolation`/`InvalidTransition`, 422 |
-| PATCH | `/api/consultations/{id}/join` | patient, doctor | participant | — | `consultation.waiting` | 409 `RoomNotOpen`/`InvalidTransition` |
-| PATCH | `/api/consultations/{id}/start` | doctor | assigned-doctor | — | `consultation.started` | 409 `RoomNotOpen`/`InvalidTransition` |
-| PATCH | `/api/consultations/{id}/complete` | doctor | assigned-doctor | — | `consultation.completed` | 409 `InvalidTransition` |
-| PATCH | `/api/consultations/{id}/no-show` | doctor, admin | assigned-doctor or admin | — | admin-action | 409 `NoShowTooEarly`/`InvalidTransition` |
+| PATCH | `/api/consultations/{id}/join` | patient, doctor | participant | — | `consultation.waiting` (only on the patient `booked → waiting` transition; a doctor on `booked` or a re-join gets a token with no audit) | 200 `SessionJoin`, 409 `RoomNotOpen`/`InvalidTransition`, 503 `VideoUnavailable`, 429 (10/min) |
+| PATCH | `/api/consultations/{id}/start` | doctor | assigned-doctor | — | `consultation.started` (+ one `doctor_joined` outbox row) | 200 `SessionJoin`, 409 `RoomNotOpen`/`InvalidTransition` (a second `start` is `InvalidTransition`), 503 `VideoUnavailable`, 429 (10/min) |
+| PATCH | `/api/consultations/{id}/complete` | doctor | assigned-doctor | — | `consultation.completed` | 200, 409 `InvalidTransition` (only from `in_progress`; no window check), 429 |
+| PATCH | `/api/consultations/{id}/no-show` | doctor, admin | assigned-doctor or admin | — | admin-action (`consultation.no_show`; `noteLength` only, the optional `note` is not stored) | 200, 409 `NoShowTooEarly` (before `startsAt` + grace)/`InvalidTransition` (only from `booked`/`waiting`), 429 |
 
 ## records (admins are never allowed)
 | Method | Path | Roles | Ownership | Audit | Errors |

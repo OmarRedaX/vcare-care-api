@@ -17,7 +17,7 @@ Every variable is declared and validated in `lib/config/env.ts` (zod); only that
 `{"level":"error","message":"invalid_environment","keys":[…]}` on stderr naming the **keys only** (never values), then
 exit 1. Empty strings count as unset. **Secrets have no defaults.**
 
-### Implemented (foundation 2026-09-28; access 2026-10-02; doctors 2026-10-07; notifications 2026-10-12)
+### Implemented (foundation 2026-09-28; access 2026-10-02; doctors 2026-10-07; notifications 2026-10-12; sessions 2026-10-15)
 | Variable | Default | Secret | Purpose / rule |
 |---|---|---|---|
 | `NODE_ENV` | `development` | | `development` \| `test` \| `production`; gates dev CORS and the `LOG_LEVEL=debug` ban |
@@ -45,7 +45,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `NO_SHOW_GRACE_MINUTES` | `10` | | 0-1440; a no-show may be marked once now >= start + grace (Domain rule 11); read by `sessions` |
 | `WAITING_ROOM_OPEN_MINUTES` | `10` | | 0-240; the session window opens this long before the start (Domain rule 12) |
 | `SESSION_OVERRUN_MINUTES` | `15` | | 0-240; the session window stays open this long after the end |
-| `VIDEO_PROVIDER` | — | **yes, no default** | `fake` only; the factory refuses `fake` when `NODE_ENV=production` (sessions S-D1) |
+| `VIDEO_PROVIDER` | — | **yes, no default** | `fake` only; `createVideoProvider` refuses `fake` when `NODE_ENV=production` (sessions S-D1, SS-R22). The provider is registered lazily, so a production boot fails when the sessions router is built (`boot_failed`, `video_provider_fake_not_allowed_in_production`); `care-worker` never resolves it. Until a real adapter lands, `care-api` cannot boot with `NODE_ENV=production` (see the runbook) |
 | `VIDEO_PROVIDER_KEY` | — | **yes, no default, secret** | >= 32 chars; signs the fake provider join tokens; never logged |
 | `VIDEO_JOIN_TOKEN_TTL_SECONDS` | `300` | | 30-3600; join token life, capped at the window close |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10); exactly this many minutes before the start is still allowed; read by `consultations` (built 2026-10-12) |
@@ -68,15 +68,10 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 |---|---|---|---|
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
-| `NO_SHOW_GRACE_MINUTES` | `10` | | Domain rule 11 |
-| `WAITING_ROOM_OPEN_MINUTES` | `10` | | Domain rule 12 (window opens before start) |
-| `SESSION_OVERRUN_MINUTES` | `15` | | Domain rule 12 (window closes after end) |
 | `SLOT_CACHE_TTL_SECONDS` | `60` | | must be ≤ 60 |
 | `NEXT_AVAILABLE_CACHE_TTL_SECONDS` | `300` | | |
 | `UPLOAD_MAX_BYTES` | `10485760` | | 10 MB cap |
-| `VIDEO_PROVIDER_URL` | provider base URL | | room provider behind `lib/video` |
-| `VIDEO_PROVIDER_KEY` | — | **yes, no default** | |
-| `VIDEO_JOIN_TOKEN_TTL_SECONDS` | `300` | | per-participant token lifetime |
+| `VIDEO_PROVIDER_URL` | provider base URL | | room provider behind `lib/video`; declared by the real adapter's unit (sessions ships the fake adapter only) |
 | `EMAIL_PROVIDER_URL` | provider base URL | | behind `lib/email` |
 | `EMAIL_PROVIDER_KEY` | — | **yes, no default** | |
 | `EMAIL_FROM` | `no-reply@vcare.example.test` | | |

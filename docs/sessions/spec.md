@@ -3,8 +3,8 @@ title: sessions — Spec
 owner: care-team
 service: care-service
 module: sessions
-status: ready
-version: 0.1.0
+status: implemented
+version: 0.2.0
 diataxis: reference
 last_verified: 2026-10-15
 tags: [spec, sessions, lifecycle, join, start, complete, no-show, waiting-room, calendar, video-port, case-2]
@@ -370,3 +370,19 @@ No undecided design question remains. Pending actions follow.
 7. `policies.ts`; controller; `routes.ts`; mount before the consultations router.
 8. Tests (unit, integration, RBAC, contract, concurrency, EXPLAIN, log hygiene).
 9. Manual QA with CURL (`scripts/curl-test-sessions.sh`, fake Identity reused), docs (section 11 list).
+
+---
+
+## 13. As-built notes (2026-10-15, v0.2.0)
+The design above is implemented as specified (six routes, no migration, contract edits V1-V9 applied, code and contract verified to agree on paths, roles, status codes and error codes). Intentional or incidental divergences, none of which changes a contract shape:
+
+1. **No `sessions/enums.ts`.** The session audit actions live in `ConsultationAuditAction` (section 3.9), so the file would be empty.
+2. **No `WaitingRoomQueryDto`.** A property-less class-validator DTO cannot reject unknown members; the controller uses the shared `assertEmptyBody(req.query)` and any query member answers `400 ValidationFailed`.
+3. **Listener injection.** `SessionsService` does not inject `ConsultationChangeListener`; the guarded after-commit call is `ConsultationRowsService.notifyChanged`, and `ConsultationsService` now uses it too (its constructor takes `ConsultationRowsService` in place of `Logger` and the listener).
+4. **`VideoUnavailable` registration.** Added to `ErrorCode`/`ERROR_CODES` (`lib/error/types.ts`) and to the handled 5xx set in `errorHandler.ts` (logged as `handled_error` warn, not `unhandled_error`). A provider failure also logs `video_provider_failed` (warn; `operation`, `code` only).
+5. **Lazy provider registration.** The video provider is registered with `instanceCachingFactory`, so a production boot with `VIDEO_PROVIDER=fake` fails when the sessions router is built at boot (`boot_failed`, `video_provider_fake_not_allowed_in_production`); `care-worker` never resolves it. Consequence: the repo's `docker-compose.yml` runs `care-api` with `NODE_ENV=production` and `VIDEO_PROVIDER=fake`, so that service does not boot until the owner decides how the local stack selects the fake or a real adapter lands (pending owner decision, see `tasks.md`).
+6. **Malformed JSON on bodyless routes.** join, start, complete and the waiting-room declare `400 ValidationFailed` in the contract (the global body parser rejects malformed JSON before the handler); a well-formed body is ignored. Covered by a test (commit c793e33).
+7. **Contract lint.** `npx -y @redocly/cli lint contracts/openapi.yaml` valid with 8 pre-existing warnings.
+8. **CLAUDE.md is not edited by this unit.** It still lacks the `VideoUnavailable | 503` row in "Error codes owned by Care" and the widened "503" status-code line (owner edit, spec V1).
+
+Verification: unit and contract tests (`tests/unit/app/sessions/*`, `tests/unit/contract/sessions-contract.test.ts`, `lib/video`, `hydrate`, `session-window`, env), integration tests (`tests/integration/sessions*.test.ts`, including EXPLAIN and log hygiene) and manual QA (279 pass, 0 fail; see [manual-qa.md](./manual-qa.md)). The code review of 2026-10-15 09:35 was verified clean and its file deleted.
