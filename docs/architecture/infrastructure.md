@@ -42,6 +42,12 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `IDENTITY_SYNC_POLL_SECONDS` / `IDENTITY_SYNC_RETRY_CAP_SECONDS` / `IDENTITY_SYNC_ALERT_AFTER_SECONDS` | `10` / `60` / `900` | | Validated positive integer worker intervals |
 | `UPLOAD_INTENT_PURGE_SECONDS` | `300` | | Validated positive integer: the `upload-intent-purge` loop interval |
 | `BOOKING_HORIZON_DAYS` | `60` | | 1–365; furthest bookable start from now (Domain rule 3); read by `consultations` (built 2026-10-12) |
+| `NO_SHOW_GRACE_MINUTES` | `10` | | 0-1440; a no-show may be marked once now >= start + grace (Domain rule 11); read by `sessions` |
+| `WAITING_ROOM_OPEN_MINUTES` | `10` | | 0-240; the session window opens this long before the start (Domain rule 12) |
+| `SESSION_OVERRUN_MINUTES` | `15` | | 0-240; the session window stays open this long after the end |
+| `VIDEO_PROVIDER` | — | **yes, no default** | `fake` only; the factory refuses `fake` when `NODE_ENV=production` (sessions S-D1) |
+| `VIDEO_PROVIDER_KEY` | — | **yes, no default, secret** | >= 32 chars; signs the fake provider join tokens; never logged |
+| `VIDEO_JOIN_TOKEN_TTL_SECONDS` | `300` | | 30-3600; join token life, capped at the window close |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10); exactly this many minutes before the start is still allowed; read by `consultations` (built 2026-10-12) |
 | `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | `CORS_ORIGINS` | `""` (none) | | comma-separated origins (`scheme://host[:port]`, no path), honoured only when `NODE_ENV=development`; production is single-origin with CORS disabled (hub ADR 0005). `.env.example` sets `http://localhost:5173` |

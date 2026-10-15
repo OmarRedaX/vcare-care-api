@@ -7,7 +7,8 @@ const SECRET_REDIS = "redis://:synthetic-redis-pass-4417@localhost:6381/0";
 const JWKS_URL = "http://127.0.0.1:1/.well-known/jwks.json";
 const newRequired = { IDENTITY_INTERNAL_URL: "http://localhost:3100", SERVICE_CLIENT_ID: "synthetic-care",
     SERVICE_CLIENT_SECRET: "synthetic-secret", STORAGE_BUCKET: "care-test", STORAGE_REGION: "us-east-1",
-    STORAGE_ENDPOINT: "http://localhost:9003", STORAGE_ACCESS_KEY_ID: "synthetic-access", STORAGE_SECRET_ACCESS_KEY: "synthetic-storage-secret" };
+    STORAGE_ENDPOINT: "http://localhost:9003", STORAGE_ACCESS_KEY_ID: "synthetic-access", STORAGE_SECRET_ACCESS_KEY: "synthetic-storage-secret",
+    VIDEO_PROVIDER: "fake", VIDEO_PROVIDER_KEY: "synthetic-video-provider-key-0123456789abcdef" };
 const parseEnv = (source: EnvSource) => parseEnvRaw({ ...newRequired, ...source });
 
 const secretsOnly = (): EnvSource => ({ DATABASE_URL: SECRET_DB, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
@@ -53,6 +54,10 @@ describe("lib/config/env parseEnv", () => {
             REMINDER_SCAN_SECONDS: 60,
             BOOKING_HORIZON_DAYS: 60,
             CANCELLATION_POLICY_MINUTES: 120,
+            NO_SHOW_GRACE_MINUTES: 10,
+            WAITING_ROOM_OPEN_MINUTES: 10,
+            SESSION_OVERRUN_MINUTES: 15,
+            VIDEO_JOIN_TOKEN_TTL_SECONDS: 300,
             AUDIT_PARTITION_MONTHS_AHEAD: 2,
             CORS_ORIGINS: [],
             LOG_LEVEL: "info",
@@ -329,5 +334,26 @@ describe("verification storage and worker environment", () => {
         expect(production.STORAGE_ACCESS_KEY_ID).toBeUndefined();
         expect(production.STORAGE_ENDPOINT).toBeUndefined();
         expect(parseEnv({ ...secretsOnly(), NODE_ENV: "test", UPLOAD_POLICY_TTL_SECONDS: "30" }).UPLOAD_POLICY_TTL_SECONDS).toBe(30);
+    });
+
+    it("should name VIDEO_PROVIDER and VIDEO_PROVIDER_KEY when they are missing (no defaults)", () => {
+        expect(captureInvalid({ ...secretsOnly(), VIDEO_PROVIDER: "" }).keys).toEqual(["VIDEO_PROVIDER"]);
+        expect(captureInvalid({ ...secretsOnly(), VIDEO_PROVIDER_KEY: "" }).keys).toEqual(["VIDEO_PROVIDER_KEY"]);
+    });
+
+    it("should reject an unknown provider and a key shorter than 32 characters without echoing the value", () => {
+        expect(captureInvalid({ ...secretsOnly(), VIDEO_PROVIDER: "twilio" }).keys).toEqual(["VIDEO_PROVIDER"]);
+        const error = captureInvalid({ ...secretsOnly(), VIDEO_PROVIDER_KEY: "synthetic-short-key-3321" });
+        expect(error.keys).toEqual(["VIDEO_PROVIDER_KEY"]);
+        expect(`${error.message} ${JSON.stringify(error)}`).not.toContain("synthetic-short-key-3321");
+    });
+
+    it("should bound the session settings", () => {
+        expect(captureInvalid({ ...secretsOnly(), NO_SHOW_GRACE_MINUTES: "-1" }).keys).toEqual(["NO_SHOW_GRACE_MINUTES"]);
+        expect(captureInvalid({ ...secretsOnly(), WAITING_ROOM_OPEN_MINUTES: "241" }).keys).toEqual(["WAITING_ROOM_OPEN_MINUTES"]);
+        expect(captureInvalid({ ...secretsOnly(), SESSION_OVERRUN_MINUTES: "241" }).keys).toEqual(["SESSION_OVERRUN_MINUTES"]);
+        expect(captureInvalid({ ...secretsOnly(), VIDEO_JOIN_TOKEN_TTL_SECONDS: "29" }).keys).toEqual(["VIDEO_JOIN_TOKEN_TTL_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), VIDEO_JOIN_TOKEN_TTL_SECONDS: "3601" }).keys).toEqual(["VIDEO_JOIN_TOKEN_TTL_SECONDS"]);
+        expect(parseEnv({ ...secretsOnly(), NO_SHOW_GRACE_MINUTES: "0" }).NO_SHOW_GRACE_MINUTES).toBe(0);
     });
 });

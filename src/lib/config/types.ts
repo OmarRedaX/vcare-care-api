@@ -39,6 +39,13 @@ export interface Env {
     REMINDER_SCAN_SECONDS: number;
     BOOKING_HORIZON_DAYS: number;
     CANCELLATION_POLICY_MINUTES: number;
+    NO_SHOW_GRACE_MINUTES: number;
+    WAITING_ROOM_OPEN_MINUTES: number;
+    SESSION_OVERRUN_MINUTES: number;
+    VIDEO_PROVIDER: "fake";
+    /** SECRET: signs the fake provider join tokens; never logged. */
+    VIDEO_PROVIDER_KEY: string;
+    VIDEO_JOIN_TOKEN_TTL_SECONDS: number;
     AUDIT_PARTITION_MONTHS_AHEAD: number;
     CORS_ORIGINS: string[];
     LOG_LEVEL: LogLevel;
