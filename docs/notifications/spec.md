@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 module: notifications
 status: implemented
-version: 0.2.0
+version: 0.3.0
 diataxis: reference
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 tags: [spec, notifications, outbox, worker, reminders, email-port, templates, identity-contacts, case-5]
 related: [notifications-brainstorm, notifications-tasks, notifications-manual-qa, consultations-spec, admin-doctors-spec, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, data-model, resilience, infrastructure, integration, deployment, hub-adr-0010-notification-contact-lookup]
 contracts: [contracts/openapi.yaml]
@@ -29,7 +29,7 @@ Binding rules: CLAUDE.md → "Cross-service integration" (Notifications paragrap
 ### 1.1 What this unit delivers
 | Area | Delivers |
 |---|---|
-| Migrations | `20261012120000_notification_outbox_delivery` (kind CHECK widened, shape CHECKs, claim + purge indexes, column-level `UPDATE` + `DELETE` grants) · `20261012120100_consultations_reminder_index` |
+| Migrations | `20261012120000_notification_outbox_delivery` (kind CHECK widened, shape CHECKs, claim + purge indexes, column-level `UPDATE` + `DELETE` grants) · `20261012120100_consultations_reminder_index` · `20261015120000_notification_outbox_pending_created_at_index` · `20261015120100_notification_outbox_delete_sent_only` (review 2026-10-15, section 2.4) |
 | Worker loops (`src/worker-loops.ts`) | `notification-outbox` (poll `OUTBOX_POLL_SECONDS`, 5) · `consultation-reminders` (`REMINDER_SCAN_SECONDS`, 60) · `notification-outbox-purge` (`OUTBOX_PURGE_SECONDS`, 3600). Each runs with `node dist/worker.js --once <loop>` |
 | `lib/email` | `EmailPort`, `LogEmailAdapter`, `types.ts` |
 | `lib/identity-client` | `getContacts(ids, requestId)`, a second `ServiceTokenCache` with `CONTACT_SERVICE_SCOPES`, contact DTOs |
@@ -63,7 +63,7 @@ Binding rules: CLAUDE.md → "Cross-service integration" (Notifications paragrap
 ### 1.5 Design decisions made in this spec
 | ID | Decision | Why |
 |---|---|---|
-| N-D1 | A failed **contacts lookup does not consume an attempt** (`attempts` reverts, backoff driven by a per-loop in-memory consecutive-failure count, same schedule). `dead` is reached only by send failures, crash loops (lease expiries), or a permanent provider rejection. | ADR 0011 calls the lookup failure "delay only"; consuming attempts would turn an Identity outage of a few hours into `dead` rows. A permanent misconfiguration is surfaced by the lag alert and `identity_call_failed{case=contacts}`. |
+| N-D1 | A failed **contacts lookup does not consume an attempt** (`attempts` reverts, backoff driven by a per-loop in-memory consecutive-failure count, same schedule). `dead` is reached only by send failures, crash loops (lease expiries), or a permanent provider rejection. **The count is per tick, not per batch:** a batch whose lookup failed ends the tick, so one outage is one backoff step and the remaining due rows stay due; a clean lookup resets the count (review 2026-10-15, Medium 1). | ADR 0011 calls the lookup failure "delay only"; consuming attempts would turn an Identity outage of a few hours into `dead` rows. Escalating per claimed batch would park later batches for up to 30 minutes after a seconds-long blip. A permanent misconfiguration is surfaced by `notification_contacts_forbidden` and the stale-pending gauge (N-D11). |
 | N-D2 | **Lease-based claim.** One autocommit statement selects due rows `FOR UPDATE SKIP LOCKED`, sets `attempts = attempts + 1` and `next_attempt_at = now + 300 s`, and returns them. The row stays `pending`; the lease is its future `next_attempt_at`. Results are written with a guard `status='pending' AND attempts = <claimed attempts>`. | SKIP LOCKED only protects within a transaction; a lease lets the I/O happen with no transaction open, survives a crash (the lease expires and the row is due again), and the guard stops a slow worker overwriting a re-claimed row. |
 | N-D3 | Each send outcome is persisted **immediately** (single-row guarded `UPDATE`), not at the end of the batch. | Shrinks the duplicate window after a crash to the one in-flight email. |
 | N-D4 | `OUTBOX_PAYLOAD_KEYS` is **unchanged** (`startsAt`, `endsAt`, `previousStartsAt`, `byRole`, `recipientRole`). `doctor_suspended` and the reminders use only these. | No reason text, no new key to review. |
@@ -71,6 +71,10 @@ Binding rules: CLAUDE.md → "Cross-service integration" (Notifications paragrap
 | N-D6 | A reminder whose consultation is within 1 h is sent as the 1 h reminder only; an unstamped 24 h reminder is stamped without a message (superseded). | A "within 24 hours" mail 30 minutes before start is noise. |
 | N-D7 | A **permanent** provider answer (`outcome: "permanent"`) marks the row `dead` immediately. | Retrying cannot fix it. The log adapter never returns it. |
 | N-D8 | `care-worker` pool max rises from 4 to 6. | Three new loops each hold at most one connection at a time, and the existing session-advisory-lock purge pins one. |
+| N-D10 | A database failure **after the claim and before any send** hands every claimed row back (`attempts - 1`, `next_attempt_at = now`, guarded on the claim number) on a best-effort basis, then rethrows; a failure while persisting an outcome hands back the rows not yet sent. | Infrastructure errors must not consume attempts (N-D1) or dead-letter rows that were never tried (N-R19). The row whose outcome write failed after its send is left to its lease (at-least-once). |
+| N-D11 | Two signals make a stuck outbox visible even when every row is in backoff: gauge `notification_outbox_oldest_pending_age_seconds` (`MIN(created_at)` of `pending` rows, due or not; index `idx_notification_outbox_pending_created_at`) and, for a failure that retrying cannot fix without an operator (HTTP 401, HTTP 403, token without `users:contact:read`), the `notification_contacts_forbidden` error log and counter. The due-lag gauge `notification_outbox_lag_seconds` is unchanged. | A delayed row has a future `next_attempt_at`, so the due-lag gauge reads 0 during exactly the outages it was meant to detect (review 2026-10-15, Medium 2). Rows still never go `dead` for a contacts failure. |
+| N-D12 | `OUTBOX_BATCH_SIZE` is capped at **59** so that `batch x EMAIL_SEND_TIMEOUT_MS + 2 s` stays below `OUTBOX_LEASE_SECONDS` (300). | A batch longer than the lease is re-claimed mid-batch and duplicates emails (review Low 4). |
+| N-D13 | The reminder scan skips a message when a `pending` or `sent` row with the same kind, consultation, recipient and payload `startsAt` already exists (one extra `SELECT` per iteration); the reminder columns are still stamped. | A reschedule A to B to A re-arms the stamps while the first reminder for A can still be queued (review Low 11, N-R11). |
 | N-D9 | The reminder 24 h message re-arms after a reschedule (ADR 0011) and can fire at the next scan when the new start is within 24 h, even though the `rescheduled` mail just went out. Accepted: the 1 h reminder is the valuable one. | "Booked inside the window" is judged by `created_at` only (no reschedule timestamp exists). |
 
 ---
@@ -121,6 +125,25 @@ CREATE INDEX idx_consultations_booked_starts_at ON consultations (starts_at) WHE
 ```
 `down`: `DROP INDEX IF EXISTS idx_consultations_booked_starts_at;`. `consultations` already grants table-level `UPDATE` to `vcare_app`; no grant change. The 24 h query reads the index range of the next 24 h and filters the stamp column on the heap; the 1 h query range is tiny. Revisit with per-column partial indexes only if the `EXPLAIN` test (section 9) shows the heap filter above budget.
 
+### 2.4 Review-fix migrations (2026-10-15; owner role; raw SQL; real `down`; grants unchanged)
+```sql
+-- 20261015120000_notification_outbox_pending_created_at_index
+-- Stale-pending gauge (every outbox tick): SELECT MIN(created_at) FROM notification_outbox WHERE status = 'pending'
+CREATE INDEX idx_notification_outbox_pending_created_at ON notification_outbox (created_at) WHERE status = 'pending';
+
+-- 20261015120100_notification_outbox_delete_sent_only
+CREATE FUNCTION notification_outbox_delete_sent_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.status <> 'sent' THEN
+        RAISE EXCEPTION 'notification_outbox rows can be deleted only when status = sent' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN OLD;
+END $$;
+CREATE TRIGGER trg_notification_outbox_delete_sent_only BEFORE DELETE ON notification_outbox
+    FOR EACH ROW EXECUTE FUNCTION notification_outbox_delete_sent_only();
+```
+`down` drops the trigger and function (resp. the index). The trigger must be dropped before `20261012120000` goes down (its `down` deletes `doctor_suspended` rows). The table-wide `DELETE` grant of 2.1 is kept; the trigger narrows what it can remove (a delete of a `pending`, `dead` or `skipped` row fails with SQLSTATE `23514`). Tests: `migrations.test.ts` (care_app deletes a `sent` row and is refused for the other three statuses; grants unchanged; round trip).
+
 ### 2.3 Migration tests (`tests/integration/migrations.test.ts`)
 Round-trip both migrations (`down` then `up`); named constraints and both indexes exist; `doctor_suspended` insert accepted, an unknown kind rejected (`23514`); `status='sent'` with `sent_at NULL` rejected; as `care_app`: `UPDATE (status, attempts, next_attempt_at, last_error_code, sent_at)` allowed, `UPDATE payload` / `UPDATE kind` denied (`42501`), `DELETE` allowed, `INSERT` still allowed.
 
@@ -162,19 +185,19 @@ export interface EmailPort { send(message: EmailMessage, signal: AbortSignal): P
 - `IdentityClient` gets a **second** `ServiceTokenCache({ pool, env, now, scopes: CONTACT_SERVICE_SCOPES })` (`contactTokens`), constructed with the client but fetching nothing until `getContacts` runs, so `care-api` never requests the scope. `authorizedRequest(method, path, requestId, body?, tokens = this.tokens)` is parameterised by the cache; the 401 path invalidates and refreshes **that** cache once.
 - `getContacts(ids: readonly number[], requestId: string): Promise<ContactsResult>` with `ContactsResult = { contacts: Map<number, Contact>; unavailable: Set<number> }` and `Contact = { email: string; fullName: string; locale: string; status: IdentityStatus }`.
 - Ids are de-duplicated, filtered to positive safe integers, and split into chunks of **≤ 100** (`GET /internal/users/contacts?ids=1,2,3`). One attempt per chunk (landscape: 1 per batch), timeouts 2 s (headers, body, `AbortSignal.timeout`), `X-Request-Id` forwarded.
-- Response validated through `ContactsEnvelopeDto` (`success === true`, `data` array ≤ 100 of `UserContactDto`: `id` positive int, `email` `@IsEmail()`, `fullName` non-empty string, `locale` non-empty string, `status` one of the four). `unknownMembers: "strip"` for envelopes as elsewhere. Any entry failing validation, an id not in the requested chunk, or a duplicate id makes the **whole chunk** malformed.
+- Response validated through `ContactsEnvelopeDto` (`success === true`, `data` array ≤ 100 of `UserContactDto`: `id` positive int, `email` `@IsEmail()`, `fullName` non-empty string, `locale` non-empty string, `status` one of the four). `unknownMembers: "strip"` for envelopes as elsewhere. The envelope (`success === true`, `data` an array of at most 100) is validated first; **each entry is then validated on its own** against `UserContactDto` (review Low 3). An entry that fails validation, or an id that appears twice, makes only **that id** `unavailable` (its rows are delayed; neighbours are delivered). An entry whose `id` is not one of the requested ids, or has no usable `id`, cannot be attributed to a row and makes the **whole chunk** malformed.
 - **Classification.**
   - `200` valid: ids absent from `data` are *unknown* (caller marks `skipped`); present ids go in `contacts` (status checked by the caller).
   - Everything else puts the chunk's ids in `unavailable` (transient, rows are delayed): network error, timeout, `5xx`, `429`, `401` after the one refresh, `403 InsufficientScope`, a token-endpoint failure (including a token without the scope: `ServiceTokenCache` throws `MalformedResponse`), `400`, malformed `200`. `400`/`403` are treated as transient on purpose: the fix is operational, the rows are safe, and the lag alert plus the metric below surface it.
-- A failed chunk emits `logger.warn("notification_contacts_unavailable", { errorCode, ids: <count> })` and `logger.metric("identity_call_failed", 1, { case: "contacts" })`. Neither body, address, nor name is ever passed to the logger.
+- A failed chunk emits `logger.warn("notification_contacts_unavailable", { errorCode, ids: <count> })` and `logger.metric("identity_call_failed", 1, { case: "contacts" })`; isolated bad entries emit the same warn with `errorCode: "MalformedEntry"` and the number of entries. A failure of class **forbidden** (HTTP `401` after the one refresh, HTTP `403`, or a token without `users:contact:read`, error code `InsufficientScope`) additionally emits `logger.error("notification_contacts_forbidden", { errorCode })` and `logger.metric("notification_contacts_forbidden", 1, {})` (N-D11); rows are still only delayed. Neither body, address, nor name is ever passed to the logger.
 - **No cache, no storage:** no Redis call, no module-level or instance-level memo; the `Map` is returned to the caller and dropped with the batch. Responses are `Cache-Control: no-store` (provider contract); the client does not rely on it.
 
 ### 3.4 `OutboxDeliveryService` (`worker`, loop `notification-outbox`)
 Dependencies: `Knex` (worker pool), `IdentityClient`, `EmailPort`, `ConsultationDeliveryPort`, `Env`, `Logger`, `NotificationTiming { now(): number; random(): number }` (production `SYSTEM_NOTIFICATION_TIMING`, tests a fake), plus a per-loop `contactFailures` counter.
 
-**Tick** (`tick(signal)`): emit `notification_outbox_lag_seconds`; then up to `OUTBOX_MAX_ROUNDS` (10) rounds of claim -> process; stop on an empty or short batch or when `signal.aborted` (the current batch finishes). Returns `"done"`; it throws only on database failure (the runner logs `worker_tick_failed`).
+**Tick** (`tick(signal)`): emit `notification_outbox_lag_seconds`; then up to `OUTBOX_MAX_ROUNDS` (10) rounds of claim -> process; stop on an empty or short batch, **after a batch whose contacts lookup failed (N-D1)**, or when `signal.aborted` (the current batch finishes). Returns `"done"`; it throws only on database failure (the runner logs `worker_tick_failed`).
 
-1. **Lag.** `SELECT MIN(next_attempt_at) FROM notification_outbox WHERE status='pending' AND next_attempt_at <= $now` -> `metric("notification_outbox_lag_seconds", seconds, {})` (0 when none). Leased rows have a future `next_attempt_at` and do not count; an expired lease does.
+1. **Lag and stale gauges.** `SELECT MIN(next_attempt_at) FROM notification_outbox WHERE status='pending' AND next_attempt_at <= $now` -> `metric("notification_outbox_lag_seconds", seconds, {})` (0 when none). Leased rows and rows in backoff have a future `next_attempt_at` and do not count; an expired lease does. Then `SELECT MIN(created_at) FROM notification_outbox WHERE status='pending'` -> `metric("notification_outbox_oldest_pending_age_seconds", seconds, {})` (0 when none; counts every `pending` row, so it rises during a contacts outage, N-D11).
 2. **Claim** (one autocommit statement, no explicit transaction):
 ```sql
 WITH due AS (
@@ -188,7 +211,7 @@ SET attempts = o.attempts + 1, next_attempt_at = $1::timestamptz + make_interval
 FROM due WHERE o.id = due.id
 RETURNING o.id, o.kind, o.consultation_id, o.recipient_user_id, o.payload, o.attempts, o.request_id
 ```
-`$1` = injected now, `$2` = `OUTBOX_BATCH_SIZE`, `$3` = lease 300 s (constant `OUTBOX_LEASE_SECONDS`; exceeds the worst case of one contacts call plus 20 sequential 5 s sends). Rows are sorted by id in memory. `attempts` after the update is the **claim number** `n` and the lease token.
+`$1` = injected now, `$2` = `OUTBOX_BATCH_SIZE`, `$3` = lease 300 s (constant `OUTBOX_LEASE_SECONDS`; must exceed `OUTBOX_BATCH_SIZE x 5 s + 2 s`, which the env cap of 59 guarantees, N-D12). Rows are sorted by id in memory. `attempts` after the update is the **claim number** `n` and the lease token.
 3. **Crash-loop guard.** A claimed row with `n > OUTBOX_MAX_ATTEMPTS` (only reachable through repeated lease expiries) is finished `dead` / `lease_expired` without sending.
 4. **Re-check consultation state** (one query via the port, `id = ANY($1)`, plus a `LEFT JOIN doctor_profiles` for the doctor timezone; includes soft-deleted rows): see `DeliveryContext = { status, startsAt, endsAt, patientUserId, doctorUserId, patientTimezone, doctorTimezone | null, deleted }`. Pre-send `skipped` outcomes, written in **one batched guarded statement**:
    - consultation missing -> `consultation_missing`;
@@ -198,7 +221,7 @@ RETURNING o.id, o.kind, o.consultation_id, o.recipient_user_id, o.payload, o.att
    - recipient is neither the consultation's patient nor its doctor -> `consultation_changed`;
    - no template for (kind, role) -> `template_missing`.
    Event notifications (`booking_confirmed`, `rescheduled`, `cancelled`, `schedule_blocked`, `doctor_suspended`, `doctor_joined`) describe something that happened and are sent even if the consultation has since moved on.
-5. **Contacts**: one `getContacts(distinct recipient ids of the remaining rows, newRequestId)`. Rows whose id is in `unavailable` get the **delay outcome** (N-D1): `attempts` reverts by 1 (`attempts_delta = -1`), `next_attempt_at = now + exponentialBackoffMs(30 s base, contactFailures, cap 30 min, random)`, `last_error_code = 'contacts_unavailable'`, and `contactFailures` increments once per failed batch (reset to 0 on any fully successful lookup). Rows whose id is absent -> `skipped` / `recipient_unknown`; contact `status <> 'active'` -> `skipped` / `recipient_inactive` (batched with the other skips).
+5. **Contacts**: one `getContacts(distinct recipient ids of the remaining rows, newRequestId)`. Rows whose id is in `unavailable` get the **delay outcome** (N-D1): `attempts` reverts by 1 (`attempts_delta = -1`), `next_attempt_at = now + exponentialBackoffMs(30 s base, contactFailures, cap 30 min, random)`, `last_error_code = 'contacts_unavailable'`, and `contactFailures` increments **once per tick** (the failed batch ends the tick; reset to 0 on any fully successful lookup). Rows whose id is absent -> `skipped` / `recipient_unknown`; contact `status <> 'active'` -> `skipped` / `recipient_inactive` (batched with the other skips).
 6. **Render** (pure, section 3.6) and **send**, sequentially per row:
    ```ts
    const result = await settleWithin(safeSend(port, message, signal), EMAIL_SEND_TIMEOUT_MS /*5000*/, TIMEOUT_RESULT)
@@ -209,7 +232,8 @@ RETURNING o.id, o.kind, o.consultation_id, o.recipient_user_id, o.payload, o.att
    - `transient` and `n < OUTBOX_MAX_ATTEMPTS` -> stays `pending`, `next_attempt_at = now + exponentialBackoffMs(30 000, n - 1, 1 800 000, random)`, `last_error_code = errorCode` (delays 30 s, 60 s, 120 s, 240 s, 480 s, 960 s, 1 800 s ±20 %);
    - `transient` and `n >= OUTBOX_MAX_ATTEMPTS` -> `dead`; `permanent` -> `dead` (N-D7).
    Guard for every write: `WHERE id = $id AND status = 'pending' AND attempts = $n`. Zero rows updated means the lease was lost: log `notification_lease_lost`, change nothing.
-8. **Crash after send, before step 7:** the lease expires (<= 300 s), the row is claimed again with `attempts + 1`, and the email is sent again (at-least-once). A worker that comes back late fails its guard and writes nothing.
+8. **Infrastructure failure before the first send** (consultation lookup, contacts call or the pre-send write throws): every claimed row of the batch is released (`attempts_delta = -1`, `next_attempt_at = now`, `status` unchanged, `last_error_code = NULL`, guarded on the claim number), best effort, logged as `notification_claim_released` (`notification_claim_release_failed` when that write fails too); the original error is rethrown. A throw while persisting an outcome releases the rows that were not yet sent (N-D10).
+9. **Crash after send, before step 7:** the lease expires (<= 300 s), the row is claimed again with `attempts + 1`, and the email is sent again (at-least-once). A worker that comes back late fails its guard and writes nothing.
 
 The `UPDATE` is built once in the repository (`finishRows`, arrays via `unnest`; `finishRow` calls it with one element):
 ```sql
@@ -232,10 +256,11 @@ Inside the transaction (`now` = injected clock):
 3. In memory, per consultation and per reminder kind decide **enqueue** or **stamp only**:
    - 1 h: stamp only when `created_at >= starts_at - 1 h` (booked inside the window: the confirmation covers it); else enqueue.
    - 24 h: stamp only when `created_at >= starts_at - 24 h` **or** `starts_at - now <= 1 h` (N-D6); else enqueue.
-4. `NotificationsService.enqueue(trx, messages)`: for every enqueue decision **two** messages (patient, doctor), kind `reminder_24h` / `reminder_1h`, payload `{ startsAt, endsAt, recipientRole }` (ISO UTC). One multi-row `INSERT`. `request_id` is NULL (no request context).
-5. `stampReminders(trx, ids24, ids1, now)`: `UPDATE consultations SET reminder_24h_sent_at = $now WHERE id = ANY($1) AND status='booked' AND deleted_at IS NULL AND reminder_24h_sent_at IS NULL`, and the same for the 1 h column. `updated_at` is **not** touched (a stamp is not a business change).
+4. `findQueuedReminders(consultationIds, trx)`: `SELECT kind, consultation_id, recipient_user_id, payload->>'startsAt' FROM notification_outbox WHERE consultation_id = ANY($1) AND kind IN ('reminder_24h','reminder_1h') AND status IN ('pending','sent')` (index `idx_notification_outbox_consultation_id`). A message whose (kind, consultation, recipient, `startsAt`) is already queued or sent is dropped (N-D13).
+5. `NotificationsService.enqueue(trx, messages)`: for every remaining enqueue decision **two** messages (patient, doctor), kind `reminder_24h` / `reminder_1h`, payload `{ startsAt, endsAt, recipientRole }` (ISO UTC). One multi-row `INSERT`. `request_id` is NULL (no request context).
+6. `stampReminders(trx, ids24, ids1, now)`: `UPDATE consultations SET reminder_24h_sent_at = $now WHERE id = ANY($1) AND status='booked' AND deleted_at IS NULL AND reminder_24h_sent_at IS NULL`, and the same for the 1 h column. `updated_at` is **not** touched (a stamp is not a business change).
 
-Statements per iteration: 2 selects + 1 insert + up to 2 updates (<= 5), independent of the number of rows. Because rows are locked `FOR UPDATE OF c SKIP LOCKED` and stamped in the transaction that enqueues, two workers or a concurrent reschedule/cancel cannot produce a duplicate or half-applied reminder; a locked row is simply picked up by the next scan. A reschedule resets both columns in its own transaction (already built); the stale messages it leaves are dropped at claim time (3.4 step 4). Cancel needs no cleanup. Metrics: `notification_reminders_enqueued` (consultation-kinds enqueued, dim `kind`).
+Statements per iteration: 3 selects + 1 insert + up to 2 updates (<= 6), independent of the number of rows. Because rows are locked `FOR UPDATE OF c SKIP LOCKED` and stamped in the transaction that enqueues, two workers or a concurrent reschedule/cancel cannot produce a duplicate or half-applied reminder; a locked row is simply picked up by the next scan. A reschedule resets both columns in its own transaction (already built); the stale messages it leaves are dropped at claim time (3.4 step 4). Cancel needs no cleanup. Metrics: `notification_reminders_enqueued` (consultation-kinds enqueued, dim `kind`).
 
 The scan does not check recipients' Identity status; delivery does.
 
@@ -243,7 +268,7 @@ The scan does not check recipients' Identity status; delivery does.
 - `registry.ts`: `resolveLocale(tag: string): "en"` takes the primary language subtag lower-cased (`en-US` -> `en`); an unknown or malformed tag falls back to `en`. `render(input: RenderInput): RenderedEmail | undefined` looks up `TEMPLATES[locale][kind][role]`; a missing (kind, role) returns `undefined` (the caller marks `template_missing`). Adding a locale = adding one file and one registry entry.
 - `RenderInput = { kind; role: "patient" | "doctor"; locale: string; recipientName: string; timezone: string; startsAtMs: number; previousStartsAtMs?: number; byRole?: "patient" | "doctor" | "admin" }` (names and types in `types.ts`). `RenderedEmail = { subject: string; text: string }`.
 - `format-time.ts`: `formatLocal(ms, timezone)` = `DateTime.fromMillis(ms, { zone: timezone }).setLocale("en").toFormat("cccc d LLLL yyyy, HH:mm")` + ` (` + IANA id + `)`, e.g. `Tuesday 14 October 2026, 15:30 (Africa/Cairo)`. DST-correct by `luxon`. An invalid zone falls back to `UTC` (printed as `(UTC)`). Time zone per role: **patient** -> `consultations.patient_timezone` (snapshot); **doctor** -> `doctor_profiles.timezone` (`UTC` when the profile row is gone).
-- Greeting name: `fullName` trimmed, control characters removed, clamped to 80 code points; used only in the body, never in a subject, never logged.
+- Greeting name: `fullName` has control characters (Unicode `Cc`), format characters (`Cf`: bidi overrides and isolates U+202A-202E and U+2066-2069, zero-width and direction marks U+200B-200F, BOM U+FEFF, soft hyphen) and line or paragraph separators (`Zl`, `Zp`) removed; anything that looks like a URL (`scheme://...` or `www....` up to the next space) removed; whitespace collapsed, trimmed, clamped to 80 code points; used only in the body, never in a subject, never logged. A name that is only a URL greets as `Hello,`.
 - **No reason text, no counterpart name, no clinical content** in any template. Plain text, signed `The Vcare team`. All copy below is synthetic (`{when}` = `formatLocal(startsAt)`):
 
 | Kind | Role | Subject | Body (after `Hello {name},` + blank line) |
@@ -297,7 +322,7 @@ DELETE FROM notification_outbox WHERE id IN (
 | Variable | Default | Range | Purpose |
 |---|---|---|---|
 | `OUTBOX_POLL_SECONDS` | `5` | 1..86400 | `notification-outbox` loop interval |
-| `OUTBOX_BATCH_SIZE` | `20` | 1..100 | rows claimed per round (also <= the contacts cap of 100) |
+| `OUTBOX_BATCH_SIZE` | `20` | 1..59 | rows claimed per round; capped so `batch x 5 s + 2 s` stays below the 300 s lease (N-D12) |
 | `OUTBOX_MAX_ATTEMPTS` | `8` | 1..20 | attempts before `dead` |
 | `OUTBOX_RETENTION_DAYS` | `30` | 1..365 | purge age of `sent` rows |
 | `OUTBOX_PURGE_SECONDS` | `3600` | 1..86400 | purge loop interval |
@@ -323,11 +348,11 @@ API side: only `ConsultationSuspensionImpactProvider` gains an injected dependen
 | N-R4 | No Identity call, email send, or other network I/O happens inside a database transaction. | claim is one autocommit statement; scan transaction does only SQL |
 | N-R5 | A delivery failure never fails, delays, or rolls back the originating write. | outbox decoupling; worker is a separate component |
 | N-R6 | Retry delay after send failure `n` is `30 s * 2^(n-1)` capped at 30 min (±20 % jitter); a row is `dead` when `n >= OUTBOX_MAX_ATTEMPTS` (8). | `OutboxDeliveryService` |
-| N-R7 | A contacts-lookup failure delays the row and does not consume an attempt (N-D1). | service + `attempts_delta = -1` |
+| N-R7 | A contacts-lookup failure delays the row and does not consume an attempt (N-D1); the delay grows per consecutive failed **tick**, not per batch. | service + `attempts_delta = -1`; the tick stops after the failed batch |
 | N-R8 | Unknown recipient -> `skipped/recipient_unknown`; non-active recipient -> `skipped/recipient_inactive`; no retry. | service |
 | N-R9 | A permanent provider answer marks the row `dead` at once (N-D7). | service |
 | N-R10 | A reminder whose consultation is no longer `booked`, is deleted, has a different `starts_at` than the payload, or has started is `skipped` and never sent. | claim-time re-check |
-| N-R11 | Each reminder kind is queued at most once per recipient per consultation start; the enqueue and the stamp are atomic. | row lock + one transaction |
+| N-R11 | Each reminder kind is queued at most once per recipient per consultation start (also across a reschedule A to B to A); the enqueue and the stamp are atomic. | row lock + one transaction + queued-reminder lookup (N-D13) |
 | N-R12 | Both patient and doctor get both reminders; a consultation booked inside the window gets no reminder for that window; within 1 h only the 1 h reminder is sent. | `ReminderScanService` |
 | N-R13 | Reschedule resets both reminder columns; cancel needs no cleanup; stale queued reminders are dropped by N-R10. | `rescheduleRow` (built) + N-R10 |
 | N-R14 | Emails, names, locale, subjects and bodies are never logged, stored, cached, or put in `last_error_code`; `last_error_code` is from a fixed vocabulary. | code + redaction (`email`, `fullName` are redacted keys) + tests |
@@ -345,7 +370,7 @@ API side: only `ConsultationSuspensionImpactProvider` gains an injected dependen
 ## 5. Cross-service behavior
 - **Calls made:** Case 5, `care-worker` -> identity `GET /internal/users/contacts?ids=` (<= 100 ids/call, one call per claimed batch, one attempt, 2 s timeout, token with only `users:contact:read`). **Failure policy: delay** (not degrade, not must-succeed): rows stay `pending` with backoff, no request path depends on it, a booking never waits on it. Unknown/inactive recipients -> `skipped`.
 - **Calls served:** none. The API listener never calls this endpoint; `GET /internal/health/*` is unchanged.
-- **Provider dependency:** Identity implements the endpoint (identity ADR 0024). Environment check for manual QA: the `care-service` client holds `users:contact:read` (otherwise the token fetch fails, rows are delayed, lag alert fires).
+- **Provider dependency:** Identity implements the endpoint (identity ADR 0024). Environment check for manual QA: the `care-service` client holds `users:contact:read` (otherwise the token fetch fails, rows are delayed, and `NotificationContactsForbidden` and `OutboxPendingStale` fire).
 
 ## 6. Error codes
 No HTTP errors; no new codes in the API catalogue. Persisted `last_error_code` vocabulary (not an API surface):
@@ -384,7 +409,8 @@ Unit (`tests/unit`, injected clock/random/sleep, fakes for port, identity client
 - Templates: every (kind, role) copy, `{actor}` matrix, DST-forward/back rendering in Africa/Cairo, America/New_York and Europe/London, invalid zone -> UTC, locale fallback `ar`/`en-US`/garbage -> `en`, no reason/counterpart text (N-R16).
 - `getContacts`: 100-id chunking (250 ids -> 3 calls), de-duplication, DTO strictness (bad email, extra id, duplicate id -> chunk unavailable), classification table of section 3.3 (`401` refresh once, `403`, `429`, `5xx`, timeout, malformed `200`), request carries the contact token and never the status token, no Redis calls, nothing logged containing the fixture address/name.
 - `LogEmailAdapter`: logs exactly `outboxId`, `kind`, `recipientUserId`; fixture address/subject/body never appear.
-- Env: defaults and bounds of the six variables.
+- Env: defaults and bounds of the six variables; lease invariant (`OUTBOX_BATCH_SIZE` max x 5 s + 2 s < lease).
+- Review 2026-10-15: one backoff step per tick across several full batches, later rows stay due; claim released without consuming an attempt on a post-claim database failure (also mid-batch); per-entry contact isolation and the `notification_contacts_forbidden` signal; greeting-name bidi, zero-width and URL stripping; reminder dedupe (A to B to A, pending and sent); the stale-pending gauge counts delayed rows and is served by its index; `DELETE` of `pending`, `dead` and `skipped` refused.
 
 Integration (`tests/integration`, real Postgres + Redis, fake Identity server with contacts mode (ok / slow / 5xx / 403), recording fake `EmailPort`):
 - Should claim with two concurrent workers without double-claiming (N-R2): 200 rows, two `OutboxDeliveryService` instances, every row sent exactly once.
@@ -420,7 +446,7 @@ No hub doc is edited here; none of these blocks `/develop`.
 
 **Docs to refresh at `/update-docs`:** `architecture/data-model.md` (outbox: new kind, index names, grants, CHECKs, reminder index; remove "NOT created yet"), `architecture/infrastructure.md` (env table, worker loops and `--once`, pool size), `architecture/deployment.md` (built loops; metrics `notification_outbox_lag_seconds`, `notification_sent|failed|dead|skipped` replacing `outbox_oldest_pending_age_s`/`outbox_dead`; alerts below), `architecture/integration.md` and hub-facing Case 5 text (as built), `architecture/resilience.md`, `architecture/consultation-lifecycle.md` and `scheduling-slots.md` (delivery as built), `consultations/spec.md` (suspension impact provider now queues `doctor_suspended`), `runbook.md` (alerts, dead-row SQL, `--once`), `docs/service-card.md` (see below), `docs/INDEX.md`.
 
-**Alerts and metrics (ADR 0007; for deployment.md/runbook):** `notification_outbox_lag_seconds` per tick (gauge); counters `notification_sent{kind}`, `notification_failed{kind}`, `notification_dead{kind}`, `notification_skipped{reason}`, `notification_reminders_enqueued{kind}`; `identity_call_failed{case=contacts}`; log events `notification_sent`, `notification_failed`, `notification_dead`, `notification_skipped`, `notification_contacts_unavailable`, `notification_lease_lost`, `outbox_purged`, `email_log_adapter_send`. Alerts: `OutboxDeadJobs` (any `notification_dead`, ticket, unchanged); `OutboxLagHigh` (`notification_outbox_lag_seconds > 300` for 5 min, ticket, threshold unchanged from the published design); runbook escalation line: lag above 900 s (the brainstorm's 15 minutes) means check Identity contacts and the provider before scaling to 2 workers.
+**Alerts and metrics (ADR 0007; for deployment.md/runbook):** `notification_outbox_lag_seconds` per tick (gauge); counters `notification_sent{kind}`, `notification_failed{kind}`, `notification_dead{kind}`, `notification_skipped{reason}`, `notification_reminders_enqueued{kind}`; `identity_call_failed{case=contacts}`, `notification_outbox_oldest_pending_age_seconds` (gauge per tick), `notification_contacts_forbidden`; log events `notification_sent`, `notification_failed`, `notification_dead`, `notification_skipped`, `notification_contacts_unavailable`, `notification_contacts_forbidden`, `notification_claim_released`, `notification_claim_release_failed`, `notification_lease_lost`, `outbox_purged`, `email_log_adapter_send`. Alerts: `OutboxDeadJobs` (any `notification_dead`, ticket, unchanged); `OutboxLagHigh` (`notification_outbox_lag_seconds > 300` for 5 min, ticket, threshold unchanged from the published design; it sees due rows only, so it fires for a slow worker or provider, not for rows in backoff); `OutboxPendingStale` (`notification_outbox_oldest_pending_age_seconds` > 7200 for 5 min, ticket: a row can legitimately wait about 4 400 s across eight send backoffs, so 7200 s means a contacts outage or a stuck worker); `NotificationContactsForbidden` (any `notification_contacts_forbidden`, ticket: the care-service client lost `users:contact:read` or its credentials); runbook escalation line: lag above 900 s (the brainstorm's 15 minutes) means check the provider and the worker before scaling to 2 workers; a rising oldest-pending age with a normal lag means check Identity contacts and the `users:contact:read` grant.
 
 **Service card:** `docs/service-card.md` is affected (worker loops list, `notification_outbox` no longer insert-only, Case 5 consumer now built, email port) and re-syncs to the hub via `scripts/sync-from-spoke.sh`.
 
@@ -441,9 +467,11 @@ Built, unit and integration tested (green), manually QA'd on 2026-10-14 and re-r
 
 **Architecture docs refreshed at this `/update-docs`:** `data-model.md` (outbox kind, CHECKs, indexes, grants, state machine, reminder index), `infrastructure.md` (env table, worker pool 6, loops), `integration.md` (Case 5 as built), `resilience.md` (lease claim, at-least-once, contacts delay), `deployment.md` (built loops, metrics, alerts, bottleneck 6), `capacity.md` (pool), `overview.md`, `consultation-lifecycle.md`, `runbook.md`, `quickstart.md`, `service-card.md`, `INDEX.md`, and the pointer in `consultations/spec.md` section 13.
 
+**Review fixes 2026-10-15 (version 0.3.0)** ([review](./reviews/review-20261015-1200.md)): contacts failure ends the tick and escalates once per tick (Medium 1, N-D1); `notification_outbox_oldest_pending_age_seconds`, `notification_contacts_forbidden` and the alerts `OutboxPendingStale` / `NotificationContactsForbidden` (Medium 2 and 6, N-D11); per-entry contact validation (Low 3, section 3.3); `OUTBOX_BATCH_SIZE` max 59 (Low 4, N-D12); claim release on a post-claim infrastructure error (Low 5, N-D10); greeting-name sanitiser (Low 7, section 3.6); `BEFORE DELETE` trigger for non-`sent` rows (Low 8, section 2.4); reminder dedupe at enqueue (Low 11, N-D13). Low 9 (event notices sent regardless of the current consultation state, section 3.4 step 4) and Low 10 (`doctor_suspended` recipients include `in_progress` consultations, section 3.7) are **deferred product decisions**; behaviour unchanged. `ServiceTokenCache` now throws `InsufficientScope` (was `MalformedResponse`) for a token that lacks a requested scope, so the permanent failure is distinguishable.
+
 **Open items**
 1. **Purge plan watch item (not a defect).** On a 750 k-row outbox the purge `DELETE ... WHERE id IN (SELECT ... ORDER BY sent_at LIMIT 5000 FOR UPDATE SKIP LOCKED)` is planned as a Hash Semi Join over a sequential scan of the table: about 150 ms per 5 000-row batch while draining a 338 k-row backlog (five ticks cleared 338 k rows in about 20 s); steady state is a bitmap scan plus primary-key probes at 6.4 ms, and 0.15 ms when nothing is eligible. If a faster drain is ever required, rewrite as `DELETE ... USING (subquery)` so the outer relation is not scanned. Claim (0.87 ms), lag (0.03 ms) and guarded finish (0.10 ms) use their indexes with no sequential scan.
-2. **Environment checks still open** (spec section 5 and 11): the deployed `care-service` Identity client must hold `users:contact:read`; until it does, rows are delayed and `OutboxLagHigh` fires. Manual QA used the fake Identity only (cases 54 to 58 verify the delay path for 403 and for a client without the scope).
+2. **Environment checks still open** (spec section 5 and 11): the deployed `care-service` Identity client must hold `users:contact:read`; until it does, rows are delayed and `NotificationContactsForbidden` and `OutboxPendingStale` fire (not `OutboxLagHigh`: delayed rows are not due). Manual QA used the fake Identity only (cases 54 to 58 verify the delay path for 403 and for a client without the scope).
 3. **Production sends no real email**: only `LogEmailAdapter` exists. A provider ADR (`EMAIL_PROVIDER_*`, `EMAIL_FROM`, DKIM/SPF, bounce handling) is required first (section 11, platform changes 2).
 
 **Platform deltas** (listed for the hub; applied directly this session per the three-repo sync rule, see the update-docs report): Case 5 is built (landscape), `care-worker` pool 6 and loops (deployment), outbox volume and pool (capacity).

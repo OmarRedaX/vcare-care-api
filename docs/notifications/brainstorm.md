@@ -3,9 +3,9 @@ title: notifications — Brainstorm
 owner: care-team
 service: care-service
 module: notifications
-status: draft
+status: implemented
 diataxis: explanation
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 tags: [brainstorm, notifications, outbox, worker, email, reminders]
 related: [system-design, adr-0011-notification-outbox-and-reminders, adr-0008-care-worker-component, consultations-spec, integration]
 ---

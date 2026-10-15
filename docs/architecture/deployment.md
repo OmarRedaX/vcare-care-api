@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
 ---
@@ -66,10 +66,12 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | `slot_computation_ms`, `search_cache_miss_ratio` | — | bottlenecks 1–2 |
 | `identity_hydration_degraded`, `identity_call_failed` | `case` | Case 2 / sync alerts |
 | `identity_sync_job_consecutive_failures`, `identity_sync_job_pending_age_s` | `kind` | Cases 1, 3, 4 alerts |
-| `notification_outbox_lag_seconds` (gauge per outbox tick: age of the oldest due `pending` row, 0 when none) | none | `OutboxLagHigh` |
+| `notification_outbox_lag_seconds` (gauge per outbox tick: age of the oldest due `pending` row, 0 when none; rows in backoff are not due) | none | `OutboxLagHigh` |
+| `notification_outbox_oldest_pending_age_seconds` (gauge per outbox tick: age of the oldest `pending` row by `created_at`, due or not, 0 when none) | none | `OutboxPendingStale` |
+| `notification_contacts_forbidden` (counter + error log: contacts lookup refused with 401, 403 or a token without `users:contact:read`) | none | `NotificationContactsForbidden` |
 | `notification_sent`, `notification_failed`, `notification_dead`, `notification_reminders_enqueued` | `kind` | `OutboxDeadJobs`, delivery rate |
 | `notification_skipped` | `reason` | skip ratio (unknown or inactive recipients, dropped reminders) |
-| `identity_call_failed` with `case=contacts` | `case` | contact lookup health (`OutboxLagHigh` context) |
+| `identity_call_failed` with `case=contacts` | `case` | contact lookup health (`OutboxPendingStale` context) |
 | `exclusion_violation` | — | `ExclusionViolationSpike` |
 | `db_pool_wait_ms`, `db_replica_lag_s` | — | bottlenecks 4–5 |
 | `rate_limiter_degraded` | `limiter` | Redis fallback |
@@ -82,7 +84,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | `upload_verification_failed`, `upload_intent_expired`, `download_url_issued` | `reason` / `kind` | `UploadVerificationFailureSpike` |
 
 **Alerts added by this design** (actions in [runbook.md](../runbook.md); existing ones in [resilience.md](./resilience.md)):
-`OutboxLagHigh` (`notification_outbox_lag_seconds` > 300 for 5 min, ticket) · `OutboxDeadJobs` (any `notification_dead`, ticket) · `DbReplicaLagHigh`
+`OutboxLagHigh` (`notification_outbox_lag_seconds` > 300 for 5 min, ticket) · `OutboxPendingStale` (`notification_outbox_oldest_pending_age_seconds` > 7200 for 5 min, ticket) · `NotificationContactsForbidden` (any `notification_contacts_forbidden`, ticket) · `OutboxDeadJobs` (any `notification_dead`, ticket) · `DbReplicaLagHigh`
 (> 30 s for 5 min, page) · `WorkerHeartbeatStale` (> 2 min, page) · `AuditPartitionMissing`
 (`audit_partition_missing = 1`, next month missing, or `audit_default_partition_rows > 0`, ticket) ·
 `IdentityJwksStale` (`jwks_cache_age_s` > 1 800, page — cached keys are distrusted at 3 600, after which every

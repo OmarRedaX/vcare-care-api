@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
 related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec]
 ---
@@ -62,7 +62,7 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | 2 | 2 (1 retry) | degrade |
 | 3 | 3 (about 6 s worst case, 2 s per attempt) | durable job, no attempt cap, backoff capped at 60 s, alert after 3 consecutive failures |
 | 4 (reinstatement) | 3 | durable job (`kind='reinstatement'`), alert `IdentityReinstatementSyncPending` after 15 min unsynced ([ADR 0012](../adr/0012-doctor-reinstatement.md)); built 2026-10-09 |
-| contacts lookup (notifications, Case 5) | 1 attempt per chunk of up to 100 ids, one call per claimed batch, 2 s timeout | rows stay `pending`, **attempt not consumed**, backoff 30 s doubling per consecutive failed batch (cap 30 min) — delivery delayed only; built 2026-10-12 |
+| contacts lookup (notifications, Case 5) | 1 attempt per chunk of up to 100 ids, one call per claimed batch, 2 s timeout | rows stay `pending`, **attempt not consumed**, backoff 30 s doubling per consecutive failed **tick** (cap 30 min; a failed batch ends the tick) — delivery delayed only; visible through `notification_outbox_oldest_pending_age_seconds` and, for 401/403/missing scope, `notification_contacts_forbidden`; built 2026-10-12, reviewed 2026-10-15 |
 
 **Non-retryable answers:** Identity `409 InvalidStatusTransition`, and also `400`, `403` and `422` (the request itself is
 refused; `last_error_code=HTTP_<n>`), stop the retries of every kind immediately, set `identity_sync_status='failed'` (and
