@@ -109,9 +109,9 @@ Common: `userGuard()` → `authorize(policy)` → limiter → controller. **No `
 | Account state | `status=active`; doctor also `doctor_not_suspended` (`403 Forbidden`) | `status=active` + `doctor_not_suspended` | same |
 | Audit | `consultation.waiting` on the `booked → waiting` transition only | `consultation.started` | `consultation.completed` |
 | Rate limit | `consultations-session-user` 10/min per patient/doctor | same bucket | `consultations-write-user` 10/min |
-| Body | none (a body, if sent, is ignored) | none | none |
+| Body | none (a well-formed body is ignored; malformed JSON is rejected by the global body parser with `400 ValidationFailed`) | none (same) | none (same) |
 | Success | `200` `SessionJoin` | `200` `SessionJoin` (doctor token) | `200` `Consultation` |
-| Errors | 401, 403, 404, 409 (`InvalidTransition`, `RoomNotOpen`), 429, 500, **503 `VideoUnavailable` (V1)** | same | 401, 403, 404, 409 `InvalidTransition`, 429, 500 |
+| Errors | **400 `ValidationFailed` (malformed JSON)**, 401, 403, 404, 409 (`InvalidTransition`, `RoomNotOpen`), 429, 500, **503 `VideoUnavailable` (V1)** | same | 400 (malformed JSON), 401, 403, 404, 409 `InvalidTransition`, 429, 500 |
 
 | | `PATCH /consultations/{id}/no-show` | `GET /consultations/waiting-room` | `GET /consultations/calendar` |
 |---|---|---|---|
@@ -122,7 +122,7 @@ Common: `userGuard()` → `authorize(policy)` → limiter → controller. **No `
 | Rate limit | `consultations-write-user` / `consultations-write-admin` (existing `writeLimits()`) | `consultations-read-user` 120/min | same |
 | Body / query | optional body `NoShow` `{ note? }` | none (unknown query members rejected) | `from`, `to` required; `timezone` optional |
 | Success | `200` `Consultation` | `200` array of `Consultation`, no `meta` (not paginated) | `200` `CalendarView` |
-| Errors | 400, 401, 403, 404, 409 (`NoShowTooEarly`, `InvalidTransition`), 429, 500 | 401, 403, 429, 500 | 400, 401, 403, 429, 500 |
+| Errors | 400, 401, 403, 404, 409 (`NoShowTooEarly`, `InvalidTransition`), 429, 500 | 400 (any query member), 401, 403, 429, 500 | 400, 401, 403, 429, 500 |
 
 **Request rules (class-validator, `forbidNonWhitelisted`, implicit conversion off):**
 - `NoShowDto`: `note` optional `@IsString`, `CodePointLength(0, 1000)`, `NoControlCharacters("nul")`. An absent body (`undefined`) is treated as `{}` by the controller; unknown properties → `400`. No `@NotBlank` (contract has no `minLength`).

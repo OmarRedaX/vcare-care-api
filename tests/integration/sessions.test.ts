@@ -339,6 +339,16 @@ describe("sessions lifecycle, windows, concurrency and provider outages (integra
                 expect((await row(id)).status).toBe("booked");
             });
 
+        it.each([["join", "patient"], ["start", "doctor"], ["complete", "doctor"]] as const)(
+            "should answer 400 ValidationFailed for malformed JSON on %s from the global body parser and change nothing", async (action, actor) => {
+                const id = await seedSession(h);
+                freezeAt(sessionStart());
+                const res = await h.call("patch", `/api/consultations/${id}/${action}`, actor, undefined, { "Content-Type": "application/json" }).send("{oops");
+                expect(res.status).toBe(400);
+                expectErrorEnvelope(res.body, "ValidationFailed");
+                expect((await row(id)).status).toBe("booked");
+            });
+
         it("should accept a note of exactly 1000 characters", async () => {
             const id = await seedSession(h);
             freezeAt(sessionStart() + GRACE_MS);

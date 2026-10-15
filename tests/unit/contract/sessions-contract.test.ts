@@ -6,11 +6,11 @@ import { contractErrorCodes, contractOperationBlock, contractResponseCodes, inli
 type Method = "get" | "patch";
 /** [operationId, path, method, roles, ownership, response codes] */
 const OPERATIONS: Array<[string, string, Method, string[], string, string[]]> = [
-    ["joinConsultation", "/api/consultations/{id}/join", "patch", ["patient", "doctor"], "participant", ["200", "401", "403", "404", "409", "429", "500", "503"]],
-    ["startConsultation", "/api/consultations/{id}/start", "patch", ["doctor"], "assigned-doctor", ["200", "401", "403", "404", "409", "429", "500", "503"]],
-    ["completeConsultation", "/api/consultations/{id}/complete", "patch", ["doctor"], "assigned-doctor", ["200", "401", "403", "404", "409", "429", "500"]],
+    ["joinConsultation", "/api/consultations/{id}/join", "patch", ["patient", "doctor"], "participant", ["200", "400", "401", "403", "404", "409", "429", "500", "503"]],
+    ["startConsultation", "/api/consultations/{id}/start", "patch", ["doctor"], "assigned-doctor", ["200", "400", "401", "403", "404", "409", "429", "500", "503"]],
+    ["completeConsultation", "/api/consultations/{id}/complete", "patch", ["doctor"], "assigned-doctor", ["200", "400", "401", "403", "404", "409", "429", "500"]],
     ["markNoShow", "/api/consultations/{id}/no-show", "patch", ["doctor", "admin"], "assigned-doctor-or-admin", ["200", "400", "401", "403", "404", "409", "429", "500"]],
-    ["getWaitingRoom", "/api/consultations/waiting-room", "get", ["doctor"], "self", ["200", "401", "403", "429", "500"]],
+    ["getWaitingRoom", "/api/consultations/waiting-room", "get", ["doctor"], "self", ["200", "400", "401", "403", "429", "500"]],
     ["getCalendar", "/api/consultations/calendar", "get", ["doctor"], "self", ["200", "400", "401", "403", "429", "500"]],
 ];
 

@@ -1984,7 +1984,7 @@ paths:
         calling doctor with status `booked` or `waiting` whose half-open window `opensAt <= now < closesAt`
         (`opensAt = starts_at − 10 min`, `closesAt = ends_at + 15 min`) contains now. Ordered by `(startsAt, id)` ascending,
         capped at 100 entries; not paginated. Entries never carry `complaintText`. Patient names hydrated per Case 2 (degrade);
-        the doctor side is the caller's own and unhydrated. A locally suspended doctor → `403 Forbidden`.
+        the doctor side is the caller's own and unhydrated. Unknown query members are rejected (`400 ValidationFailed`). A locally suspended doctor → `403 Forbidden`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2014,6 +2014,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Consultation'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2245,7 +2247,7 @@ paths:
         The join token is short-lived (`min(300 s, window close)`) and valid for this participant only. The response carries
         no `complaintText` and unhydrated participants. A locally suspended doctor → `403 Forbidden`. A video-provider
         failure or timeout → `503 VideoUnavailable`: before the commit nothing changed; after it the state is valid and
-        repeating `join` returns a token.
+        repeating `join` returns a token. A well-formed request body is ignored; malformed JSON is rejected by the global body parser (`400 ValidationFailed`).
       security:
         - bearerUser: []
       x-roles: [patient, doctor]
@@ -2258,6 +2260,8 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/SessionJoinOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2298,6 +2302,8 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/SessionJoinOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2318,7 +2324,7 @@ paths:
       operationId: completeConsultation
       tags: [consultations]
       summary: End the session (assigned doctor)
-      description: '`in_progress` → `completed`; no window check (the doctor may overrun). Any other state → `409 InvalidTransition`. The response carries no `complaintText` and unhydrated participants. A locally suspended doctor → `403 Forbidden`. The medical record can be written afterwards.'
+      description: '`in_progress` → `completed`; no window check (the doctor may overrun). Any other state → `409 InvalidTransition`. The response carries no `complaintText` and unhydrated participants. A locally suspended doctor → `403 Forbidden`. The medical record can be written afterwards. A well-formed request body is ignored; malformed JSON is rejected by the global body parser (`400 ValidationFailed`).'
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2331,6 +2337,8 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/ConsultationOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
