@@ -32,7 +32,7 @@ Source: [spec.md](./spec.md) (ready, v0.1.0). Issue #42, branch `feature/session
 - [x] (controller) `SessionsController`
 - [x] (routes) `sessions/routes.ts`
 - [x] (mount) `src/routes.ts` — before the consultations router
-- [~] (tests) unit + contract done (`tests/unit/app/sessions/*`, `tests/unit/contract/sessions-contract.test.ts`, lib/video, hydrate, session-window, env, errorHandler); integration (`tests/integration/sessions*.test.ts`: lifecycle, windows, concurrency, RBAC, Case 2, EXPLAIN, log hygiene) ← /write-tests, blocked here: Docker/Postgres/Redis unavailable
+- [x] (tests) unit + contract (`tests/unit/app/sessions/*`, `tests/unit/contract/sessions-contract.test.ts`, lib/video, hydrate, session-window, env, errorHandler) and integration (`tests/integration/sessions.test.ts` lifecycle/windows/join-tokens/no-show/concurrency/video outage, `sessions-rbac.test.ts`, `sessions-reads.test.ts` waiting room/calendar/Case 2/timing guard, `sessions-explain.test.ts`, `sessions-privacy.test.ts`; helpers `tests/helpers/stub-video-provider.ts`, `sessions-fixtures.ts`, harness extended with the video stub). Run against native Postgres/Redis (disposable `*_test` database), 2026-10-15
 - [ ] (manual-qa) ← /manual-qa (`scripts/curl-test-sessions.sh`)
 - [ ] (docs) ← /update-docs (spec section 11 list)
 
