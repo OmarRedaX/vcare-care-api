@@ -60,6 +60,17 @@ describe("render", () => {
         }
     });
 
+    it("should render the in-progress doctor_suspended wording for a live consultation", () => {
+        expect(render(base({ kind: OutboxKind.DoctorSuspended, inProgress: true }))).toEqual({
+            subject: "We need to follow up on your consultation",
+            text: `Hello Sam Synthetic,
+
+Your consultation that began on Monday 14 October 2030, 12:30 (UTC) needs follow-up. A Vcare administrator will be in touch with you about the next steps.
+
+The Vcare team`,
+        });
+    });
+
     it("should render nothing for the doctor role of patient-only kinds", () => {
         for (const kind of [OutboxKind.ScheduleBlocked, OutboxKind.DoctorSuspended, OutboxKind.DoctorJoined]) {
             expect(render(base({ kind, role: RecipientRole.Doctor }))).toBeUndefined();

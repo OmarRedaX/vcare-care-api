@@ -251,6 +251,47 @@ The Vcare team`);
         });
     });
 
+    describe("delayed notices against the current consultation state (N-D14)", () => {
+        let slot = 0;
+        async function queue(kind: string, consultation: Record<string, unknown>, payloadStart?: Date): Promise<{ consultationId: number; startsAt: Date }> {
+            const startsAt = new Date(Math.ceil((Date.now() + 3 * DAY) / MINUTE) * MINUTE + (slot++) * HOUR);
+            const cancelled = consultation.status === "cancelled" ? { cancelled_at: new Date(), cancelled_by: "patient" } : {};
+            const consultationId = await h.seedConsultation({ starts_at: startsAt, ends_at: new Date(startsAt.getTime() + 30 * MINUTE), ...cancelled, ...consultation });
+            await ownerDb("notification_outbox").insert({
+                kind, consultation_id: consultationId, recipient_user_id: PATIENT, status: "pending", next_attempt_at: new Date(),
+                payload: JSON.stringify({ startsAt: (payloadStart ?? startsAt).toISOString(), recipientRole: "patient" }),
+            });
+            return { consultationId, startsAt };
+        }
+
+        it("should skip a rescheduled notice for a cancelled consultation and one whose start moved, and send a current one", async () => {
+            await queue("rescheduled", { status: "cancelled" });
+            await queue("rescheduled", {}, new Date(Date.now() + 9 * DAY));
+            await queue("rescheduled", {});
+            await delivery().tick(signal());
+            const rows = await outboxRows();
+            expect(rows.map((row) => [row.status, row.last_error_code])).toEqual([["skipped", "consultation_changed"], ["skipped", "consultation_changed"], ["sent", null]]);
+            expect(email.messages).toHaveLength(1);
+        });
+
+        it("should skip a doctor_suspended notice for a terminal consultation and word an in_progress one for a live session", async () => {
+            await queue("doctor_suspended", { status: "completed" });
+            await queue("doctor_suspended", { status: "in_progress" });
+            await delivery().tick(signal());
+            const rows = await outboxRows();
+            expect(rows.map((row) => row.status)).toEqual(["skipped", "sent"]);
+            expect(email.messages).toHaveLength(1);
+            expect(email.messages[0]?.text).toContain("began on");
+            expect(email.messages[0]?.text).not.toMatch(/scheduled for|not been cancelled/);
+        });
+
+        it("should still send a cancelled notice for a cancelled consultation", async () => {
+            await queue("cancelled", { status: "cancelled" });
+            await delivery().tick(signal());
+            expect(email.messages).toHaveLength(1);
+        });
+    });
+
     describe("reminders end to end", () => {
         const at = (ms: number): { starts_at: Date; ends_at: Date; created_at: Date } => ({
             starts_at: new Date(ms), ends_at: new Date(ms + 30 * MINUTE), created_at: new Date(ms - 3 * DAY),

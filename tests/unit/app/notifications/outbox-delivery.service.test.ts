@@ -233,7 +233,7 @@ describe("OutboxDeliveryService", () => {
             expect(t.getContacts).not.toHaveBeenCalled();
         });
 
-        it.each([OutboxKind.BookingConfirmed, OutboxKind.Cancelled, OutboxKind.Rescheduled, OutboxKind.ScheduleBlocked, OutboxKind.DoctorSuspended])(
+        it.each([OutboxKind.BookingConfirmed, OutboxKind.Cancelled, OutboxKind.ScheduleBlocked])(
             "should still send an event notification (%s) for a consultation that has since been cancelled", async (kind) => {
                 const t = setup();
                 t.findDeliveryContexts.mockResolvedValue(new Map([[10, context({ status: "cancelled", deleted: true })]]));
@@ -241,6 +241,50 @@ describe("OutboxDeliveryService", () => {
                 await t.run([row({ kind })]);
                 expect(t.send).toHaveBeenCalledTimes(1);
             });
+
+        describe("delayed notices (N-D14)", () => {
+            const sentFor = async (kind: OutboxKind, ctx: DeliveryContext, changes: Partial<OutboxClaimedRow> = {}) => {
+                const t = setup();
+                t.findDeliveryContexts.mockResolvedValue(new Map([[10, ctx]]));
+                t.getContacts.mockResolvedValue(contactsFor([PATIENT]));
+                await t.run([row({ kind, ...changes })]);
+                return t;
+            };
+            it.each(["cancelled", "completed", "no_show"])("should skip a rescheduled notice when the consultation is now %s", async (status) => {
+                const t = await sentFor(OutboxKind.Rescheduled, context({ status }));
+                expect(t.send).not.toHaveBeenCalled();
+                expect(t.finishes[0]).toMatchObject({ status: OutboxStatus.Skipped, lastErrorCode: OutboxErrorCode.ConsultationChanged });
+            });
+            it("should skip a rescheduled notice when the consultation start differs from the payload", async () => {
+                const t = await sentFor(OutboxKind.Rescheduled, context({ startsAt: new Date(START + 3_600_000) }));
+                expect(t.send).not.toHaveBeenCalled();
+                expect(t.finishes[0]).toMatchObject({ status: OutboxStatus.Skipped, lastErrorCode: OutboxErrorCode.ConsultationChanged });
+            });
+            it("should send a rescheduled notice for a live consultation that still starts at the payload time", async () => {
+                const t = await sentFor(OutboxKind.Rescheduled, context({ status: "booked" }));
+                expect(t.send).toHaveBeenCalledTimes(1);
+            });
+            it.each(["cancelled", "completed", "no_show"])("should skip a doctor_suspended notice when the consultation is now %s", async (status) => {
+                const t = await sentFor(OutboxKind.DoctorSuspended, context({ status }));
+                expect(t.send).not.toHaveBeenCalled();
+                expect(t.finishes[0]).toMatchObject({ status: OutboxStatus.Skipped, lastErrorCode: OutboxErrorCode.ConsultationChanged });
+            });
+            it.each(["booked", "waiting", "in_progress"])("should send a doctor_suspended notice when the consultation is %s", async (status) => {
+                const t = await sentFor(OutboxKind.DoctorSuspended, context({ status }));
+                expect(t.send).toHaveBeenCalledTimes(1);
+            });
+            it("should use the in-progress wording for a doctor_suspended notice to a live consultation", async () => {
+                const live = await sentFor(OutboxKind.DoctorSuspended, context({ status: "in_progress" }));
+                expect(live.send.mock.calls[0]?.[0].text).toContain("began on");
+                expect(live.send.mock.calls[0]?.[0].text).not.toMatch(/scheduled for|not been cancelled/);
+                const booked = await sentFor(OutboxKind.DoctorSuspended, context({ status: "booked" }));
+                expect(booked.send.mock.calls[0]?.[0].text).toContain("scheduled for");
+            });
+            it("should send a cancelled notice for a terminal consultation", async () => {
+                const t = await sentFor(OutboxKind.Cancelled, context({ status: "cancelled" }));
+                expect(t.send).toHaveBeenCalledTimes(1);
+            });
+        });
 
         it("should send a reminder whose payload matches the consultation", async () => {
             const t = setup();

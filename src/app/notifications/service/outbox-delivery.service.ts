@@ -177,7 +177,7 @@ export class OutboxDeliveryService {
         const rendered = render({
             kind: row.kind, role, locale: item.locale, recipientName: item.fullName,
             timezone: role === RecipientRole.Patient ? context.patientTimezone : (context.doctorTimezone ?? "UTC"),
-            startsAtMs, ...(previousStartsAtMs === undefined ? {} : { previousStartsAtMs }), ...(byRole === undefined ? {} : { byRole }),
+            startsAtMs, ...(previousStartsAtMs === undefined ? {} : { previousStartsAtMs }), ...(byRole === undefined ? {} : { byRole }), inProgress: context.status === "in_progress",
         });
         if (rendered === undefined) return this.finishOne(row, this.skipped(row, OutboxErrorCode.TemplateMissing), OutboxErrorCode.TemplateMissing);
 

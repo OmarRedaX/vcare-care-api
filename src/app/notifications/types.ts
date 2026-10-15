@@ -100,6 +100,8 @@ export interface RenderInput {
     startsAtMs: number;
     previousStartsAtMs?: number;
     byRole?: "patient" | "doctor" | "admin";
+    /** The consultation is live (`in_progress`); selects the wording of `doctor_suspended`. */
+    inProgress?: boolean;
 }
 
 export interface RenderedEmail { subject: string; text: string }
@@ -110,6 +112,7 @@ export interface TemplateParts {
     when: string;
     previous: string | undefined;
     byRole: "patient" | "doctor" | "admin" | undefined;
+    inProgress: boolean;
 }
 
 export type TemplateFunction = (parts: TemplateParts) => RenderedEmail;

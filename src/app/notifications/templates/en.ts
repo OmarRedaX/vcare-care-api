@@ -71,7 +71,10 @@ export const EN_TEMPLATES: LocaleTemplates = {
             `Your doctor's schedule has changed and your consultation on ${parts.when} may be affected. It has not been cancelled. Vcare support will contact you to confirm the next steps.`),
     },
     [OutboxKind.DoctorSuspended]: {
-        [RecipientRole.Patient]: (parts) => mail("We need to follow up on your consultation", parts,
+        [RecipientRole.Patient]: (parts) => parts.inProgress
+            ? mail("We need to follow up on your consultation", parts,
+                `Your consultation that began on ${parts.when} needs follow-up. A Vcare administrator will be in touch with you about the next steps.`)
+            : mail("We need to follow up on your consultation", parts,
             `Your consultation scheduled for ${parts.when} needs follow-up. It has not been cancelled. A Vcare administrator will be in touch with you about the next steps.`),
     },
     [OutboxKind.DoctorJoined]: {

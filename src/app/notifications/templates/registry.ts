@@ -34,6 +34,7 @@ export function render(input: RenderInput): RenderedEmail | undefined {
         when: formatLocal(input.startsAtMs, input.timezone),
         previous: input.previousStartsAtMs === undefined ? undefined : formatLocal(input.previousStartsAtMs, input.timezone),
         byRole: input.byRole,
+        inProgress: input.inProgress === true,
     });
 }
 
