@@ -46,7 +46,10 @@ Source: [spec.md](./spec.md) (implemented, v0.2.0). Branch `feature/notification
 - [x] (service) review Low 11: reminder dedupe at enqueue (spec N-D13)
 - [x] (tests) review fixes: unit (delivery, scan, templates, identity-client, env, lease invariant) and integration (tick backoff, pending-age, release, reminder dedupe, trigger, EXPLAIN)
 - [x] (docs) review docs findings: data-model reminder index, INDEX tasks row, brainstorm status
-- [ ] (decision) review Low 9 and Low 10 deferred: product decisions for the owner (spec 3.4 step 4, 3.7)
+- [x] (decision) review Low 9 and Low 10: owner approved the recommended behaviour 2026-10-15 (spec 0.4.0, N-D14)
+- [x] (service) review Low 9: skip delayed `rescheduled` (terminal or moved) and `doctor_suspended` (terminal) at claim time (delivery-rules.ts)
+- [x] (service) review Low 10: in-progress wording variant for `doctor_suspended` (templates/en.ts, `inProgress` on RenderInput)
+- [x] (tests) review Low 9/10: unit (delivery rules, template matrix with inProgress, exact copy) and integration (notifications-delivery N-D14)
 - [x] (docs) architecture refresh <- /update-docs (2026-10-14: spec as-built section 14, data-model, infrastructure, integration, resilience, deployment, capacity, overview, runbook, service card, INDEX; hub landscape, deployment, capacity, data-ownership rows)
 
 ## Open items
