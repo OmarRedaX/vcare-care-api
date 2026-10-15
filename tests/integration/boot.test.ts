@@ -23,7 +23,7 @@ import { buildEnvelopeRouter } from "../helpers/test-routers";
  */
 jest.mock("../../src/routes", () => {
     const actual = jest.requireActual<typeof RoutesModule>("../../src/routes");
-    return { buildPublicRoutes: jest.fn(actual.buildPublicRoutes) };
+    return { ...actual, buildPublicRoutes: jest.fn(actual.buildPublicRoutes) };
 });
 jest.mock("../../src/internal-routes", () => {
     const actual = jest.requireActual<typeof InternalRoutesModule>("../../src/internal-routes");

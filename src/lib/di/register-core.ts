@@ -17,6 +17,7 @@ export function registerCore(env: Env): void {
     container.registerInstance(TOKENS.Db, db);
     container.registerInstance(TOKENS.ProbeDb, probeDb);
     container.registerInstance(TOKENS.Redis, redis);
+    container.registerInstance(TOKENS.Clock, { now: () => Date.now() });
     container.registerInstance(TOKENS.ShutdownState, new ShutdownState());
     container.registerInstance(TOKENS.InFlightCounter, new InFlightCounter());
 

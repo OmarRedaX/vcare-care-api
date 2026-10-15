@@ -120,6 +120,17 @@ export const envSchema = z
         IDENTITY_SYNC_RETRY_CAP_SECONDS: positiveSeconds.default(60),
         IDENTITY_SYNC_ALERT_AFTER_SECONDS: positiveSeconds.default(900),
         UPLOAD_INTENT_PURGE_SECONDS: positiveSeconds.default(300),
+        /** Notification delivery (ADR 0011): outbox poll, claim batch, attempts before `dead`, sent-row retention, purge and reminder-scan cadence. */
+        OUTBOX_POLL_SECONDS: positiveSeconds.default(5),
+        OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
+        OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(8),
+        OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+        OUTBOX_PURGE_SECONDS: positiveSeconds.default(3600),
+        REMINDER_SCAN_SECONDS: positiveSeconds.default(60),
+        /** Furthest bookable start, in days from now (Domain rule 3). */
+        BOOKING_HORIZON_DAYS: z.coerce.number().int().min(1).max(365).default(60),
+        /** A patient may not cancel or reschedule within this many minutes of the start (Domain rule 10). */
+        CANCELLATION_POLICY_MINUTES: z.coerce.number().int().min(0).max(10080).default(120),
         AUDIT_PARTITION_MONTHS_AHEAD: z.coerce.number().int().min(1).max(12).default(2),
         CORS_ORIGINS: corsOrigins,
         LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

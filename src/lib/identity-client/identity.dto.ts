@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { Equals, IsArray, IsIn, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, IsUrl, MaxLength, Min, ValidateNested } from "class-validator";
+import { Equals, IsArray, IsEmail, IsIn, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, IsUrl, MaxLength, Min, ValidateNested } from "class-validator";
 
 export class TokenDataDto {
     @IsString() @IsNotEmpty() access_token!: string;
@@ -37,4 +37,15 @@ export class CachedUserDto {
     @IsString() @IsNotEmpty() @MaxLength(120) fullName!: string;
     @IsOptional() @IsUrl({ require_protocol: true }) avatarUrl!: string | null;
     @IsIn(["active", "rejected", "pending", "suspended"]) status!: "active" | "rejected" | "pending" | "suspended";
+}
+export class UserContactDto {
+    @IsInt() @IsPositive() id!: number;
+    @IsEmail() email!: string;
+    @IsString() @IsNotEmpty() fullName!: string;
+    @IsString() @IsNotEmpty() locale!: string;
+    @IsIn(["active", "rejected", "pending", "suspended"]) status!: "active" | "rejected" | "pending" | "suspended";
+}
+export class ContactsEnvelopeDto {
+    @Equals(true) success!: true;
+    @IsArray() @ValidateNested({ each: true }) @Type(() => UserContactDto) data!: UserContactDto[];
 }

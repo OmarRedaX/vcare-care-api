@@ -285,7 +285,7 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 
 **Ownership rules (PRD §8, Access):**
 - Patients access only **their own** consultations, records, and profile.
-- Doctors access **their own** schedule, consultations, and the records/profile of patients **they have a `completed` or current consultation with** (`EXISTS` check on `consultations`).
+- Doctors access **their own** schedule, consultations, and the records/profile of patients **they have a `booked`, `waiting`, `in_progress` or `completed` consultation with** (`EXISTS` check on `consultations`; cancelled and no-show rows grant nothing).
 - Admins manage verification, suspension, bookings, specialties, help content — and **never** clinical notes: record endpoints deny admins, and admin DTOs omit clinical fields.
 - `GET /patients/:id` and `GET /patients/:id/records`: the patient themself or a doctor with a consultation relationship; every successful call is audited.
 

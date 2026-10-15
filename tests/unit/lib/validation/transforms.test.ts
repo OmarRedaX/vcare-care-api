@@ -1,5 +1,5 @@
-import { IsBoolean, IsInt } from "class-validator";
-import { ToBoolean, ToInt } from "../../../../src/lib/validation/transforms";
+import { IsArray, IsBoolean, IsIn, IsInt } from "class-validator";
+import { ToBoolean, ToCommaList, ToInt } from "../../../../src/lib/validation/transforms";
 import { validateQuery } from "../../../../src/lib/validation/validate";
 
 class IntegerQueryDto {
@@ -54,4 +54,25 @@ describe("lib/validation/transforms", () => {
             });
         },
     );
+});
+
+class ListQueryDto {
+    @ToCommaList()
+    @IsArray()
+    @IsIn(["a", "b"], { each: true })
+    value!: string[];
+}
+
+describe("lib/validation/transforms ToCommaList", () => {
+    it.each([["a", ["a"]], ["a,b", ["a", "b"]]])("should split %p on commas", async (input, expected) => {
+        await expect(validateQuery(ListQueryDto, { value: input })).resolves.toMatchObject({ value: expected });
+    });
+
+    it.each(["", "a,", ",a", "a,,b", "c"])("should reject %p when a segment is empty or unknown", async (value) => {
+        await expect(validateQuery(ListQueryDto, { value })).rejects.toMatchObject({ code: "ValidationFailed" });
+    });
+
+    it("should reject a repeated query parameter", async () => {
+        await expect(validateQuery(ListQueryDto, { value: ["a", "b"] })).rejects.toMatchObject({ code: "ValidationFailed" });
+    });
 });

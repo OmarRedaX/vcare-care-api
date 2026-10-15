@@ -4,9 +4,10 @@ import { getEnv } from "../config/env";
 import { logger } from "../logger/logger";
 import { isRedisUsable, resolveRedis, withRedis } from "../redis/redis";
 import { validateBody } from "../validation/validate";
-import { CachedUserDto, StatusEnvelopeDto, UsersEnvelopeDto } from "./identity.dto";
+import { CONTACT_SERVICE_SCOPES } from "./constants";
+import { CachedUserDto, ContactsEnvelopeDto, StatusEnvelopeDto, UsersEnvelopeDto } from "./identity.dto";
 import { ServiceTokenCache } from "./service-token-cache";
-import type { BatchResult, HydratedUser, IdentityClientOptions, IdentityStatus, StatusResult } from "./types";
+import type { BatchResult, ContactsResult, HydratedUser, IdentityClientOptions, IdentityStatus, StatusResult } from "./types";
 
 /** `setUserStatus` answers that are terminal. 404, 401 (after the one token refresh), 429, 5xx, network errors and malformed 200s stay transient. */
 const PERMANENT_STATUS_CODES: ReadonlySet<string> = new Set(["HTTP_400", "HTTP_403", "HTTP_422"]);
@@ -15,12 +16,15 @@ export class IdentityClient {
     private readonly options: Required<Pick<IdentityClientOptions, "now" | "sleep" | "random">> & IdentityClientOptions;
     private readonly pool: Pool;
     private readonly tokens: ServiceTokenCache;
+    /** Separate token for `users:contact:read` (care-worker only); fetches nothing until `getContacts` runs. */
+    private readonly contactTokens: ServiceTokenCache;
 
     constructor(options: IdentityClientOptions = {}) {
         const env = options.env ?? getEnv();
         this.options = { ...options, env, now: options.now ?? Date.now, sleep: options.sleep ?? sleep, random: options.random ?? Math.random };
         this.pool = options.pool ?? new Pool(env.IDENTITY_INTERNAL_URL, { connections: 10 });
         this.tokens = new ServiceTokenCache({ pool: this.pool, env, now: this.options.now });
+        this.contactTokens = new ServiceTokenCache({ pool: this.pool, env, now: this.options.now, scopes: CONTACT_SERVICE_SCOPES });
     }
 
     /** Closes the keep-alive pool (graceful shutdown of care-api / care-worker, and test teardown). */
@@ -91,14 +95,18 @@ export class IdentityClient {
                     if (response.statusCode !== 200) continue;
                     const envelope = await validateBody(UsersEnvelopeDto, response.body, { unknownMembers: "strip" });
                     if (envelope.data.length > 100 || envelope.data.some((user) => !chunk.includes(user.id))) continue;
-                    for (const user of envelope.data) {
-                        users.set(user.id, { displayName: user.fullName, avatarUrl: user.avatarUrl, status: user.status });
-                        if (isRedisUsable(redis)) {
-                            try {
-                                await withRedis(redis, () => redis.setex(`identity:user:${user.id}`, 300,
-                                    JSON.stringify({ fullName: user.fullName, avatarUrl: user.avatarUrl, status: user.status })));
-                            } catch { /* Redis is Tier 2. */ }
-                        }
+                    for (const user of envelope.data) users.set(user.id, { displayName: user.fullName, avatarUrl: user.avatarUrl, status: user.status });
+                    if (envelope.data.length > 0 && isRedisUsable(redis)) {
+                        try {
+                            // One round trip for the whole chunk, not one per user.
+                            await withRedis(redis, () => {
+                                const pipeline = redis.pipeline();
+                                for (const user of envelope.data) {
+                                    pipeline.setex(`identity:user:${user.id}`, 300, JSON.stringify({ fullName: user.fullName, avatarUrl: user.avatarUrl, status: user.status }));
+                                }
+                                return pipeline.exec();
+                            });
+                        } catch { /* Redis is Tier 2. */ }
                     }
                     done = true;
                 } catch { /* Retry once, then degrade. */ }
@@ -112,9 +120,49 @@ export class IdentityClient {
         return { users, degraded };
     }
 
-    private async authorizedRequest(method: "GET" | "PATCH", path: string, requestId: string, body?: string): Promise<{ statusCode: number; body: unknown }> {
+    /**
+     * Case 5 (notification contacts, care-worker only): chunks of at most 100, one attempt per chunk, 2 s timeouts. Any failure of a
+     * chunk (network, timeout, 4xx/5xx, missing scope, malformed answer) puts its ids in `unavailable` (the caller delays the rows).
+     * Nothing is cached or stored, and no address or name is ever logged.
+     */
+    async getContacts(ids: readonly number[], requestId: string): Promise<ContactsResult> {
+        const unique = [...new Set(ids)].filter((id) => Number.isSafeInteger(id) && id > 0);
+        const result: ContactsResult = { contacts: new Map(), unavailable: new Set() };
+        const log = this.options.logger ?? logger;
+        for (let offset = 0; offset < unique.length; offset += 100) {
+            const chunk = unique.slice(offset, offset + 100);
+            const failure = await this.fetchContactsChunk(chunk, requestId, result);
+            if (failure !== null) {
+                for (const id of chunk) result.unavailable.add(id);
+                log.warn("notification_contacts_unavailable", { errorCode: failure, ids: chunk.length });
+                log.metric("identity_call_failed", 1, { case: "contacts" });
+            }
+        }
+        return result;
+    }
+
+    /** Returns the failure code, or `null` after adding the chunk's contacts to `result`. */
+    private async fetchContactsChunk(chunk: readonly number[], requestId: string, result: ContactsResult): Promise<string | null> {
+        try {
+            const response = await this.authorizedRequest("GET", `/internal/users/contacts?ids=${chunk.join(",")}`, requestId, undefined, this.contactTokens);
+            if (response.statusCode !== 200) return `HTTP_${response.statusCode}`;
+            const envelope = await validateBody(ContactsEnvelopeDto, response.body, { unknownMembers: "strip" });
+            const seen = new Set<number>();
+            for (const entry of envelope.data) {
+                if (!chunk.includes(entry.id) || seen.has(entry.id)) return "MalformedResponse";
+                seen.add(entry.id);
+            }
+            if (envelope.data.length > 100) return "MalformedResponse";
+            for (const entry of envelope.data) {
+                result.contacts.set(entry.id, { email: entry.email, fullName: entry.fullName, locale: entry.locale, status: entry.status });
+            }
+            return null;
+        } catch (error) { return this.errorCode(error); }
+    }
+
+    private async authorizedRequest(method: "GET" | "PATCH", path: string, requestId: string, body?: string, tokens: ServiceTokenCache = this.tokens): Promise<{ statusCode: number; body: unknown }> {
         for (let refresh = 0; refresh < 2; refresh++) {
-            const token = await this.tokens.get(requestId);
+            const token = await tokens.get(requestId);
             const response = await this.pool.request({ path, method,
                 headers: { authorization: `Bearer ${token}`, accept: "application/json", "x-request-id": requestId,
                     ...(body === undefined ? {} : { "content-type": "application/json" }) },
@@ -122,7 +170,7 @@ export class IdentityClient {
             });
             if (response.statusCode === 401 && refresh === 0) {
                 await response.body.dump();
-                this.tokens.invalidate(token);
+                tokens.invalidate(token);
                 continue;
             }
             let parsed: unknown;

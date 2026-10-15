@@ -17,6 +17,13 @@ export async function findProfileByUserIdForUpdate(userId: number, conn: Knex.Tr
     return row === undefined ? undefined : toEntity(row);
 }
 
+/** `SELECT ... FOR SHARE`: booking holds a share lock, so it serializes with suspension and schedule writes (both take `FOR UPDATE`). */
+export async function findProfileByUserIdForShare(userId: number, conn: Knex.Transaction): Promise<DoctorProfile | undefined> {
+    const row: DoctorProfileRow | undefined = await conn<DoctorProfileRow>("doctor_profiles")
+        .select(...DOCTOR_PROFILE_COLUMNS).where("user_id", userId).whereNull("deleted_at").forShare().first();
+    return row === undefined ? undefined : toEntity(row);
+}
+
 export async function insertProfile(userId: number, input: DoctorProfileInput, timezone: string, conn: Knex.Transaction): Promise<DoctorProfile> {
     const rows: DoctorProfileRow[] = await conn<DoctorProfileRow>("doctor_profiles").insert({
         user_id: userId, headline: input.headline, bio: input.bio ?? null, years_experience: input.yearsExperience,

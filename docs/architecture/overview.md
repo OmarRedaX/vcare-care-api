@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-11
+last_verified: 2026-10-14
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -66,7 +66,7 @@ flowchart LR
 |---|---|
 | Public listener (`PORT=3001`) | `/api/*` — every user-facing route and `/api/health/live`, `/api/health/ready`. Behind the public ingress. |
 | Internal listener (`INTERNAL_PORT=3101`) | `/internal/*` — `GET /internal/doctors/:userId/summary`, `/internal/health/live|ready`. Binds to the private interface; the ingress never routes `/internal`. |
-| `care-worker` (separate component, same image) | Identity-sync retrier (built), upload-intent purge (built), audit partitions (built), notification outbox, reminder scan, `next-available` refresh ([ADR 0008](../adr/0008-care-worker-component.md), [deployment.md](./deployment.md)). |
+| `care-worker` (separate component, same image) | Identity-sync retrier (built), upload-intent purge (built), audit partitions (built), notification outbox (built), reminder scan (built), outbox purge (built), `next-available` refresh (planned) ([ADR 0008](../adr/0008-care-worker-component.md), [deployment.md](./deployment.md)). |
 | PostgreSQL | System of record for everything Care owns. `btree_gist` for the non-overlap exclusion constraint. `TIMESTAMPTZ`, UTC sessions. |
 | Redis | Derived caches (`slots:*`, `next-available:*`, `identity:user:*`), idempotency records (24 h), rate-limit windows. Never a source of truth. |
 | Object storage | Verification documents and record attachments under random keys; uploaded directly by browsers with presigned POSTs and turned into rows only after `complete` verifies the bytes; opened through on-demand, audited 60 s presigned GETs ([file-handling.md](./file-handling.md)). |

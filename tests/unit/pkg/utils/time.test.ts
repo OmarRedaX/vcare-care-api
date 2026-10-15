@@ -1,4 +1,4 @@
-import { toMs, toSeconds } from "../../../../src/pkg/utils/time";
+import { toIsoInZone, toMs, toSeconds } from "../../../../src/pkg/utils/time";
 
 describe("pkg/utils/time", () => {
     it.each([
@@ -24,4 +24,22 @@ describe("pkg/utils/time", () => {
             expect(() => toSeconds(value, "s")).toThrow(RangeError);
         },
     );
+});
+
+describe("pkg/utils/time toIsoInZone", () => {
+    it("should render the instant with the zone offset, dropping zero milliseconds", () => {
+        const instant = Date.parse("2026-10-24T20:00:00Z");
+        expect(toIsoInZone(instant, "Europe/Berlin")).toBe("2026-10-24T22:00:00+02:00");
+        expect(toIsoInZone(Date.parse("2026-10-25T20:00:00Z"), "Europe/Berlin")).toBe("2026-10-25T21:00:00+01:00");
+        expect(toIsoInZone(instant, "UTC")).toBe("2026-10-24T20:00:00Z");
+    });
+
+    it("should change offset across the New York fall-back", () => {
+        expect(toIsoInZone(Date.parse("2026-11-01T05:30:00Z"), "America/New_York")).toBe("2026-11-01T01:30:00-04:00");
+        expect(toIsoInZone(Date.parse("2026-11-01T06:30:00Z"), "America/New_York")).toBe("2026-11-01T01:30:00-05:00");
+    });
+
+    it("should throw RangeError for an invalid zone", () => {
+        expect(() => toIsoInZone(0, "Not/AZone")).toThrow(RangeError);
+    });
 });

@@ -1,4 +1,5 @@
 import { validateBody } from "../validation/validate";
+import { STATUS_SERVICE_SCOPES } from "./constants";
 import { TokenEnvelopeDto } from "./identity.dto";
 import type { ServiceTokenCacheOptions } from "./types";
 
@@ -7,9 +8,11 @@ export class ServiceTokenCache {
     private expiresAt = 0;
     private inFlight: Promise<string> | null = null;
     private readonly now: () => number;
+    private readonly scopes: readonly string[];
 
     constructor(private readonly options: ServiceTokenCacheOptions) {
         this.now = options.now ?? Date.now;
+        this.scopes = options.scopes ?? STATUS_SERVICE_SCOPES;
     }
 
     get(requestId: string): Promise<string> {
@@ -34,7 +37,7 @@ export class ServiceTokenCache {
             path: "/internal/auth/token", method: "POST",
             headers: { "content-type": "application/json", accept: "application/json", "x-request-id": requestId },
             body: JSON.stringify({ grant_type: "client_credentials", client_id: this.options.env.SERVICE_CLIENT_ID,
-                client_secret: this.options.env.SERVICE_CLIENT_SECRET, audience: "vcare-identity", scope: "users:read users:status:write" }),
+                client_secret: this.options.env.SERVICE_CLIENT_SECRET, audience: "vcare-identity", scope: this.scopes.join(" ") }),
             headersTimeout: 2_000, bodyTimeout: 2_000, signal: AbortSignal.timeout(2_000),
         });
         if (response.statusCode !== 200) {
@@ -42,7 +45,8 @@ export class ServiceTokenCache {
             throw new Error(`HTTP_${response.statusCode}`);
         }
         const data = await validateBody(TokenEnvelopeDto, await response.body.json(), { unknownMembers: "strip" });
-        if (!data.data.scope.split(" ").includes("users:read") || !data.data.scope.split(" ").includes("users:status:write")) {
+        const granted = data.data.scope.split(" ");
+        if (!this.scopes.every((scope) => granted.includes(scope))) {
             throw new Error("MalformedResponse");
         }
         this.token = data.data.access_token;

@@ -62,6 +62,22 @@ export class PatientsService {
         });
     }
 
+    /**
+     * `GET /patients/{patientUserId}` for the patient themself or a related doctor (the ownership policy already decided who
+     * may ask). A patient is held to their own id again here; an absent profile is 404. The clinical read is audited in the
+     * same transaction as the read.
+     */
+    getForViewer(actor: AuthContext, patientUserId: number): Promise<PatientProfile> {
+        if (actor.role === "patient" && actor.userId !== patientUserId) throw NotFound;
+        return this.db.transaction(async (trx) => {
+            const profile = await findProfileByUserId(patientUserId, trx);
+            if (profile === undefined) throw NotFound;
+            await this.audit.record(trx, { actor: actorFromAuth(actor), action: PatientAuditAction.Read, entityType: PATIENT_PROFILE_ENTITY_TYPE,
+                entityId: profile.id, metadata: { patientUserId, viewerRole: actor.role } });
+            return profile;
+        });
+    }
+
     async upsert(actor: AuthContext, changes: PatientProfileChanges): Promise<PatientProfile> {
         try {
             return await this.upsertOnce(actor, changes);

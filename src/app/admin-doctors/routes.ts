@@ -2,7 +2,6 @@ import { Router } from "express";
 import { userGuard } from "../../lib/auth/user-guard";
 import { container } from "../../lib/di/container";
 import { TOKENS } from "../../lib/di/tokens";
-import { noStore } from "../../lib/http/no-store";
 import { sealRouter } from "../../lib/http/route-pattern";
 import { idempotency } from "../../lib/idempotency/idempotency";
 import { rateLimit } from "../../lib/rate-limit/rate-limit";
@@ -21,7 +20,6 @@ export function buildAdminDoctorsRouter(): Router {
     // 5xx and 429 are not stored by the middleware, so a retry after `503` re-executes and finds the no-op state.
     const key = () => idempotency({ required: false });
 
-    router.use("/admin/doctors", noStore());
     router.patch("/admin/doctors/:doctorUserId/suspend", userGuard(), authorize(p.suspend), writeLimit(), key(), controller.suspend);
     router.patch("/admin/doctors/:doctorUserId/reinstate", userGuard(), authorize(p.reinstate), writeLimit(), key(), controller.reinstate);
     return sealRouter(router);

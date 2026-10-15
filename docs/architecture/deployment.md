@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-09
+last_verified: 2026-10-14
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
 ---
@@ -20,15 +20,13 @@ Sizing: [capacity.md](./capacity.md). Env vars: [infrastructure.md](./infrastruc
 | Component | Image / entrypoint | Count | Scaling | Health used | Egress |
 |---|---|---|---|---|---|
 | `care-api` | one image, `node dist/server.js` (both listeners); DB login `care_app` | min 2, max 6, across AZs | CPU 60 %; step on search p95 > 400 ms | LB: `/api/health/ready`, `/internal/health/ready`; orchestrator: `/api/health/live` | Identity public JWKS, video provider, object storage |
-| `care-worker` | same image, `node dist/worker.js`; DB login `care_app` (own pool, 4 connections: session advisory locks pin some) | 1 (2 on repeated lag) | manual | orchestrator: process liveness | email provider, Identity internal listener (`identity-sync`), object storage (quarantine purge) |
+| `care-worker` | same image, `node dist/worker.js`; DB login `care_app` (own pool, 6 connections: session advisory locks pin some; each notification loop holds at most one) | 1 (2 on repeated lag) | manual | orchestrator: process liveness | email provider (port `lib/email`, log-only adapter until a provider ADR), Identity internal listener (`identity-sync`; contact lookups by `notification-outbox` with a separate `users:contact:read` token), object storage (quarantine purge) |
 | `care-migrate` | same image, `node dist/migrate.js latest && node dist/migrate.js ensure-app-login`; DB **owner** (`MIGRATION_DATABASE_URL`) + the app secret it provisions | one-off per release | — | exit code | none |
 
 All reach own Postgres and Redis; `care-api` and `care-worker` reach Identity's internal LB, and `care-api` its
 public JWKS. Only `care-migrate` holds the owner credential ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md);
 hub `deployment.md` → Release pipeline step 3).
-`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1, 3 and 4 retrier, suspension jobs first, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **planned:** notification
-outbox · reminder scan (1 min) · `next-available` refresh · `audit_logs` partition maintenance (daily) · outbox purge ·
-upload-intent purge (5 min; [file-handling.md](./file-handling.md), ADR 0013).
+`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1, 3 and 4 retrier, suspension jobs first, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **built 2026-10-12 (notifications):** `notification-outbox` (claim, contacts lookup, send; every `OUTBOX_POLL_SECONDS`, 5 s), `consultation-reminders` (24 h / 1 h scan, every `REMINDER_SCAN_SECONDS`, 60 s) and `notification-outbox-purge` (`sent` rows past `OUTBOX_RETENTION_DAYS`, hourly); **planned:** `next-available` refresh. Upload-intent purge (5 min) is described in [file-handling.md](./file-handling.md), ADR 0013.
 
 ## 2. Availability and recovery ([ADR 0005](../adr/0005-availability-and-recovery-targets.md))
 | Target | Value | Mechanism |
@@ -58,7 +56,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | 3 | `audit_logs` growth | monthly partitions, time-bounded queries ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | 4 | Connections / failover | request pool per task (`DATABASE_POOL_MAX`) + a 1-connection readiness probe pool; statement timeout 2 s, client query timeout 3 s, connect timeout 2 s, TCP keepalive; fast-fail on pool wait > 1 s; a connection whose query timed out is discarded, not reused ([resilience.md](./resilience.md) → Postgres failure modes); proxy past ~10 tasks (verify it forwards the `options` / `statement_timeout` startup parameters first — [infrastructure.md](./infrastructure.md) → Database connection); promotion drill |
 | 5 | Replica lag → data loss window on failover | `DbReplicaLagHigh`; booking idempotency lets clients retry safely |
-| 6 | Outbox lag / provider slowness | SKIP LOCKED batches, 5 s provider timeout, backoff, `dead` after 8; scale worker to 2 |
+| 6 | Outbox lag / provider slowness | lease-based SKIP LOCKED claim (20 rows, 300 s lease), 5 s send timeout, backoff 30 s to 30 min, `dead` after 8; a contacts outage delays rows without consuming attempts; scale worker to 2 only after checking Identity contacts and the provider |
 | 7 | Redis failover | Tier 2 fallbacks; readiness ignores Redis |
 
 ## 5. Observability ([ADR 0007](../adr/0007-log-derived-metrics.md))
@@ -68,7 +66,10 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | `slot_computation_ms`, `search_cache_miss_ratio` | — | bottlenecks 1–2 |
 | `identity_hydration_degraded`, `identity_call_failed` | `case` | Case 2 / sync alerts |
 | `identity_sync_job_consecutive_failures`, `identity_sync_job_pending_age_s` | `kind` | Cases 1, 3, 4 alerts |
-| `outbox_oldest_pending_age_s`, `outbox_dead` | `kind` | outbox alerts |
+| `notification_outbox_lag_seconds` (gauge per outbox tick: age of the oldest due `pending` row, 0 when none) | none | `OutboxLagHigh` |
+| `notification_sent`, `notification_failed`, `notification_dead`, `notification_reminders_enqueued` | `kind` | `OutboxDeadJobs`, delivery rate |
+| `notification_skipped` | `reason` | skip ratio (unknown or inactive recipients, dropped reminders) |
+| `identity_call_failed` with `case=contacts` | `case` | contact lookup health (`OutboxLagHigh` context) |
 | `exclusion_violation` | — | `ExclusionViolationSpike` |
 | `db_pool_wait_ms`, `db_replica_lag_s` | — | bottlenecks 4–5 |
 | `rate_limiter_degraded` | `limiter` | Redis fallback |
@@ -81,7 +82,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | `upload_verification_failed`, `upload_intent_expired`, `download_url_issued` | `reason` / `kind` | `UploadVerificationFailureSpike` |
 
 **Alerts added by this design** (actions in [runbook.md](../runbook.md); existing ones in [resilience.md](./resilience.md)):
-`OutboxLagHigh` (oldest pending > 5 min for 5 min, ticket) · `OutboxDeadJobs` (> 0, ticket) · `DbReplicaLagHigh`
+`OutboxLagHigh` (`notification_outbox_lag_seconds` > 300 for 5 min, ticket) · `OutboxDeadJobs` (any `notification_dead`, ticket) · `DbReplicaLagHigh`
 (> 30 s for 5 min, page) · `WorkerHeartbeatStale` (> 2 min, page) · `AuditPartitionMissing`
 (`audit_partition_missing = 1`, next month missing, or `audit_default_partition_rows > 0`, ticket) ·
 `IdentityJwksStale` (`jwks_cache_age_s` > 1 800, page — cached keys are distrusted at 3 600, after which every

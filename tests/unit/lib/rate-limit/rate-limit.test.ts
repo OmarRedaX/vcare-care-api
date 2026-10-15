@@ -6,7 +6,7 @@ import { errorHandler } from "../../../../src/lib/error/errorHandler";
 import { logger } from "../../../../src/lib/logger/logger";
 import { MemoryLimiter } from "../../../../src/lib/rate-limit/memory-limiter";
 import { fallbackLimit, rateLimit } from "../../../../src/lib/rate-limit/rate-limit";
-import { byIp, byUser } from "../../../../src/lib/rate-limit/subjects";
+import { byIp, byUser, byUserOfRoles } from "../../../../src/lib/rate-limit/subjects";
 import type { RateLimitOptions } from "../../../../src/lib/rate-limit/types";
 import { requestId } from "../../../../src/lib/request-id/request-id";
 
@@ -299,5 +299,18 @@ describe("regression #11: lib/rate-limit unexpected failures", () => {
         } finally {
             process.off("unhandledRejection", onRejection);
         }
+    });
+});
+
+describe("lib/rate-limit/subjects byUserOfRoles", () => {
+    const auth = (role: "patient" | "doctor" | "admin") => ({ auth: { userId: 31, role, status: "active", emailVerified: true } }) as Request;
+
+    it("should return the user id when the caller holds one of the roles", () => {
+        expect(byUserOfRoles(["patient", "doctor"])(auth("doctor"))).toBe("31");
+    });
+
+    it("should return null when the caller holds another role or is unauthenticated", () => {
+        expect(byUserOfRoles(["patient", "doctor"])(auth("admin"))).toBeNull();
+        expect(byUserOfRoles(["patient"])({} as Request)).toBeNull();
     });
 });

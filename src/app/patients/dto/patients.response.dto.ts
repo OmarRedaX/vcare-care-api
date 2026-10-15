@@ -12,9 +12,12 @@ export class PatientProfileResponseDto {
     timezone!: string;
     createdAt!: string;
     updatedAt!: string;
-    /** Clinical fields leave only to the owning patient; any other viewer (admin included) is a programming error. */
+    /**
+     * Clinical fields leave only to the owning patient or a doctor with a consultation relationship (decided by the ownership
+     * policy before this runs); an admin viewer, or a patient who is not the owner, is a programming error.
+     */
     static from(entity: PatientProfile, viewer: PatientProfileViewer): PatientProfileResponseDto {
-        if (viewer.role !== "patient" || viewer.userId !== entity.userId) throw new Error("patient_profile_viewer_not_permitted");
+        if (viewer.role === "admin" || (viewer.role === "patient" && viewer.userId !== entity.userId)) throw new Error("patient_profile_viewer_not_permitted");
         return {
             id: entity.id, userId: entity.userId, dateOfBirth: entity.dateOfBirth, gender: entity.gender, bloodType: entity.bloodType,
             allergies: [...entity.allergies], chronicConditions: [...entity.chronicConditions], timezone: entity.timezone,

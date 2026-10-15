@@ -30,6 +30,16 @@ export async function listExceptionsPage(profileId: number, params: ExceptionPag
     return rows.map(toEntity);
 }
 
+/**
+ * Live exceptions with `fromDate <= date <= toDate` (inclusive), for open-interval resolution. Served by
+ * `uq_schedule_exceptions_doctor_profile_id_date` (equality on the profile, range on the date).
+ */
+export async function listExceptionsInRange(profileId: number, fromDate: string, toDate: string, conn: Knex = db): Promise<ScheduleException[]> {
+    const rows: ScheduleExceptionRow[] = await conn<ScheduleExceptionRow>("schedule_exceptions").select<ScheduleExceptionRow[]>(...SCHEDULE_EXCEPTION_COLUMNS)
+        .where("doctor_profile_id", profileId).whereNull("deleted_at").where("date", ">=", fromDate).where("date", "<=", toDate).orderBy("date", "asc");
+    return rows.map(toEntity);
+}
+
 /** One multi-row INSERT (at most 60 rows). A taken date raises 23505 on the live-date unique index; the service maps it. */
 export async function insertExceptions(profileId: number, rows: readonly ExceptionInsertRow[], conn: Knex.Transaction): Promise<ScheduleException[]> {
     if (rows.length === 0) return [];

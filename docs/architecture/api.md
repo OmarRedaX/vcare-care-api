@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-11
+last_verified: 2026-10-12
 tags: [api, reference, routes, rbac]
-related: [rbac, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
+related: [rbac, consultations-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling]
 ---
 
 # API — care-service (human view)
@@ -96,7 +96,7 @@ All eight routes: doctor, token status `active`, not locally suspended (`doctor_
 | POST | `/api/doctors/me/consultation-types` | doctor | self | `consultation_type.created` | 201; 400 (currency must be allowed and equal the profile currency), 404, 409 `Conflict` (duplicate live name, or the 20-type cap), 422 (Idem opt) |
 | PATCH | `/api/doctors/me/consultation-types/{id}` | doctor | self (`:id` in own profile, else 404) | `consultation_type.updated` (changed field names only) | 400 (`{}` or a `null` member), 404, 409 `Conflict`; a no-op is a 200 with no write. Ignores `Idempotency-Key` |
 
-As built: `409 ScheduleConflictsUnconfirmed` and its `conflicts` body are wired but the default `ScheduleImpactProvider` returns no affected consultations until `consultations` exists, so the path is proved with a stub provider only. `isBookable` on `GET /api/doctors/me` now needs a live active consultation type.
+As built: `409 ScheduleConflictsUnconfirmed` and its `conflicts` body are fed by the real `ScheduleImpactProvider` since `consultations` (2026-10-12): future `booked`/`waiting`/`in_progress` rows outside the new open intervals are listed (already-flagged ones included); with `confirmConflicts=true` only newly flagged rows get a `schedule_blocked` outbox row. `isBookable` on `GET /api/doctors/me` now needs a live active consultation type.
 ## admin-verification (live, verification module, 2026-10-08)
 All admin routes: admin, token status `active`, 120/min per user, `no-store`. `approve`/`reject`/`reopen` take an optional `Idempotency-Key`.
 
@@ -122,14 +122,16 @@ All admin routes: admin, token status `active`, 120/min per user, `no-store`. `a
 |---|---|---|---|---|---|
 | GET | `/api/patients/me` (live, 2026-10-11) | patient | self | clinical-read | 404 until created; 120/min per user; `no-store` (also on parser-level 400s) |
 | PATCH | `/api/patients/me` (live, 2026-10-11) | patient | self | clinical-write | upsert; `timezone` required on create; 200 for create and update; 20/min per user |
-| GET | `/api/patients/{patientUserId}` | patient, doctor | consulted-patient-or-self (else 404) | clinical-read | **planned** (ships with `consultations`); admins never |
+| GET | `/api/patients/{patientUserId}` (live, 2026-10-12, `consultations`) | patient, doctor | consulted-patient-or-self (else 404) | clinical-read (`patient_profile.read`) | patient: own id only; doctor: a `booked`, `waiting`, `in_progress` or `completed` consultation with that patient (decision D-R4), not locally suspended (`403`); **admin `403`**; no profile yet or non-numeric id `404`; 120/min per user; `no-store` |
 | GET | `/api/patients/{patientUserId}/records` | patient, doctor | consulted-patient-or-self (else 404) | clinical-read | **planned** (ships with `records`); timeline: profile + records newest first |
 
 ## consultations
+Live (2026-10-12, `consultations` module, [spec](../consultations/spec.md)): `POST` book, `GET` list, `GET /{id}`, `PATCH /{id}/reschedule`, `PATCH /{id}/cancel`; every response of the `/api/consultations` prefix is `no-store`, including parser-level `400`s and `401`s. The three writes require `Idempotency-Key` (Redis, 24 h; a replay returns the stored body; booking also replays from `uq_consultations_idempotency` after a Redis loss). A non-numeric `{id}` is `404`, not `400`. Rate limits: the three writes share 10/min per patient or doctor (admin 60/min), reads 120/min per user. `complaintText` is returned by get-one and by the actor's own write response, never by list items and never to admins; `cancelReason` is visible to participants and admins. List items are read through the `CONSULTATION_LIST_COLUMNS` projection. Write responses carry unhydrated `doctor`/`patient` participants (`profileHydrated: false`); list and get-one hydrate through Case 2. Planned rows (waiting-room, calendar, join, start, complete, no-show) belong to `sessions`.
+
 | Method | Path | Roles | Ownership | Idem | Audit / Case | Errors |
 |---|---|---|---|---|---|---|
 | POST | `/api/consultations` | patient (active, `emailVerified`) | self (`patient_user_id := auth.userId`) | **req** | `consultation.booked` | 400, 403 `EmailNotVerified`/`Forbidden`, 404, 409 `DoctorNotBookable`/`SlotUnavailable`, 422 `OutsideWorkingHours`/`BookingInPast`/`BeyondBookingHorizon`/`IdempotencyConflict`, 429 (10/min) |
-| GET | `/api/consultations` | patient, doctor, admin | own; admin all (no `complaintText`) | — | Case 2 degrade | filters `scope, status, from, to`, admin `doctorUserId, patientUserId, needsAdminFollowup` |
+| GET | `/api/consultations` | patient, doctor, admin | own; admin all (no `complaintText`) | — | Case 2 degrade | filters `scope` (`upcoming`: `endsAt > now`, `past`: `endsAt <= now`, `all`; D-R8: an overdue `in_progress` row matches neither until `sessions`), `status`, `from`, `to`, `timezone`; admin-only `doctorUserId, patientUserId, needsAdminFollowup` (a non-admin gets `403`) |
 | GET | `/api/consultations/waiting-room` | doctor | self | — | Case 2 | literal path, not an id |
 | GET | `/api/consultations/calendar` | doctor | self | — | Case 2 | `from`, `to` (≤ 7 days), `timezone`; p95 < 200 ms |
 | GET | `/api/consultations/{id}` | patient, doctor, admin | participant-or-admin (else 404) | — | clinical-read (participants); Case 2 | admin view omits `complaintText` |

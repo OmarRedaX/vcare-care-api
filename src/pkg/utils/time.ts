@@ -1,3 +1,4 @@
+import { DateTime } from "luxon";
 import type { DurationUnit } from "./types";
 
 const UNIT_MS: Record<DurationUnit, number> = {
@@ -18,4 +19,13 @@ export function toMs(value: number, unit: DurationUnit): number {
 
 export function toSeconds(value: number, unit: DurationUnit): number {
     return Math.floor(toMs(value, unit) / 1_000);
+}
+
+/** An instant rendered as ISO-8601 with the offset of an IANA `timezone` (seconds precision, no milliseconds). Throws `RangeError` for an invalid zone or instant. */
+export function toIsoInZone(instantMs: number, timezone: string): string {
+    const iso = DateTime.fromMillis(instantMs, { zone: timezone }).toISO({ suppressMilliseconds: true });
+    if (iso === null) {
+        throw new RangeError("Invalid instant or timezone");
+    }
+    return iso;
 }

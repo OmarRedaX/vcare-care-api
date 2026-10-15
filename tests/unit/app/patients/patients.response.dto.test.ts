@@ -28,7 +28,11 @@ describe("PatientProfileResponseDto", () => {
         expect(source.allergies).toHaveLength(2);
     });
 
-    it.each([["admin", 101], ["doctor", 101], ["patient", 999]] as const)("should throw for a %s viewer with user id %s", (role, userId) => {
+    it.each([["admin", 101], ["patient", 999]] as const)("should throw for a %s viewer with user id %s", (role, userId) => {
         expect(() => PatientProfileResponseDto.from(entity(), { userId, role })).toThrow("patient_profile_viewer_not_permitted");
+    });
+
+    it("should serve a doctor viewer because the ownership policy already required a consultation relationship", () => {
+        expect(PatientProfileResponseDto.from(entity(), { userId: 202, role: "doctor" }).userId).toBe(101);
     });
 });

@@ -3,6 +3,7 @@ import { isRedactedKey, normalizeKey, REDACTED_KEYS, redact } from "../../../../
 /** One row per key: a later module that appends a key must append a row here (spec §3.4.4). */
 const EXPECTED_KEYS = [
     "complaintText",
+    "cancelReason",
     "examinationNotes",
     "diagnosisText",
     "diagnosisCode",

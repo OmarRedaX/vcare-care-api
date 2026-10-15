@@ -2,6 +2,7 @@ import { FakeIdentityServer } from "../../../helpers/fake-identity-server";
 import { IdentityClient } from "../../../../src/lib/identity-client/identity-client";
 import { getEnv } from "../../../../src/lib/config/env";
 import { createUnreachableRedis } from "../../../helpers/redis";
+import type Redis from "ioredis";
 import { Logger } from "../../../../src/lib/logger/logger";
 
 describe("IdentityClient", () => {
@@ -58,6 +59,28 @@ describe("IdentityClient", () => {
         const degraded = await client.getUsersBatch([1], "batch-r");
         expect(degraded.degraded).toBe(true);
         expect(degraded.users.size).toBe(0);
+    });
+
+    it("should write the hydration cache with one pipeline for all fetched users", async () => {
+        for (let id = 2; id <= 6; id++) fake.users.set(id, { id, fullName: `User ${id}`, avatarUrl: null, status: "active" });
+        const setex = jest.fn();
+        const exec = jest.fn().mockResolvedValue([]);
+        const pipeline = jest.fn(() => ({ setex, exec }));
+        const directSetex = jest.fn();
+        const redis = { status: "ready", mget: jest.fn().mockResolvedValue([null, null, null, null, null, null]), pipeline, setex: directSetex } as unknown as Redis;
+        const result = await make(url, { redis }).getUsersBatch([1, 2, 3, 4, 5, 6], "pipe-r");
+        expect(result.users.size).toBe(6);
+        expect(pipeline).toHaveBeenCalledTimes(1);
+        expect(setex).toHaveBeenCalledTimes(6);
+        expect(exec).toHaveBeenCalledTimes(1);
+        expect(directSetex).not.toHaveBeenCalled();
+    });
+
+    it("should still return users when the pipeline write fails", async () => {
+        const redis = { status: "ready", mget: jest.fn().mockResolvedValue([null]), pipeline: jest.fn(() => ({ setex: jest.fn(), exec: jest.fn().mockRejectedValue(new Error("down")) })) } as unknown as Redis;
+        const result = await make(url, { redis }).getUsersBatch([1], "pipe-r");
+        expect(result.users.get(1)?.displayName).toBe("Private Name");
+        expect(result.degraded).toBe(false);
     });
 
     it("refreshes 30 seconds before expiry and bounds retry delays", async () => {

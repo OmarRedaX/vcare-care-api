@@ -10,15 +10,18 @@ import type { WorkerLoop } from "./lib/worker/types";
 import { buildWorkerLoops } from "./worker-loops";
 
 // Session advisory locks pin connections (singleton purge + per-intent/per-doctor), so keep headroom for transactions.
-const WORKER_POOL_MAX = 4;
+const WORKER_POOL_MAX = 6;
 const WORKER_STATEMENT_TIMEOUT_MS = 5_000;
+const ONCE_DRAIN_TIMEOUT_MS = 5_000;
 
 /**
  * `node dist/worker.js --once <loop>` (runbook): exactly one tick of the named loop with a fresh AbortController, then
  * the pool is closed and the process exits — 0 on success, 1 for an unknown loop, a tick that throws, or a tick that
  * reports `"incomplete"` (e.g. audit partitions not ensured, or the lock held by another worker).
+ * The exit code is set and the event loop drains on its own: `process.exit()` while sockets are still closing aborts
+ * libuv on Windows (`UV_HANDLE_CLOSING` assertion). The unref'd timer only forces the exit if a handle outlives the drain.
  */
-async function runOnce(name: string | undefined, loops: WorkerLoop[], closeAll: () => Promise<void>): Promise<never> {
+async function runOnce(name: string | undefined, loops: WorkerLoop[], closeAll: () => Promise<void>): Promise<void> {
     const loop = loops.find((candidate) => candidate.name === name);
     let code: 0 | 1 = 0;
     if (loop === undefined) {
@@ -39,7 +42,8 @@ async function runOnce(name: string | undefined, loops: WorkerLoop[], closeAll: 
         }
     }
     await closeAll();
-    process.exit(code);
+    process.exitCode = code;
+    setTimeout(() => process.exit(code), ONCE_DRAIN_TIMEOUT_MS).unref();
 }
 
 /** `care-worker` (ADR 0008): all background work runs here, never in `care-api`. */
@@ -60,7 +64,7 @@ function main(): void | Promise<void> {
 
     const onceAt = process.argv.indexOf("--once");
     if (onceAt !== -1) {
-        return runOnce(process.argv[onceAt + 1], loops, closeAll).then(() => undefined);
+        return runOnce(process.argv[onceAt + 1], loops, closeAll);
     }
 
     const runner = new LoopRunner(loops, { logger });

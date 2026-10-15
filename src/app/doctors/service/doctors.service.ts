@@ -14,9 +14,9 @@ import { DoctorAuditAction, DoctorProfileField, IdentitySyncStatus, Verification
 import { ApplicationNotEditable, CurrencyNotAllowed, PrimarySpecialtyNotLinked, PrimarySpecialtyRequired, UnknownSpecialty } from "../errors";
 import { Conflict } from "../../../lib/error/errors";
 import { deleteLanguagesNotIn, insertLanguages, listLanguages } from "../repository/doctor-languages.repo";
-import { findProfileByUserId, findProfileByUserIdForUpdate, insertProfile, isUserLocallySuspended, updateProfile } from "../repository/doctor-profiles.repo";
+import { findProfileByUserId, findProfileByUserIdForShare, findProfileByUserIdForUpdate, insertProfile, isUserLocallySuspended, updateProfile } from "../repository/doctor-profiles.repo";
 import { clearPrimaryExcept, deleteLinksNotIn, insertLinks, listSpecialtyLinks, markPrimary } from "../repository/doctor-specialties.repo";
-import type { ApplyResult, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, SpecialtyLink, SpecialtyRef } from "../types";
+import type { ApplyResult, BookingDoctor, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, SpecialtyLink, SpecialtyRef } from "../types";
 import type { DoctorProfile } from "../entity/doctor-profile.entity";
 import { SchedulesService } from "../../schedules/service/schedules.service";
 import { VerificationService } from "../../verification/service/verification.service";
@@ -57,6 +57,22 @@ export class DoctorsService {
 
     /** For `schedules` writes: `SELECT ... FOR UPDATE` on the live profile inside the caller's transaction. */
     lockProfileForSchedule(userId: number, trx: Knex.Transaction): Promise<DoctorProfile | undefined> { return findProfileByUserIdForUpdate(userId, trx); }
+
+    /**
+     * For `consultations` booking and reschedule: `SELECT ... FOR SHARE` on the live profile inside the caller's transaction, with
+     * Domain rule 6 evaluated after the lock (approved, synced, not suspended, accepting, at least one active type). Absent -> undefined.
+     */
+    async lockBookingTarget(userId: number, trx: Knex.Transaction): Promise<BookingDoctor | undefined> {
+        const profile = await findProfileByUserIdForShare(userId, trx);
+        if (profile === undefined) return undefined;
+        return { profileId: profile.id, userId: profile.userId, timezone: profile.timezone,
+            isBookable: isBookable(profile, await this.schedules.hasActiveConsultationType(profile.id, trx)) };
+    }
+
+    /** The doctor's IANA timezone (rendering default for a doctor viewer); `undefined` when there is no live profile. */
+    async findTimezone(userId: number, conn: Knex): Promise<string | undefined> {
+        return (await findProfileByUserId(userId, conn))?.timezone;
+    }
 
     async apply(actor: AuthContext, input: DoctorProfileInput): Promise<ApplyResult> {
         this.assertCurrencyAllowed(input.consultationFee.currency);

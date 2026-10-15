@@ -45,6 +45,14 @@ describe("lib/config/env parseEnv", () => {
             IDENTITY_SYNC_RETRY_CAP_SECONDS: 60,
             IDENTITY_SYNC_ALERT_AFTER_SECONDS: 900,
             UPLOAD_INTENT_PURGE_SECONDS: 300,
+            OUTBOX_POLL_SECONDS: 5,
+            OUTBOX_BATCH_SIZE: 20,
+            OUTBOX_MAX_ATTEMPTS: 8,
+            OUTBOX_RETENTION_DAYS: 30,
+            OUTBOX_PURGE_SECONDS: 3600,
+            REMINDER_SCAN_SECONDS: 60,
+            BOOKING_HORIZON_DAYS: 60,
+            CANCELLATION_POLICY_MINUTES: 120,
             AUDIT_PARTITION_MONTHS_AHEAD: 2,
             CORS_ORIGINS: [],
             LOG_LEVEL: "info",
@@ -305,6 +313,12 @@ describe("verification storage and worker environment", () => {
         expect(captureInvalid({ ...secretsOnly(), STORAGE_FORCE_PATH_STYLE: "1" }).keys).toEqual(["STORAGE_FORCE_PATH_STYLE"]);
         expect(captureInvalid({ ...secretsOnly(), IDENTITY_SYNC_POLL_SECONDS: "0" }).keys).toEqual(["IDENTITY_SYNC_POLL_SECONDS"]);
         expect(captureInvalid({ ...secretsOnly(), UPLOAD_INTENT_PURGE_SECONDS: "1.5" }).keys).toEqual(["UPLOAD_INTENT_PURGE_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), OUTBOX_BATCH_SIZE: "101" }).keys).toEqual(["OUTBOX_BATCH_SIZE"]);
+        expect(captureInvalid({ ...secretsOnly(), OUTBOX_MAX_ATTEMPTS: "21" }).keys).toEqual(["OUTBOX_MAX_ATTEMPTS"]);
+        expect(captureInvalid({ ...secretsOnly(), OUTBOX_RETENTION_DAYS: "0" }).keys).toEqual(["OUTBOX_RETENTION_DAYS"]);
+        expect(captureInvalid({ ...secretsOnly(), OUTBOX_POLL_SECONDS: "0" }).keys).toEqual(["OUTBOX_POLL_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), OUTBOX_PURGE_SECONDS: "86401" }).keys).toEqual(["OUTBOX_PURGE_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), REMINDER_SCAN_SECONDS: "0" }).keys).toEqual(["REMINDER_SCAN_SECONDS"]);
     });
 
     it("fixes security TTLs outside tests and permits task-role credentials in production", () => {

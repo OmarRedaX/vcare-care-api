@@ -24,6 +24,8 @@ export interface DoctorProfileColumnChanges {
     headline?: string; bio?: string | null; years_experience?: number; consultation_fee?: number; currency?: string;
     default_slot_minutes?: number; timezone?: string; is_accepting_patients?: boolean;
 }
+/** The doctor as booking needs it: identity of the profile, its zone, and the Domain rule 6 verdict computed under the lock. */
+export interface BookingDoctor { profileId: number; userId: number; timezone: string; isBookable: boolean }
 export interface SpecialtyLink { specialtyId: number; isPrimary: boolean }
 export interface DoctorLanguageRow { language_code: string }
 export interface DoctorSpecialtyLinkRow { specialty_id: number; is_primary: boolean }

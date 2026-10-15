@@ -302,7 +302,7 @@ describe("care-worker audit-partitions loop (integration: real Postgres as care_
         expect(jsonLines(unknown.output).find((line) => line.message === "worker_loop_unknown")).toMatchObject({
             level: "error",
             loop: "no-such-loop",
-            loops: ["audit-partitions", "identity-sync", "upload-intent-purge"],
+            loops: ["audit-partitions", "identity-sync", "upload-intent-purge", "notification-outbox", "consultation-reminders", "notification-outbox-purge"],
         });
     });
 

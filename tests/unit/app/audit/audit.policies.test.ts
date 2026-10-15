@@ -1,6 +1,7 @@
 import type { RequestHandler, Router } from "express";
 import { AUDIT_POLICIES } from "../../../../src/app/audit/policies";
 import { buildAuditRouter } from "../../../../src/app/audit/routes";
+import { NO_STORE_PREFIXES } from "../../../../src/routes";
 import { assertRoutesAuthorized } from "../../../../src/lib/rbac/assert-routes-authorized";
 import { authorize } from "../../../../src/lib/rbac/authorize";
 import { isAuthorizeHandler, isGuardHandler, isPreAuthHandler } from "../../../../src/lib/rbac/markers";
@@ -48,12 +49,9 @@ describe("buildAuditRouter", () => {
         expect(route?.route?.stack.map((entry) => kind(entry.handle))).toEqual(["guard", "authorize", "limiter", "other"]);
     });
 
-    it("should mount noStore before the route", () => {
-        const all = layers(router);
-        const noStoreIndex = all.findIndex((layer) => layer.route === undefined);
-        const routeIndex = all.findIndex((layer) => layer.route?.path === "/audit-logs");
-        expect(noStoreIndex).toBeGreaterThanOrEqual(0);
-        expect(noStoreIndex).toBeLessThan(routeIndex);
+    it("should leave no-store to the app-level prefix list, which runs before body parsing", () => {
+        expect(NO_STORE_PREFIXES).toContain("/api/audit-logs");
+        expect(layers(router).filter((layer) => layer.route === undefined)).toHaveLength(1); // only sealRouter's error layer
     });
 
     it("should register exactly one route, GET only", () => {
