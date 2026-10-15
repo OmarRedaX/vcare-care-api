@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -17,7 +17,7 @@ Every variable is declared and validated in `lib/config/env.ts` (zod); only that
 `{"level":"error","message":"invalid_environment","keys":[…]}` on stderr naming the **keys only** (never values), then
 exit 1. Empty strings count as unset. **Secrets have no defaults.**
 
-### Implemented (foundation 2026-09-28; access 2026-10-02; doctors 2026-10-07)
+### Implemented (foundation 2026-09-28; access 2026-10-02; doctors 2026-10-07; notifications 2026-10-12)
 | Variable | Default | Secret | Purpose / rule |
 |---|---|---|---|
 | `NODE_ENV` | `development` | | `development` \| `test` \| `production`; gates dev CORS and the `LOG_LEVEL=debug` ban |
@@ -49,6 +49,12 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `RATE_LIMIT_FALLBACK_DIVISOR` | `2` | | per-instance fallback limit `max(1, floor(limit / divisor))` when Redis is down ([ADR 0006](../adr/0006-health-split-redis-tier-2.md)) |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | | 1 000–60 000; deadline for draining requests **and** closing resources on `SIGTERM` (server and worker) |
 | `WORKER_POLL_INTERVAL_MS` | `1000` | | ≥ 100; default `care-worker` loop interval ([ADR 0008](../adr/0008-care-worker-component.md)) |
+| `OUTBOX_POLL_SECONDS` | `5` | | 1-86400; `notification-outbox` loop interval (`notifications`) |
+| `OUTBOX_BATCH_SIZE` | `20` | | 1-100; outbox rows claimed per round (also within the contacts cap of 100 ids) |
+| `OUTBOX_MAX_ATTEMPTS` | `8` | | 1-20; send attempts before a row is `dead` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)) |
+| `OUTBOX_RETENTION_DAYS` | `30` | | 1-365; age after which `sent` outbox rows are purged |
+| `OUTBOX_PURGE_SECONDS` | `3600` | | 1-86400; `notification-outbox-purge` loop interval |
+| `REMINDER_SCAN_SECONDS` | `60` | | 1-86400; `consultation-reminders` loop interval |
 | `ALLOWED_CURRENCIES` | `EGP` | | comma-separated uppercase currency allowlist for doctor consultation fees; empty entries and malformed codes are rejected |
 
 ### Planned (declared by the module that first uses them)
@@ -72,10 +78,6 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `RATE_LIMIT_SEARCH_PER_USER_PER_MIN` | `120` | | |
 | `RATE_LIMIT_BOOKING_PER_USER_PER_MIN` | `10` | | |
 | `RATE_LIMIT_UPLOADS_PER_USER_PER_HOUR` | `20` | | |
-| `WORKER_BATCH_SIZE` | `20` | | rows claimed per poll |
-| `OUTBOX_MAX_ATTEMPTS` | `8` | | notification attempts before `dead` ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)) |
-| `OUTBOX_RETENTION_DAYS` | `30` | | purge of `sent` outbox rows |
-| `REMINDER_SCAN_INTERVAL_MS` | `60000` | | reminder scan cadence |
 
 Local Compose now includes a loopback-only MinIO API (digest-pinned frozen community build, [ADR 0020](../adr/0020-local-s3-emulator-image.md)) on port 9002; test Compose uses 9003. Their setup jobs create separate private buckets, permit presigned browser `POST` from `http://localhost:5173`, and expire `quarantine/` objects after one day. Production storage uses TLS, bucket public access blocking, server-side encryption, and task-role credentials; the local HTTP endpoint and synthetic keys are development/test only. The Identity attempt timeout is a fixed 2000 ms, not an env variable.
 
@@ -92,7 +94,7 @@ Built by `createKnex` (`lib/knex/knex.ts`); full rationale in the [foundation sp
 |---|---|---|---|---|
 | request pool (`db`, `care-api`) | `care-api` | `DATABASE_POOL_MAX` (default 20) | 2 s server / 3 s client | 1 s |
 | readiness probe (`probeDb`, `care-api`) | `care-api-probe` | 1 | 2 s / 3 s | 1 s |
-| `care-worker` (`src/worker.ts`) | `care-worker` | 2 | 5 s / 6 s | 1 s |
+| `care-worker` (`src/worker.ts`) | `care-worker` | 6 | 5 s / 6 s | 1 s |
 | `care-migrate` (owner, `MIGRATION_DATABASE_URL`) | `care-migrate` | 1 | none | 60 s |
 
 **Database roles ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md)).** `care` is the owner:
@@ -277,7 +279,7 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
   both bounded by `SHUTDOWN_TIMEOUT_MS` (`worker_stop_timeout` and exit 1 on overrun). `node dist/worker.js --once
   <loop>` runs exactly one tick of that loop, closes the pool, and exits 0 (`worker_loop_unknown` / `worker_tick_failed`
   / `worker_once_incomplete` — the tick ran but did not reach its goal, e.g. partitions not ensured or the lock held
-  elsewhere — → exit 1). Loops: `audit-partitions`, `identity-sync`, `upload-intent-purge`. The worker pool has 4 connections (session advisory locks pin some); it also constructs its own Identity and storage clients, closed on stop and on `--once`.
+  elsewhere — → exit 1). Loops: `audit-partitions`, `identity-sync`, `upload-intent-purge`, `notification-outbox`, `consultation-reminders`, `notification-outbox-purge` (the last three from `notifications`, built in `src/worker-loops.ts`). The worker pool has 6 connections (session advisory locks pin some; each notification loop holds at most one at a time; raised from 4 on 2026-10-12); it also constructs its own Identity and storage clients, closed on stop and on `--once`.
 
 ## Local stack (compose)
 `docker-compose.yml` (`name: vcare-care`): Postgres 17 on `127.0.0.1:5433` and Redis 7 on `127.0.0.1:6380`, both on
@@ -297,11 +299,11 @@ roll-up, and the release pipeline — is platform-scope and authored in the hub
   `INTERNAL_PORT` admits only registered service clients and admin tooling.
 - Background loops (Identity-sync retrier, notification outbox, reminders, `next-available` refresh, audit
   partitions) run in the separate `care-worker` component ([ADR 0008](../adr/0008-care-worker-component.md));
-  graceful shutdown stops each loop after its current batch. As built (access): one loop, `audit-partitions` (daily;
+  graceful shutdown stops each loop after its current batch. As built: six loops (list under Shutdown above); the notification outbox, reminder scan and outbox purge shipped 2026-10-12 with a log-only email adapter, so **nothing is emailed yet** (the real provider is a later ADR); `next-available` refresh is not built. Access: `audit-partitions` (daily;
   transaction-scoped advisory lock; `audit_partitions_ensured`, metrics `audit_partition_missing`,
   `audit_default_partition_rows`).
 - Outbound: `care-api` → Identity public JWKS (`undici`, every 5 min + gated demand fetches) and internal LB, video
   room provider, object storage; `care-worker` →
-  Identity internal LB, email provider.
+  Identity internal LB (status writes with scopes `users:read users:status:write`; contact lookups with a **separate** token holding only `users:contact:read`, never requested by `care-api`), email provider (port `lib/email`, log-only adapter until a provider ADR; planned `EMAIL_PROVIDER_*`/`EMAIL_FROM` stay in the Planned table).
 
 Components, sizing, availability, metrics, and alerts: [deployment.md](./deployment.md) and [capacity.md](./capacity.md).

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -733,22 +733,34 @@ CREATE TABLE notification_outbox (
     sent_at             TIMESTAMPTZ,
     CONSTRAINT fk_notification_outbox_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id) ON DELETE RESTRICT,
     CONSTRAINT chk_notification_outbox_kind CHECK (kind IN ('booking_confirmed', 'reminder_24h', 'reminder_1h',
-        'rescheduled', 'cancelled', 'schedule_blocked', 'doctor_joined')),
+        'rescheduled', 'cancelled', 'schedule_blocked', 'doctor_joined', 'doctor_suspended')),   -- widened by 20261012120000 (was seven kinds)
     CONSTRAINT chk_notification_outbox_status CHECK (status IN ('pending', 'sent', 'dead', 'skipped')),
-    CONSTRAINT chk_notification_outbox_payload_object CHECK (jsonb_typeof(payload) = 'object')
+    CONSTRAINT chk_notification_outbox_payload_object CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT chk_notification_outbox_sent_shape CHECK ((status = 'sent') = (sent_at IS NOT NULL)),   -- 20261012120000
+    CONSTRAINT chk_notification_outbox_attempts CHECK (attempts >= 0)                                  -- 20261012120000
 );
--- Worker claim: WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at
---   FOR UPDATE SKIP LOCKED LIMIT 20   (NOT created yet: the delivery unit adds it with its UPDATE grant)
-CREATE INDEX idx_notification_outbox_pending_next_attempt_at ON notification_outbox (next_attempt_at) WHERE status = 'pending';
+-- Worker claim and lag: WHERE status='pending' AND next_attempt_at <= $now ORDER BY next_attempt_at, id
+--   LIMIT 20 FOR UPDATE SKIP LOCKED (one autocommit statement that also leases the row); lag = MIN(next_attempt_at) of the due rows
+CREATE INDEX idx_notification_outbox_pending_next_attempt_at_id ON notification_outbox (next_attempt_at, id) WHERE status = 'pending';
 -- FK index + support lookup by consultation
 CREATE INDEX idx_notification_outbox_consultation_id ON notification_outbox (consultation_id) WHERE consultation_id IS NOT NULL;
--- Purge: WHERE status='sent' AND sent_at < now() - OUTBOX_RETENTION_DAYS, batches of 5 k   (NOT created yet: delivery unit, with DELETE grant)
+-- Purge: WHERE status='sent' AND sent_at < now() - OUTBOX_RETENTION_DAYS, batches of 5 000
 CREATE INDEX idx_notification_outbox_sent_at ON notification_outbox (sent_at) WHERE status = 'sent';
 ```
-**Built, insert side only** (`consultations`, migration `20261011130100`): the table, its three CHECKs and `idx_notification_outbox_consultation_id` exist;
-`vcare_app` holds `SELECT, INSERT` (no `UPDATE`/`DELETE`). Writers are `NotificationsService.enqueue` calls inside the booking, reschedule and cancel
-transactions and the schedule-block port (`booking_confirmed`, `rescheduled`, `cancelled`, `schedule_blocked`; payloads are an allowlist of ids, ISO instants and roles).
-The claim and purge indexes, the status-changing grants, delivery and the reminder scan belong to the notification/worker unit.
+**Built.** Insert side (`consultations`, migration `20261011130100`): the table, the original three CHECKs and `idx_notification_outbox_consultation_id`;
+writers are `NotificationsService.enqueue` calls inside the booking, reschedule, cancel and schedule-block transactions, the `ReminderScanService`
+(reminders) and the suspension impact provider (`doctor_suspended`); payloads are an allowlist of ids, ISO instants and roles (`OUTBOX_PAYLOAD_KEYS`).
+Delivery side (`notifications`, migration `20261012120000_notification_outbox_delivery`, 2026-10-12): the kind CHECK widened to eight kinds, `chk_notification_outbox_sent_shape`,
+`chk_notification_outbox_attempts`, the claim index (replaces the planned name `idx_notification_outbox_pending_next_attempt_at`) and the purge index.
+Grants to `vcare_app`: `SELECT, INSERT`, **column-level `UPDATE (status, attempts, next_attempt_at, last_error_code, sent_at)`** (payload, kind, recipient, consultation and request id stay immutable; `42501` otherwise) and `DELETE`
+(used only by the purge of `sent` rows). Delivery state machine: a claim leases a row by moving `next_attempt_at` 300 s ahead and increments `attempts` (the claim number is the lease token); results are written only with
+the guard `status='pending' AND attempts = <claim number>`. `pending` -> `sent` | `skipped` | `dead`; `last_error_code` holds a fixed vocabulary (`contacts_unavailable`, `email_timeout`, `email_error`, `email_rejected`,
+`recipient_unknown`, `recipient_inactive`, `consultation_missing`, `consultation_changed`, `reminder_expired`, `template_missing`, `lease_expired`), never a provider message. Only `sent` rows older than `OUTBOX_RETENTION_DAYS` are purged;
+`pending`, `dead` and `skipped` rows are kept. Companion index on `consultations` (`20261012120100_consultations_reminder_index`):
+`idx_consultations_booked_starts_at ON consultations (starts_at) WHERE status = 'booked' AND deleted_at IS NULL` for the reminder scan.
+Measured on a 750 k-row outbox (manual QA 2026-10-14): claim 0.87 ms, lag 0.03 ms, guarded finish 0.10 ms, steady-state purge 6.4 ms. **Watch item:** the purge `DELETE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)`
+is planned as a Hash Semi Join over a sequential scan of the whole table (about 150 ms per 5 000-row batch while draining a large backlog; no effect in steady state). Acceptable; if a faster drain is ever needed,
+rewrite as `DELETE ... USING (subquery)` so the outer relation is not scanned.
 
 ## Not stored
 - **Slots / availability** — computed per request ([scheduling-slots.md](./scheduling-slots.md)).

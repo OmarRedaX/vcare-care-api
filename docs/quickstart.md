@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-10-11
+last_verified: 2026-10-14
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -72,8 +72,8 @@ docker compose up -d postgres redis minio minio-setup   # Postgres 127.0.0.1:543
 npm run migrate                       # as the owner: btree_gist, the vcare_app role, audit_logs + partitions
 npm run migrate:ensure-app-login      # creates/updates the care_app login from DATABASE_URL
 npm run dev                           # public listener :3001, internal listener 127.0.0.1:3101
-npm run dev:worker                    # care-worker: audit-partitions (daily), identity-sync (10 s), upload-intent-purge (5 min)
-# one tick of a loop: npm run build && node dist/worker.js --once identity-sync   (or upload-intent-purge)
+npm run dev:worker                    # care-worker: audit-partitions (daily), identity-sync (10 s), upload-intent-purge (5 min), notification-outbox (5 s), consultation-reminders (60 s), notification-outbox-purge (hourly)
+# one tick of a loop: npm run build && node dist/worker.js --once identity-sync   (or upload-intent-purge, notification-outbox, consultation-reminders, notification-outbox-purge)
 ```
 
 ### Option B — everything in containers

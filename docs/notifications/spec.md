@@ -3,12 +3,12 @@ title: notifications — Spec
 owner: care-team
 service: care-service
 module: notifications
-status: ready
-version: 0.1.0
+status: implemented
+version: 0.2.0
 diataxis: reference
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 tags: [spec, notifications, outbox, worker, reminders, email-port, templates, identity-contacts, case-5]
-related: [notifications-brainstorm, consultations-spec, admin-doctors-spec, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, data-model, resilience, infrastructure, integration, deployment, hub-adr-0010-notification-contact-lookup]
+related: [notifications-brainstorm, notifications-tasks, notifications-manual-qa, consultations-spec, admin-doctors-spec, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, data-model, resilience, infrastructure, integration, deployment, hub-adr-0010-notification-contact-lookup]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -426,3 +426,24 @@ No hub doc is edited here; none of these blocks `/develop`.
 
 ## 13. Dependencies on being done first
 Consultations branch (`feature/consultations`, PR #38) merged or stacked: this unit modifies `suspension-impact.provider.ts` and `consultations.repo.ts`.
+
+---
+
+## 14. As-built notes (2026-10-14, version 0.2.0)
+Built, unit and integration tested (green), manually QA'd on 2026-10-14 and re-run on 2026-10-15 ([manual-qa.md](./manual-qa.md): 156 pass, 0 fail). The `--once` shutdown abort found in the first run (case 154, Windows libuv assertion) is fixed in `src/worker.ts` `runOnce` (sets `process.exitCode`, lets the loop drain, unref'd 5 s fallback exit) and verified on Windows; Linux was not run. The spec above is unchanged history; where it differs from the code, this section wins. **Contract: unchanged**, re-checked against `contracts/openapi.yaml` (no route, header, field or error code was added; notification prose in the contract is still accurate).
+
+**Intentional divergences from sections 1 to 13**
+- **Loop builders live in one file.** `src/app/notifications/worker/notification.loops.ts` exports `buildNotificationOutboxLoop`, `buildConsultationRemindersLoop` and `buildNotificationOutboxPurgeLoop` (section 3.1 planned three files). Loop names and registration in `src/worker-loops.ts` are as specified; services are composed manually there (`OutboxDeliveryService`, `ReminderScanService`, `OutboxPurgeService`, `NotificationsService`, `ConsultationReminderService`, `LogEmailAdapter`).
+- **Delivery rules are a separate pure module**, `src/app/notifications/delivery-rules.ts` (`decidePreSend`, `recipientRoleOf`, payload readers), used by `OutboxDeliveryService`; behaviour matches section 3.4 step 4 and N-D5.
+- **Tick outcome.** `OutboxDeliveryService.tick` returns `"incomplete"` (so `--once` exits 1 with `worker_once_incomplete`) when any claimed row lost its lease; otherwise `"done"` (section 3.4 said it always returns `"done"`; section 3.9 already described this).
+- **`notification_failed` is not emitted for a contacts-lookup delay.** Those rows carry `last_error_code='contacts_unavailable'` and are signalled by `notification_contacts_unavailable` and `identity_call_failed{case=contacts}`; `notification_failed` counts transient send failures only. `notification_skipped` carries the `reason` dimension from the fixed vocabulary.
+- **Environment.** The six variables, the `WORKER_POOL_MAX = 6` pool and the fixed constants are as in 3.9. The planned names `WORKER_BATCH_SIZE` and `REMINDER_SCAN_INTERVAL_MS` were removed from `architecture/infrastructure.md` (replaced by the table in 3.9).
+
+**Architecture docs refreshed at this `/update-docs`:** `data-model.md` (outbox kind, CHECKs, indexes, grants, state machine, reminder index), `infrastructure.md` (env table, worker pool 6, loops), `integration.md` (Case 5 as built), `resilience.md` (lease claim, at-least-once, contacts delay), `deployment.md` (built loops, metrics, alerts, bottleneck 6), `capacity.md` (pool), `overview.md`, `consultation-lifecycle.md`, `runbook.md`, `quickstart.md`, `service-card.md`, `INDEX.md`, and the pointer in `consultations/spec.md` section 13.
+
+**Open items**
+1. **Purge plan watch item (not a defect).** On a 750 k-row outbox the purge `DELETE ... WHERE id IN (SELECT ... ORDER BY sent_at LIMIT 5000 FOR UPDATE SKIP LOCKED)` is planned as a Hash Semi Join over a sequential scan of the table: about 150 ms per 5 000-row batch while draining a 338 k-row backlog (five ticks cleared 338 k rows in about 20 s); steady state is a bitmap scan plus primary-key probes at 6.4 ms, and 0.15 ms when nothing is eligible. If a faster drain is ever required, rewrite as `DELETE ... USING (subquery)` so the outer relation is not scanned. Claim (0.87 ms), lag (0.03 ms) and guarded finish (0.10 ms) use their indexes with no sequential scan.
+2. **Environment checks still open** (spec section 5 and 11): the deployed `care-service` Identity client must hold `users:contact:read`; until it does, rows are delayed and `OutboxLagHigh` fires. Manual QA used the fake Identity only (cases 54 to 58 verify the delay path for 403 and for a client without the scope).
+3. **Production sends no real email**: only `LogEmailAdapter` exists. A provider ADR (`EMAIL_PROVIDER_*`, `EMAIL_FROM`, DKIM/SPF, bounce handling) is required first (section 11, platform changes 2).
+
+**Platform deltas** (listed for the hub; applied directly this session per the three-repo sync rule, see the update-docs report): Case 5 is built (landscape), `care-worker` pool 6 and loops (deployment), outbox volume and pool (capacity).

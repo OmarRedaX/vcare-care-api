@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-08
+last_verified: 2026-10-14
 tags: [architecture, capacity, sizing, load, storage, redis]
 related: [deployment, infrastructure, data-model, scheduling-slots, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, hub-capacity]
 ---
@@ -57,17 +57,16 @@ Case 2 hydration reaching Identity and JWKS/service-token load are platform numb
 - **Load at peak:** ≈ 400 queries/s (search 3 queries, slots 5 on a cache miss, lists 1–2), ≈ 10 writes/s including
   audit and outbox rows.
 - **Connections:** each `care-api` task opens up to `DATABASE_POOL_MAX` request connections **plus 1** for the
-  readiness probe pool (`application_name=care-api-probe`, foundation 2026-09-28); the worker is budgeted at 5
-  (its pool max is 4 since verification); `care-migrate` uses 1 during a release.
+  readiness probe pool (`application_name=care-api-probe`, foundation 2026-09-28); the worker is budgeted at 7
+  (its pool max is 6 since notifications, 2026-10-12); `care-migrate` uses 1 during a release.
 
   | `DATABASE_POOL_MAX` | Per API task | 2 tasks + worker | 6 tasks + worker |
   |---|---|---|---|
-  | 20 (code default, `lib/config/env.ts`) | 21 | **47** | **131** |
-  | 10 (the value this derivation assumed on 2026-09-15; must then be set explicitly per task) | 11 | 27 | 71 |
+  | 20 (code default, `lib/config/env.ts`) | 21 | **49** | **133** |
+  | 10 (the value this derivation assumed on 2026-09-15; must then be set explicitly per task) | 11 | 29 | 73 |
 
   Either fits the 2 vCPU / 8 GB class. Which value production sets is not decided yet; until it is, the
-  code default (20) applies, and the hub roll-up's "≈ 25 connections" is stale (it predates the probe connection and
-  assumed 10). At 10× (15–20 tasks) the default gives ≈ 320–425 connections, so the connection proxy in §7 is needed
+  code default (20) applies, and the hub roll-up (updated 2026-10-14 to "≈ 29–49 connections") covers both values (worker pool 6). At 10× (15–20 tasks) the default gives ≈ 320–425 connections, so the connection proxy in §7 is needed
   either way.
 
 | Table | Rows/year | ≈ bytes/row incl. indexes | Year 1 |

@@ -6,7 +6,7 @@ module: consultations
 status: implemented
 version: 0.2.0
 diataxis: reference
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 tags: [spec, consultations, booking, reschedule, cancel, exclusion-constraint, idempotency, outbox, ports, clinical-privacy]
 related: [consultations-brainstorm, patients-spec, schedules-spec, admin-doctors-spec, doctors-spec, access-spec, data-model, scheduling-slots, consultation-lifecycle, rbac, integration, adr-0003-db-exclusion-constraint, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 contracts: [contracts/openapi.yaml]
@@ -469,6 +469,7 @@ Built, tested (unit 125 suites / 2322 tests; integration 33 suites / 1062 passed
 - **Hydration cache pipeline.** `getUsersBatch` writes each missed chunk back to Redis (`identity:user:<id>`, TTL 300 s) in one pipelined round trip instead of one `SETEX` per user.
 - **Follow-up index.** `idx_consultations_followup_starts_at_id` includes `in_progress`; `idx_consultations_starts_at_id` serves the unfiltered admin list (section 2.1). `data-model.md` is updated.
 - **Flag once.** `flagConsultations` skips rows already flagged with the same reason (decision recorded in section 11).
+- **Superseded by `notifications` (2026-10-14):** the outbox now has a delivery side (claim/purge indexes, column-level `UPDATE` and `DELETE` grants, `doctor_suspended` kind) and `ConsultationSuspensionImpactProvider` queues a `doctor_suspended` row per newly flagged patient in the suspension transaction. The statements in sections 1 to 3 that the outbox is insert-only, that no suspension kind exists and that no reminder scan or loop exists describe this slice as first built; see [notifications spec](../notifications/spec.md) section 14.
 - **Deviation:** `DoctorsService.findBookingTarget` (non-locking) is not built; `ConsultationQueriesService.renderOwn` renders the actor's own write responses.
 - **Owner decision D-R4 applied to CLAUDE.md** (2026-10-12): the wording "completed or current consultation" now names `booked`, `waiting`, `in_progress` or `completed`.
 - **Redis idempotency retention (24 h)** is accepted and recorded in section 7, `architecture/clinical-records.md` and `architecture/resilience.md`.

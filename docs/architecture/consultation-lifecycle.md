@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 tags: [consultations, lifecycle, state-machine, reschedule, cancellation, sessions]
 related: [consultations-spec, scheduling-slots, clinical-records, rbac, data-model, api]
 ---
@@ -73,7 +73,7 @@ is generic so `sessions` reuses it.
   `is_accepting_patients=false`; cancel stays available); the stored interval length is kept; the reminder marks and the follow-up flag are cleared.
 - **Cancel** from `booked`/`waiting`; assigned doctor and admin need a `reason`; a locally suspended doctor gets `403`. A retry with a new key after the first success is
   `409 InvalidTransition` (cancel's idempotency is Redis-only).
-- Every write enqueues `notification_outbox` rows in its transaction (`rescheduled`, `cancelled` to both parties); delivery is the notification unit. Slot and `next-available`
+- Every write enqueues `notification_outbox` rows in its transaction (`rescheduled`, `cancelled` to both parties); delivery is the `notifications` unit (built 2026-10-12: `care-worker` claims, looks up contacts and sends through the log-only email port; the 24 h and 1 h reminders for patient and doctor come from a 1-minute scan of `booked` consultations, dropped at claim time if the consultation was cancelled, rescheduled or has started; a reschedule resets both reminder stamps; suspension also queues a neutral `doctor_suspended` notice to each affected patient, once per flag). Slot and `next-available`
   cache invalidation goes through the `ConsultationChangeListener` seam after commit, a no-op until discovery fills it; a listener failure is logged without data, never thrown.
 - **List scopes** (decision D-R8): `upcoming` = `endsAt > now`, `past` = `endsAt <= now`, `all` ascending; an `in_progress` row past its `endsAt` matches neither scope until
   `sessions` decides.

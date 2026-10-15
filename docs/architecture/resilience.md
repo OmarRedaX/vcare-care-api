@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-12
+last_verified: 2026-10-14
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
 related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec]
 ---
@@ -62,7 +62,7 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 | 2 | 2 (1 retry) | degrade |
 | 3 | 3 (about 6 s worst case, 2 s per attempt) | durable job, no attempt cap, backoff capped at 60 s, alert after 3 consecutive failures |
 | 4 (reinstatement) | 3 | durable job (`kind='reinstatement'`), alert `IdentityReinstatementSyncPending` after 15 min unsynced ([ADR 0012](../adr/0012-doctor-reinstatement.md)); built 2026-10-09 |
-| contacts lookup (notifications) | 1 per outbox batch | outbox row stays `pending` with backoff — delivery delayed only |
+| contacts lookup (notifications, Case 5) | 1 attempt per chunk of up to 100 ids, one call per claimed batch, 2 s timeout | rows stay `pending`, **attempt not consumed**, backoff 30 s doubling per consecutive failed batch (cap 30 min) — delivery delayed only; built 2026-10-12 |
 
 **Non-retryable answers:** Identity `409 InvalidStatusTransition`, and also `400`, `403` and `422` (the request itself is
 refused; `last_error_code=HTTP_<n>`), stop the retries of every kind immediately, set `identity_sync_status='failed'` (and
@@ -136,10 +136,10 @@ Actions for each: [runbook.md](../runbook.md).
 ## Notifications never block writes
 Emails use a **transactional outbox** ([ADR 0011](../adr/0011-notification-outbox-and-reminders.md)): the
 `notification_outbox` row is inserted in the same transaction as the write, and `care-worker` delivers it outside
-the request (SKIP LOCKED, backoff `30 s · 2^n` ≤ 30 min, `dead` after 8 attempts). Recipient emails come from
-Identity's `GET /internal/users/contacts` at send time and are never cached, stored, or logged. A provider or
+the request. As built (2026-10-12): the claim is one autocommit statement that selects due rows `FOR UPDATE SKIP LOCKED` and leases them (`next_attempt_at = now + 300 s`, `attempts + 1`), so no transaction is open during the contacts call or a send; each result is written at once with the guard `status='pending' AND attempts = <claim number>` (a worker that lost its lease writes nothing, `notification_lease_lost`). A send is bounded at 5 s; failures retry with `30 s · 2^(n-1)` ≤ 30 min (±20 %) and a row is `dead` after 8 attempts, immediately on a permanent provider answer, or `lease_expired` if it keeps being re-claimed after crashes. Delivery is at-least-once: a crash between send and mark may duplicate one email. Recipient emails come from
+Identity's `GET /internal/users/contacts` at send time and are never cached, stored, or logged; a contacts failure (network, timeout, 5xx, 429, 401 after one refresh, 400/403 including a client without the scope, malformed 200) is delay only. Unknown or non-active recipients are `skipped`; a reminder for a consultation that was cancelled, rescheduled, deleted or has started is dropped at claim time. A provider or
 Identity outage delays emails but never fails, delays, or rolls back a booking, reschedule, cancellation, or session
-action. Reminders are produced by a 1-minute worker scan over `consultations`.
+action. Reminders are produced by a 1-minute worker scan over `consultations` (`FOR UPDATE OF c SKIP LOCKED`; enqueue and stamp in one transaction, fixed statement count) for the patient and the doctor, and only the 1 h reminder is sent when a consultation is already within 1 h. Rows older than the retention are purged hourly (`sent` only). Production sends nothing until a real email adapter replaces the log-only one.
 
 ## Degradation summary
 | Dependency down | Effect |
@@ -147,7 +147,7 @@ action. Reminders are produced by a 1-minute worker scan over `consultations`.
 | Identity (internal) | search/lists without names (Case 2); approvals 202 pending (Case 1); suspensions 503 with local effect applied (Case 3); bookings unaffected |
 | Identity JWKS only | cached keys keep working for up to 1 h after the last successful fetch (`identityJwks: down`, `jwks_refresh_failed`); a rotated unknown `kid` → one gated refetch per minute, else 401; after 1 h every user token → 401 (`jwks_keys_expired`, alert `IdentityJwksStale` pages at 30 min) |
 | Redis (Tier 2) | no caches (slower reads), per-instance fallback rate limits, idempotency falls back to the DB key for booking; readiness reports `degraded`, never 503 |
-| `care-worker` | sync retries, emails, reminders, and cache refreshes delayed; requests unaffected; `WorkerHeartbeatStale` pages |
+| `care-worker` | sync retries, emails, reminders, the outbox purge, and cache refreshes delayed; requests unaffected; `WorkerHeartbeatStale` pages |
 | Postgres | service unavailable; health 503 |
 | Video provider | join/start fail; consultations remain in their state; no-show and cancel still work |
 | Email provider | notifications delayed only (outbox retries) |
