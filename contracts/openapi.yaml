@@ -1981,8 +1981,10 @@ paths:
       summary: The caller's (doctor) waiting room — consultations whose session window is open
       description: |
         Literal path; it is matched before `/api/consultations/{id}` (whose `id` is an integer). Returns consultations of the
-        calling doctor with status `booked` or `waiting` whose window `[starts_at − 10 min, ends_at + 15 min]` contains now.
-        Bounded set; not paginated. Patient names hydrated per Case 2 (degrade).
+        calling doctor with status `booked` or `waiting` whose half-open window `opensAt <= now < closesAt`
+        (`opensAt = starts_at − 10 min`, `closesAt = ends_at + 15 min`) contains now. Ordered by `(startsAt, id)` ascending,
+        capped at 100 entries; not paginated. Entries never carry `complaintText`. Patient names hydrated per Case 2 (degrade);
+        the doctor side is the caller's own and unhydrated. A locally suspended doctor → `403 Forbidden`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2027,9 +2029,12 @@ paths:
       tags: [consultations]
       summary: The caller's (doctor) day or week calendar
       description: |
-        Literal path; matched before `/api/consultations/{id}`. Window at most 7 days (else `400 ValidationFailed`), bounded
-        and not paginated. Includes non-terminal and terminal consultations plus schedule exceptions in the window,
-        rendered in `timezone` (defaults to the doctor's timezone). Budget p95 < 200 ms. Patient names hydrated per Case 2.
+        Literal path; matched before `/api/consultations/{id}`. The window is `[from, to)`: `from < to` and `to − from` at most
+        7 days inclusive, else `400 ValidationFailed`; bounded and not paginated. Includes non-terminal and terminal consultations
+        overlapping the window (ordered by `(startsAt, id)` ascending, capped at 1000) plus the doctor's schedule exceptions for the
+        doctor-local dates covering the window; `exceptions[].date` is the doctor-local date. Rendered in `timezone` (defaults to
+        the doctor's timezone); `CalendarView.from`/`to` echo the request instants rendered in that zone. Entries never carry
+        `complaintText`. Budget p95 < 200 ms. Patient names hydrated per Case 2. A locally suspended doctor → `403 Forbidden`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2231,10 +2236,16 @@ paths:
       tags: [consultations]
       summary: Join the session (patient enters the waiting room; either participant gets a video join token)
       description: |
-        Allowed only inside the session window `[starts_at − 10 min, ends_at + 15 min]` (`409 RoomNotOpen`).
-        Patient on a `booked` consultation → `waiting` (sets `joined_at`). A participant re-joining a `waiting` or
-        `in_progress` consultation receives a fresh token without a transition. Terminal → `409 InvalidTransition`.
-        The join token is short-lived and valid for this participant only.
+        Allowed only inside the half-open session window `opensAt <= now < closesAt` (`opensAt = starts_at − 10 min`,
+        `closesAt = ends_at + 15 min`; `409 RoomNotOpen`). Check order: not a participant → `404`; terminal → `409
+        InvalidTransition` (before the window check); outside the window → `409 RoomNotOpen`.
+        Patient on a `booked` consultation → `waiting` (sets `joined_at`, audited). A participant re-joining a `waiting` or
+        `in_progress` consultation receives a fresh token without a transition or audit row. A doctor joining a `booked`
+        consultation receives a token without a transition or audit row (the doctor's transition is `start`).
+        The join token is short-lived (`min(300 s, window close)`) and valid for this participant only. The response carries
+        no `complaintText` and unhydrated participants. A locally suspended doctor → `403 Forbidden`. A video-provider
+        failure or timeout → `503 VideoUnavailable`: before the commit nothing changed; after it the state is valid and
+        repeating `join` returns a token.
       security:
         - bearerUser: []
       x-roles: [patient, doctor]
@@ -2259,6 +2270,8 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/VideoUnavailable'
 
   /api/consultations/{id}/start:
     patch:
@@ -2266,8 +2279,13 @@ paths:
       tags: [consultations]
       summary: Start the session (assigned doctor)
       description: |
-        `booked`/`waiting` → `in_progress`, inside the session window (`409 RoomNotOpen`). Returns the doctor's join token.
-        Queues the "your doctor has joined" notification asynchronously.
+        `booked`/`waiting` → `in_progress`, inside the half-open session window `opensAt <= now < closesAt`
+        (`409 RoomNotOpen`). Check order: any status other than `booked`/`waiting` (terminal, and `in_progress`) → `409
+        InvalidTransition` before the window check, so a second `start` never re-notifies. Returns the doctor's join token.
+        Queues the "your doctor has joined" notification asynchronously. The response carries no `complaintText` and unhydrated
+        participants. A locally suspended doctor → `403 Forbidden`. A video-provider failure or timeout → `503
+        VideoUnavailable`: before the commit nothing changed; after it the consultation is `in_progress` and the doctor
+        repairs the token with `join`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2292,13 +2310,15 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/VideoUnavailable'
 
   /api/consultations/{id}/complete:
     patch:
       operationId: completeConsultation
       tags: [consultations]
       summary: End the session (assigned doctor)
-      description: '`in_progress` → `completed`. Any other state → `409 InvalidTransition`. The medical record can be written afterwards.'
+      description: '`in_progress` → `completed`; no window check (the doctor may overrun). Any other state → `409 InvalidTransition`. The response carries no `complaintText` and unhydrated participants. A locally suspended doctor → `403 Forbidden`. The medical record can be written afterwards.'
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2329,7 +2349,7 @@ paths:
       operationId: markNoShow
       tags: [consultations]
       summary: Mark a no-show (assigned doctor or admin) after start + grace
-      description: '`booked`/`waiting` → `no_show` when now ≥ `starts_at` + 10 minutes (`409 NoShowTooEarly`). Terminal → `409 InvalidTransition`.'
+      description: '`booked`/`waiting` → `no_show` when now ≥ `starts_at` + 10 minutes, boundary inclusive (`409 NoShowTooEarly`). Any other status → `409 InvalidTransition` (checked first). The optional `note` is not stored; the audit row keeps its length only. The body is optional (absent = `{}`). A locally suspended doctor → `403 Forbidden`; an admin is exempt from the local-suspension check. The response carries no `complaintText`.'
       security:
         - bearerUser: []
       x-roles: [doctor, admin]
@@ -3676,7 +3696,7 @@ components:
               details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     SessionConflict:
-      description: '`RoomNotOpen` (outside the session window) or `InvalidTransition`.'
+      description: '`RoomNotOpen` (outside the half-open session window, non-terminal row) or `InvalidTransition` (checked first).'
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -3689,6 +3709,22 @@ components:
             error:
               code: RoomNotOpen
               message: The session room is not open
+              details: []
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    VideoUnavailable:
+      description: '`VideoUnavailable` — the video room provider failed or exceeded its 2 s bound while creating the room or issuing the join token. Before commit no state changed; after commit the consultation state is valid and repeating `join` returns a token.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: VideoUnavailable
+              message: The video service is temporarily unavailable
               details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     DoctorTransitionConflict:
@@ -3988,6 +4024,7 @@ components:
         - UploadIntentExpired
         - ScheduleConflictsUnconfirmed
         - IdentityUnavailable
+        - VideoUnavailable
         - IdempotencyConflict
         - NotFound
         - Conflict
@@ -4935,6 +4972,9 @@ components:
         responses; the **admin view omits `complaintText`** entirely, and **list items omit it for every viewer**.
         `*Local` fields are rendered in `timezone`: the `timezone` query parameter when given (any role), otherwise the
         patient's `patientTimezone` for the patient, the doctor's timezone for the doctor, and `UTC` for admins.
+        Session responses (join, start, complete, no-show, waiting-room, calendar) never carry `complaintText` for any viewer
+        (the doctor reads it through the audited get-one); the write responses of those routes carry unhydrated participants,
+        waiting-room and calendar entries a hydrated patient (Case 2, degrade).
         Write responses (book, reschedule, cancel) carry `doctor` and `patient` as `{ userId, displayName: null,
         avatarUrl: null, profileHydrated: false }`; so does the viewer's own side on reads.
       required: [id, status, doctor, patient, consultationType, startsAt, endsAt, startsAtLocal, endsAtLocal, timezone, patientTimezone, price, needsAdminFollowup, createdAt, updatedAt]
