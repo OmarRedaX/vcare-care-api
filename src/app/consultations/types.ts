@@ -41,7 +41,12 @@ export interface NewConsultation {
 }
 export interface TransitionChanges {
     cancelled_at?: Date; cancelled_by?: CancelledBy; cancelled_by_user_id?: number; cancel_reason?: string | null;
+    room_id?: string; joined_at?: Date; started_at?: Date; completed_at?: Date; no_show_marked_at?: Date;
 }
+/** Parameters of the doctor waiting-room query (`listWaitingRoomQuery`): instants are UTC milliseconds. */
+export interface WaitingRoomParams { doctorUserId: number; nowMs: number; openMinutes: number; overrunMinutes: number; limit: number }
+/** Parameters of the doctor calendar query (`listCalendarQuery`): the window is `[fromMs, toMs)`. */
+export interface CalendarParams { doctorUserId: number; fromMs: number; toMs: number; limit: number }
 
 export interface BookInput {
     doctorId: number; typeId: number; startsAtMs: number; complaintText: string; patientTimezone: string; followUpOfRecordId?: number;

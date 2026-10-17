@@ -5,10 +5,10 @@ import { TOKENS } from "../../../lib/di/tokens";
 import { Forbidden, NotFound } from "../../../lib/error/errors";
 import { decodeTimestampCursor } from "../../../lib/http/pagination/cursor";
 import { buildPage, resolveLimit } from "../../../lib/http/pagination/page";
+import { hydrateUsersOrEmpty } from "../../../lib/identity-client/hydrate";
 import type { IdentityClient } from "../../../lib/identity-client/identity-client";
 import type { HydratedUser } from "../../../lib/identity-client/types";
 import type { Logger } from "../../../lib/logger/logger";
-import { currentRequestId, currentRequestIdOrNew } from "../../../lib/logger/request-context";
 import type { AuthContext, Clock } from "../../../lib/types/types";
 import { canonicalIanaTimezone } from "../../../lib/validation/timezone-decorator";
 import { DoctorsService } from "../../doctors/service/doctors.service";
@@ -99,15 +99,7 @@ export class ConsultationQueriesService {
         };
     }
 
-    /** One batched call for the distinct ids; an Identity failure, or an unexpected throw, degrades to unhydrated participants. */
-    private async hydrate(userIds: readonly number[]): Promise<Map<number, HydratedUser>> {
-        const ids = [...new Set(userIds)];
-        if (ids.length === 0) return new Map();
-        try {
-            return (await this.identity.getUsersBatch(ids, currentRequestIdOrNew())).users;
-        } catch {
-            this.logger.warn("identity_hydration_failed", { requestId: currentRequestId() });
-            return new Map();
-        }
+    private hydrate(userIds: readonly number[]): Promise<Map<number, HydratedUser>> {
+        return hydrateUsersOrEmpty(this.identity, this.logger, userIds);
     }
 }

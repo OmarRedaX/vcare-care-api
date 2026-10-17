@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -87,7 +87,7 @@ flowchart LR
 | `schedules` (built 2026-10-09) | working hours, exceptions, consultation types, conflict detection (behind the `ScheduleImpactProvider` port; no-op until `consultations`) | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
 | `consultations` | booking, reschedule, cancel, no-show, lists, calendar | `consultations` | `availability`, `doctors` (bookability), email, identity-client (Case 2) |
-| `sessions` | waiting room, join/start/complete, room tokens | `consultations` (session columns) | video, email |
+| `sessions` | waiting room, calendar, join/start/complete/no-show, room tokens (built 2026-10-15) | `consultations` (session columns, via `ConsultationRowsService`) | video, notifications (`doctor_joined` outbox), identity-client (Case 2) |
 | `patients` (profile built 2026-10-11; doctor read and timeline planned) | patient profile (`GET/PATCH /api/patients/me`), clinical timeline (planned) | `patient_profiles` | `records`, `consultations` (relationship check) |
 | `records` | medical records, amendments, attachments | `medical_records`, `medical_record_amendments`, `record_attachments` | storage (uploads, download URLs), `consultations` |
 | `help-articles` | help center content | `help_articles` | — |
@@ -111,7 +111,9 @@ src/lib/            built (foundation): config, di, error, logger, request-id, h
                       validation/string-decorators (CodePointLength, NoControlCharacters)
                     built (verification, 2026-10-08): identity-client (service token, setUserStatus, getUsersBatch),
                       storage (S3 port + adapter), knex/session-advisory-lock, http/pagination signed-cursor
-                    planned: video, email
+                    built (sessions, 2026-10-15): video (room-provider port, deterministic fake adapter,
+                      factory refusing the fake in production), identity-client/hydrate
+                    planned: email
                     may import pkg/; never app/<module>
 src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, utils/uuid.ts, utils/id.ts (built);
                       slots/, utils/interval.ts (planned) — no env, no I/O, no clock (now is passed in)

@@ -18,7 +18,7 @@ How care-service behaves when dependencies are slow or down, and how it keeps wr
 |---|---|---|
 | Identity internal calls (token, users, status) | 2 s per attempt, connect + response (`IDENTITY_TIMEOUT_MS=2000`) | `undici` keep-alive pool |
 | JWKS fetch (`lib/auth`, `undici`) | 2 s for connect + headers + body; body ≤ 64 KiB; no redirects | refresh every 5 min (Identity's `max-age`); a demand fetch (unknown `kid`, stale or no keys) at most once per 60 s across all triggers, single-flight; on failure the previous key set is kept and trusted for at most **1 h** after the last successful fetch, then no key is (every user token → 401, never a skipped verification). `identityJwks: down` in readiness; never 5xx |
-| Video provider (room, join token) | 2 s | join/start fail cleanly; lifecycle state unchanged on failure |
+| Video provider (room, join token) | 2 s (`VIDEO_CALL_TIMEOUT_MS`), no retry inside the request | `503 VideoUnavailable`. Never inside a transaction: failure before commit leaves state unchanged; failure after commit (token issue) leaves a valid `waiting`/`in_progress` state and repeating `join` returns a token (sessions SS-R12) |
 | Object storage from `care-api` (`complete`: `HEAD`, 16-byte `GET`, `DELETE` 2 s; `COPY` 10 s) | per ADR 0015 | `complete` fails, no row inserted, intent stays open for a retry until it expires |
 | Email provider | outside the request | async |
 | Postgres connect | 2 s (`connectionTimeoutMillis`, also the pool create timeout) | a connect that never completes fails instead of hanging |
@@ -149,6 +149,6 @@ action. Reminders are produced by a 1-minute worker scan over `consultations` (`
 | Redis (Tier 2) | no caches (slower reads), per-instance fallback rate limits, idempotency falls back to the DB key for booking; readiness reports `degraded`, never 503 |
 | `care-worker` | sync retries, emails, reminders, the outbox purge, and cache refreshes delayed; requests unaffected; `WorkerHeartbeatStale` pages |
 | Postgres | service unavailable; health 503 |
-| Video provider | join/start fail; consultations remain in their state; no-show and cancel still work |
+| Video provider | join/start answer `503 VideoUnavailable` (`video_provider_failed` warn, code only); consultations remain in a valid state, repeating `join` repairs it; complete, no-show and cancel still work |
 | Email provider | notifications delayed only (outbox retries) |
 | Object storage | direct uploads, `complete`, and downloads fail; no document or attachment row is created; records' text still readable |

@@ -6,7 +6,7 @@ status: draft
 diataxis: explanation
 last_verified: 2026-10-15
 tags: [consultations, lifecycle, state-machine, reschedule, cancellation, sessions]
-related: [consultations-spec, scheduling-slots, clinical-records, rbac, data-model, api]
+related: [consultations-spec, sessions-spec, scheduling-slots, clinical-records, rbac, data-model, api]
 ---
 
 # Consultation Lifecycle
@@ -37,8 +37,8 @@ stateDiagram-v2
 | Transition | Route | Actor | Condition | Error on violation |
 |---|---|---|---|---|
 | create → `booked` | `POST /consultations` | patient (active, email verified) | Domain rules 1–8 | see [scheduling-slots.md](./scheduling-slots.md) |
-| `booked → waiting` | `PATCH /:id/join` | patient | inside session window | 409 `RoomNotOpen` |
-| `booked/waiting → in_progress` | `PATCH /:id/start` | assigned doctor | inside session window, doctor not suspended | 409 `RoomNotOpen`, 403 `Forbidden` |
+| `booked → waiting` | `PATCH /:id/join` | patient | inside session window | 409 `RoomNotOpen`/`InvalidTransition`, 503 `VideoUnavailable` |
+| `booked/waiting → in_progress` | `PATCH /:id/start` | assigned doctor | inside session window, doctor not suspended | 409 `RoomNotOpen`/`InvalidTransition`, 403 `Forbidden`, 503 `VideoUnavailable` |
 | `in_progress → completed` | `PATCH /:id/complete` | assigned doctor | — | 409 `InvalidTransition` |
 | `booked/waiting → cancelled` | `PATCH /:id/cancel` | patient (outside policy window), assigned doctor (reason), admin (reason, any time) | not terminal | 409 `PolicyWindowViolation` / `InvalidTransition`, 400 missing reason |
 | `booked/waiting → no_show` | `PATCH /:id/no-show` | assigned doctor or admin | now ≥ `starts_at` + grace | 409 `NoShowTooEarly` |
@@ -46,7 +46,7 @@ stateDiagram-v2
 
 - **Terminal states never change** (Domain rule 9): every update is `… WHERE id=$1 AND status = ANY($from)`;
   zero rows → `409 InvalidTransition`.
-- A doctor re-joining (`/join` on `waiting` or `in_progress`) receives a fresh video token with no transition.
+- Any participant re-joining (`/join` on `waiting` or `in_progress`), and a doctor calling `/join` on `booked`, receives a fresh video token with no transition and no audit row (the doctor's transition is `/start`).
 - Every status change writes an audit row (`consultation.<to_status>`) in the same transaction and invalidates the
   doctor's slot and next-available caches after commit (terminal exits free the interval).
 - Suspended doctors (`suspended_at IS NOT NULL`) cannot start, complete, cancel, or mark no-show — checked
@@ -57,13 +57,13 @@ stateDiagram-v2
 |---|---|---|---|
 | Policy window | 120 min before `starts_at` | `CANCELLATION_POLICY_MINUTES=120` | patients cannot cancel or reschedule inside it (measured against the **current** start); admins can |
 | No-show grace | 10 min after `starts_at` | `NO_SHOW_GRACE_MINUTES=10` | `no_show` only when now ≥ start + grace |
-| Session window | `[starts_at − 10 min, ends_at + 15 min]` | `WAITING_ROOM_OPEN_MINUTES=10`, `SESSION_OVERRUN_MINUTES=15` | join/start only inside it; video tokens issued only inside it |
+| Session window | half-open `[starts_at − 10 min, ends_at + 15 min)` (`opensAt <= now < closesAt`) | `WAITING_ROOM_OPEN_MINUTES=10`, `SESSION_OVERRUN_MINUTES=15` | join/start only inside it (a terminal row answers `InvalidTransition` before `RoomNotOpen`); video tokens issued only inside it, expiring at `min(now + VIDEO_JOIN_TOKEN_TTL_SECONDS, closesAt)`; `complete` has no window check |
 
 All comparisons are on UTC instants.
 
 ## As built (consultations module, 2026-10-12)
 Built: create → `booked`, reschedule, cancel, list, get-one ([spec](../consultations/spec.md)). `join`, `start`, `complete`, `no-show`, `waiting-room`,
-`calendar` and the video port are the `sessions` unit; `applyTransition` (`WHERE id AND status = ANY($from) AND deleted_at IS NULL`, zero rows → `409 InvalidTransition`)
+`calendar` and the video port are the `sessions` unit (built 2026-10-15, section below); `applyTransition` (`WHERE id AND status = ANY($from) AND deleted_at IS NULL`, zero rows → `409 InvalidTransition`)
 is generic so `sessions` reuses it.
 - **Booking** is one transaction: replay lookup by `(patient_user_id, idempotency_key)` → `FOR SHARE` on the doctor profile (serializes with suspension and schedule
   writes) → bookable, type, past, horizon, grid check (`isSlotOnGrid`, see [scheduling-slots.md](./scheduling-slots.md)) → insert → two `booking_confirmed` outbox rows → audit.
@@ -75,18 +75,18 @@ is generic so `sessions` reuses it.
   `409 InvalidTransition` (cancel's idempotency is Redis-only).
 - Every write enqueues `notification_outbox` rows in its transaction (`rescheduled`, `cancelled` to both parties); delivery is the `notifications` unit (built 2026-10-12: `care-worker` claims, looks up contacts and sends through the log-only email port; the 24 h and 1 h reminders for patient and doctor come from a 1-minute scan of `booked` consultations, dropped at claim time if the consultation was cancelled, rescheduled or has started; a reschedule resets both reminder stamps; suspension also queues a neutral `doctor_suspended` notice to each affected patient, once per flag; a delayed `rescheduled` notice is dropped at claim time if the consultation is now terminal or moved again, a delayed `doctor_suspended` notice if it is now terminal, `cancelled` is always sent, and a patient whose consultation is `in_progress` gets an in-progress wording; spec N-D14). Slot and `next-available`
   cache invalidation goes through the `ConsultationChangeListener` seam after commit, a no-op until discovery fills it; a listener failure is logged without data, never thrown.
-- **List scopes** (decision D-R8): `upcoming` = `endsAt > now`, `past` = `endsAt <= now`, `all` ascending; an `in_progress` row past its `endsAt` matches neither scope until
-  `sessions` decides.
+- **List scopes** (decision D-R8): `upcoming` = `endsAt > now`, `past` = `endsAt <= now`, `all` ascending; an `in_progress` row past its `endsAt` matches neither scope; `sessions` (2026-10-15) left this unchanged and adds no exit for a stale `in_progress` row (follow-up).
 - **Follow-up flags** (`needs_admin_followup`) are set by the filled ports for future `booked`/`waiting`/`in_progress` rows: `schedule_blocked` (only rows not already flagged with that
   reason, so the patient is notified once; the `409` body still lists every stranded id) and `doctor_suspended` (all rows). Nothing is auto-cancelled; reschedule clears the flag, cancel ends the row.
 
-## Session (waiting room and video)
-1. The patient calls `/join` inside the window: `booked → waiting`, `joined_at` set, the room is created lazily at
-   the provider if `room_id` is null, and a short-lived join token bound to this participant is returned.
-2. The doctor polls `GET /consultations/waiting-room` (their consultations whose window is open).
-3. The doctor calls `/start`: `→ in_progress`, `started_at` set, doctor join token returned, "your doctor has joined"
-   email queued asynchronously.
-4. The doctor calls `/complete`: `→ completed`. The record can now be written ([clinical-records.md](./clinical-records.md)).
+## Session (waiting room and video) — as built 2026-10-15 ([sessions spec](../sessions/spec.md))
+1. The patient calls `/join` inside the window: `booked → waiting`, `joined_at` set, audit `consultation.waiting`. The room is created at the provider **before** the transaction (`ensureRoom`, idempotent per consultation, 2 s bound) and persisted in `room_id` (first value wins); the join token is issued **after** commit, bound to this participant's room, user and role.
+2. The doctor polls `GET /consultations/waiting-room` (own `booked`/`waiting` rows whose window is open, at most 100) and `GET /consultations/calendar` (`[from, to)`, at most 7 days, every status plus schedule exceptions). Neither returns `complaintText`; patients are hydrated through Case 2 (degrade).
+3. The doctor calls `/start`: `→ in_progress`, `started_at` set, audit `consultation.started` and one `doctor_joined` outbox row for the patient in the same transaction; the doctor's token follows the commit.
+4. The doctor calls `/complete` (only from `in_progress`, no window check): `→ completed`, `completed_at` set. The record can now be written ([clinical-records.md](./clinical-records.md)).
+5. `no-show` (assigned doctor or admin, from `booked`/`waiting`, once `now >= starts_at + grace`): `→ no_show`, audit `consultation.no_show` with `noteLength` only (the optional note is not stored); the change listener frees the interval.
+
+**Provider failure.** No provider call is inside a transaction. Failure before commit: `503 VideoUnavailable`, state unchanged. Failure after commit (token issue): `503`, the state is already valid (`waiting`/`in_progress`) and repeating `join` returns a token. Check order: not found / not participant `404` → status `InvalidTransition` → window `RoomNotOpen` / grace `NoShowTooEarly`.
 
 ## Flow D — Reschedule
 ```mermaid

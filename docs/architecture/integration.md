@@ -90,7 +90,7 @@ sequenceDiagram
 - **Known environment dependency:** real Identity does not yet serve `GET /internal/users` or `PATCH /internal/users/{id}/status` (its internal-users module is pending). Until it lands, Case 1 against real Identity keeps the decision, answers `202 identitySync: pending`, and the worker retries on `404`; Case 2 degrades to `profileHydrated: false`. Care needs no change when it lands.
 
 ## Case 2 — Batch profile hydration (degrade, never fail)
-Used by search, doctor profile, consultation lists, waiting room, calendar, the admin application queue.
+Used by search, doctor profile, consultation lists, waiting room, calendar, the admin application queue. As built (`sessions`, 2026-10-15): waiting room and calendar make one batched call per response through `hydrateUsersOrEmpty` (`lib/identity-client/hydrate.ts`, shared with the consultation lists); an outage returns `profileHydrated:false`, never a 5xx. Session writes (join, start, complete, no-show) make no Identity call.
 
 ```mermaid
 sequenceDiagram

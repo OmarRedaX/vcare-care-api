@@ -132,6 +132,14 @@ export const envSchema = z
         BOOKING_HORIZON_DAYS: z.coerce.number().int().min(1).max(365).default(60),
         /** A patient may not cancel or reschedule within this many minutes of the start (Domain rule 10). */
         CANCELLATION_POLICY_MINUTES: z.coerce.number().int().min(0).max(10080).default(120),
+        /** Session window and no-show grace (Domain rules 11 and 12): minutes before the start the room opens, after the end it stays open, and after the start before a no-show may be marked. */
+        NO_SHOW_GRACE_MINUTES: z.coerce.number().int().min(0).max(1440).default(10),
+        WAITING_ROOM_OPEN_MINUTES: z.coerce.number().int().min(0).max(240).default(10),
+        SESSION_OVERRUN_MINUTES: z.coerce.number().int().min(0).max(240).default(15),
+        /** Video room provider behind `lib/video`: no default (a wrong provider must fail the boot), and the key is a secret. */
+        VIDEO_PROVIDER: z.enum(["fake"]),
+        VIDEO_PROVIDER_KEY: z.string().min(32),
+        VIDEO_JOIN_TOKEN_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
         AUDIT_PARTITION_MONTHS_AHEAD: z.coerce.number().int().min(1).max(12).default(2),
         CORS_ORIGINS: corsOrigins,
         LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

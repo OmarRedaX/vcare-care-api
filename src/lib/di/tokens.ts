@@ -57,4 +57,11 @@ export const TOKENS = {
     ConsultationsController: Symbol.for("ConsultationsController"),
     /** Port: after-commit hook for slot / next-available cache invalidation (default no-op; discovery rebinds). */
     ConsultationChangeListener: Symbol.for("ConsultationChangeListener"),
+    /** Row access to `consultations` for other modules, and the guarded after-commit listener call. */
+    ConsultationRowsService: Symbol.for("ConsultationRowsService"),
+    /** Port: the video room provider (`lib/video`); tests bind a stub (success, slow, failing). */
+    VideoProvider: Symbol.for("VideoProvider"),
+    SessionsService: Symbol.for("SessionsService"),
+    SessionQueriesService: Symbol.for("SessionQueriesService"),
+    SessionsController: Symbol.for("SessionsController"),
 } as const;

@@ -85,6 +85,8 @@ services:
       STORAGE_ACCESS_KEY_ID: care-local
       STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
       STORAGE_FORCE_PATH_STYLE: "true"
+      VIDEO_PROVIDER: fake
+      VIDEO_PROVIDER_KEY: synthetic-video-provider-key-0123456789abcdef
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -112,6 +114,8 @@ services:
       STORAGE_ACCESS_KEY_ID: care-local
       STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
       STORAGE_FORCE_PATH_STYLE: "true"
+      VIDEO_PROVIDER: fake
+      VIDEO_PROVIDER_KEY: synthetic-video-provider-key-0123456789abcdef
       LOG_LEVEL: info
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -149,6 +153,8 @@ services:
       STORAGE_ACCESS_KEY_ID: care-local
       STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
       STORAGE_FORCE_PATH_STYLE: "true"
+      VIDEO_PROVIDER: fake
+      VIDEO_PROVIDER_KEY: synthetic-video-provider-key-0123456789abcdef
       AUDIT_PARTITION_MONTHS_AHEAD: 2
       LOG_LEVEL: info
     extra_hosts:

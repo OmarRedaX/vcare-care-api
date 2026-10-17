@@ -2,6 +2,7 @@ import type { Knex } from "knex";
 import type { StringCursorPosition } from "../../lib/http/pagination/types";
 import type { UserPolicy } from "../../lib/rbac/types";
 import type { LocalInterval } from "../../pkg/slots/types";
+import type { ScheduleException } from "./entity/schedule-exception.entity";
 import type { ConsultationTypeField, ScheduleChangeKind, ScheduleExceptionType } from "./enums";
 
 /** pg returns `TIME` as `HH:MM:SS` text and `DATE` as `YYYY-MM-DD` text (type parser overrides). */
@@ -14,6 +15,9 @@ export interface ConsultationTypeRow {
     id: number; name: string; duration_minutes: number; price: number; currency: string; is_active: boolean;
     created_at: Date; updated_at: Date;
 }
+
+/** The doctor's zone plus the live exceptions covering a calendar window. */
+export interface CalendarExceptions { timezone: string; exceptions: ScheduleException[] }
 
 /** The doctor profile as `schedules` needs it (resolved through `doctors`, never its repository). */
 export interface ScheduleOwner { profileId: number; userId: number; timezone: string; currency: string; isSuspended: boolean }

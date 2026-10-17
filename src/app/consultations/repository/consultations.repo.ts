@@ -8,6 +8,7 @@ import type { FollowupReason } from "../enums";
 import type {
     CandidateRow, CandidateWindow, ConsultationListDbRow, ConsultationListRow, ConsultationListEntry, ConsultationListFilter, ConsultationRow, FlaggedRow,
     FutureFlaggedRow, DeliveryDbRow, ReminderDbRow, NewConsultation, TransitionChanges,
+    WaitingRoomParams, CalendarParams,
 } from "../types";
 
 export const CONSULTATION_COLUMNS = [
@@ -170,6 +171,59 @@ export async function isPatientOwner(id: number, userId: number, conn: Knex = db
     const row: Pick<ConsultationRow, "id"> | undefined = await conn<ConsultationRow>("consultations").select("id").where("id", id)
         .where("patient_user_id", userId).whereNull("deleted_at").first();
     return row !== undefined;
+}
+
+/** Ownership resolver query: a live consultation whose assigned doctor is the user. */
+export async function isAssignedDoctor(id: number, userId: number, conn: Knex = db): Promise<boolean> {
+    const row: Pick<ConsultationRow, "id"> | undefined = await conn<ConsultationRow>("consultations").select("id").where("id", id)
+        .where("doctor_user_id", userId).whereNull("deleted_at").first();
+    return row !== undefined;
+}
+
+/**
+ * Persists the room id of a live, non-terminal consultation when none is stored yet (first value wins; a concurrent call that lost
+ * gets `false`). `updated_at` is not touched: a room id is not a business change. Used by a doctor's token-only join on `booked`.
+ */
+export async function setRoomIfAbsent(id: number, roomId: string, conn: Knex.Transaction | Knex = db): Promise<boolean> {
+    const updated = await conn("consultations").where("id", id).whereNull("room_id").whereIn("status", [ConsultationStatus.Booked, ConsultationStatus.Waiting, ConsultationStatus.InProgress])
+        .whereNull("deleted_at").update({ room_id: roomId });
+    return updated > 0;
+}
+
+/**
+ * The doctor's waiting room (exported so EXPLAIN tests plan exactly what runs): `booked`/`waiting` rows whose half-open session window
+ * `opensAt <= now < closesAt` contains now. `starts_at <= now + open` and `ends_at > now - overrun` are the window; the lower `starts_at`
+ * bound (durations are capped at 240 minutes) only keeps the scan on `idx_consultations_doctor_user_id_starts_at_id`.
+ */
+export function listWaitingRoomQuery(params: WaitingRoomParams, conn: Knex = db): Knex.QueryBuilder {
+    const now = params.nowMs;
+    return joined(conn, QUALIFIED_LIST_COLUMNS).where("consultations.doctor_user_id", params.doctorUserId)
+        .whereIn("consultations.status", [ConsultationStatus.Booked, ConsultationStatus.Waiting]).whereNull("consultations.deleted_at")
+        .whereRaw("consultations.starts_at <= ?::timestamptz AND consultations.starts_at >= ?::timestamptz AND consultations.ends_at > ?::timestamptz", [
+            new Date(now + params.openMinutes * MINUTE_MS).toISOString(),
+            new Date(now - (MAX_DURATION_MINUTES + params.overrunMinutes) * MINUTE_MS).toISOString(),
+            new Date(now - params.overrunMinutes * MINUTE_MS).toISOString(),
+        ]).orderByRaw("consultations.starts_at ASC, consultations.id ASC").limit(params.limit);
+}
+
+export async function listWaitingRoom(params: WaitingRoomParams, conn: Knex = db): Promise<Consultation[]> {
+    return ((await listWaitingRoomQuery(params, conn)) as ConsultationListRow[]).map((row) => toEntity(row));
+}
+
+/**
+ * The doctor's calendar window `[from, to)` (exported for EXPLAIN): every status overlapping it, ordered `(starts_at, id)`. Cancelled and
+ * no-show rows may overlap live ones, hence the cap. Served by `idx_consultations_doctor_user_id_starts_at_id`.
+ */
+export function listCalendarQuery(params: CalendarParams, conn: Knex = db): Knex.QueryBuilder {
+    return joined(conn, QUALIFIED_LIST_COLUMNS).where("consultations.doctor_user_id", params.doctorUserId).whereNull("consultations.deleted_at")
+        .whereRaw("consultations.starts_at < ?::timestamptz AND consultations.ends_at > ?::timestamptz AND consultations.starts_at >= ?::timestamptz", [
+            new Date(params.toMs).toISOString(), new Date(params.fromMs).toISOString(),
+            new Date(params.fromMs - MAX_DURATION_MINUTES * MINUTE_MS).toISOString(),
+        ]).orderByRaw("consultations.starts_at ASC, consultations.id ASC").limit(params.limit);
+}
+
+export async function listCalendar(params: CalendarParams, conn: Knex = db): Promise<Consultation[]> {
+    return ((await listCalendarQuery(params, conn)) as ConsultationListRow[]).map((row) => toEntity(row));
 }
 
 function futureNonTerminal(doctorUserId: number, now: Date, conn: Knex): Knex.QueryBuilder {
