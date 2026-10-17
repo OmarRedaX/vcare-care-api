@@ -237,7 +237,7 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 | `RoomNotOpen` | 409 | join/start outside the session window |
 | `RecordRequiresCompleted` | 409 | record on a non-`completed` consultation |
 | `NotAssignedDoctor` | 403 | record write by a doctor other than the consultation's doctor |
-| `RecordLocked` | 409 | deleting an attachment after the 24 h lock |
+| `RecordLocked` | 409 | an in-place record edit refused because the record is locked, or deleting an attachment after the 24 h lock |
 | `ApplicationNotReviewable` | 409 | approve/reject on an application not in `submitted` |
 | `ScheduleConflictsUnconfirmed` | 409 | blocking time that holds bookings without `confirmConflicts=true` |
 | `IdentityUnavailable` | 503 | a **must-succeed** Identity call is still failing (suspension reported as pending) |
