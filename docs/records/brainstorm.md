@@ -135,18 +135,9 @@ The attachment operations (`multipart` add, inline URLs) are **not** touched her
 the intent → `complete` → `download-url` shape (file-handling.md §2).
 
 ## Open questions
-1. **Amendment cannot clear a field.** The amendments CHECK needs at least one non-null amended field, so an amendment can
-   change `treatmentPlan` but cannot null it out. Accept for MVP (the original is never erased anyway)? Default: yes, note it
-   in the spec.
-2. **`PATCH` before the lock with an empty effective change** (all values equal to current): no write and no audit row (as
-   `patients` P-R8), or still `200`? Default: no-op, no audit.
-3. **`PATCH` on a lock boundary race** — a request that straddles `locked_at`: decided by `NOW()` inside the transaction,
-   and the trigger turns a missed race into a clean `409 RecordLocked`-style error or retry? Spec to decide the exact code.
-4. **Rate limits** for record create/patch and the timeline read (the contract has `429`; numbers are unset).
-5. **Timeline `data.patient` for a doctor viewer** reuses the patient profile DTO with clinical fields for consulted
-   doctors (as `GET /patients/{id}` already does); confirm it also repeats on every page without an extra audit row.
-6. **Platform changes needed (hub, not edited here):** none for the contract-only changes above; after build, re-sync the
-   care card and contract. Phase-2 follow-ups stay in hub `TODO.md`.
+Resolved 2026-10-17 on the recommended defaults (R-D6..R-D10 below); nothing is left open for `/construct-spec`.
+Platform changes needed (hub, not edited here): none for the contract-only changes above. After the build, re-sync the
+care card and contract. Phase-2 follow-ups stay in hub `TODO.md`.
 
 ## Success criteria
 - A doctor writes a record for their own completed consultation; every other combination returns the documented code.
@@ -167,3 +158,8 @@ the intent → `complete` → `download-url` shape (file-handling.md §2).
 | R-D3 | `followUpOfRecordId`: ownership (patient + doctor + live record) only; no timing or `followUpInDays` check. |
 | R-D4 | No `Idempotency-Key` on any record route; the partial unique index makes a retry a `409 Conflict`. |
 | R-D5 | A locally suspended doctor is blocked from all record writes and from reading other patients' records/timeline. |
+| R-D6 | An amendment cannot clear a field to null (the `chk_medical_record_amendments_nonempty` CHECK needs at least one non-null amended field). Accepted for MVP; the original is never erased, and the spec notes the limitation. Wanting to remove a value is a correction written as new text. |
+| R-D7 | `PATCH` before the lock: values equal to the current row are a no-op, so the response is `200` with the current record and **no write and no audit row** (as `patients` P-R8). `PATCH` after the lock: always appends an amendment when a field and a `reason` are provided; there is no diff against the effective value, because an amendment is an explicit, reasoned act. |
+| R-D8 | Lock boundary: the service reads the row `FOR UPDATE` and decides with the transaction's database time (`locked_at <= NOW()`), the same clock the trigger uses, so the two cannot disagree. If the trigger still fires (`check_violation`), map it to `409 RecordLocked` (the contract description widens from "attachments" to "record or attachments") instead of a `500`. |
+| R-D9 | Rate limits (per user, Redis sliding window; final numbers confirmed in the spec): record `POST` and `PATCH` 20/min, `GET /records/{id}` 120/min, `GET /patients/{id}/records` 60/min. The `429` already exists in the contract. |
+| R-D10 | The timeline's `data.patient` for a doctor viewer reuses the existing patient profile DTO with clinical fields (as `GET /patients/{id}` does), repeats on every page, and costs **one** `patient_records.listed` audit row per call; no extra `patient_profile.read` row. |
