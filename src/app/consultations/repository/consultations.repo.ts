@@ -6,7 +6,7 @@ import { Consultation } from "../entity/consultation.entity";
 import { ConsultationScope, ConsultationStatus } from "../enums";
 import type { FollowupReason } from "../enums";
 import type {
-    CandidateRow, CandidateWindow, ConsultationListDbRow, ConsultationListRow, ConsultationListEntry, ConsultationListFilter, ConsultationRow, FlaggedRow,
+    CandidateRow, CandidateWindow, ConsultationListDbRow, ConsultationParties, ConsultationListRow, ConsultationListEntry, ConsultationListFilter, ConsultationRow, FlaggedRow,
     FutureFlaggedRow, DeliveryDbRow, ReminderDbRow, NewConsultation, TransitionChanges,
     WaitingRoomParams, CalendarParams,
 } from "../types";
@@ -61,6 +61,16 @@ export async function findById(id: number, conn: Knex = db): Promise<Consultatio
     return row === undefined ? undefined : toEntity(row);
 }
 
+/**
+ * Who is on a live consultation and its status, by primary key; no clinical text is read. The `records` creation gate and its ownership
+ * resolvers use it, so a record write never loads the complaint.
+ */
+export async function findParties(id: number, conn: Knex = db): Promise<ConsultationParties | undefined> {
+    const row: Pick<ConsultationRow, "id" | "doctor_user_id" | "patient_user_id" | "status"> | undefined = await conn<ConsultationRow>("consultations")
+        .select("id", "doctor_user_id", "patient_user_id", "status").where("id", id).whereNull("deleted_at").first();
+    return row === undefined ? undefined : { id: row.id, doctorUserId: row.doctor_user_id, patientUserId: row.patient_user_id, status: row.status };
+}
+
 /** `SELECT ... FOR UPDATE OF consultations`: serializes lifecycle changes of one row. */
 export async function findByIdForUpdate(id: number, trx: Knex.Transaction): Promise<Consultation | undefined> {
     const row = (await joined(trx).where("consultations.id", id).whereNull("consultations.deleted_at").forUpdate("consultations").first()) as ConsultationRow | undefined;
@@ -80,7 +90,7 @@ export async function insertConsultation(input: NewConsultation, trx: Knex.Trans
         doctor_user_id: input.doctorUserId, patient_user_id: input.patientUserId, consultation_type_id: input.consultationTypeId,
         starts_at: input.startsAt, ends_at: input.endsAt, status: ConsultationStatus.Booked, complaint_text: input.complaintText,
         patient_timezone: input.patientTimezone, price: input.price, currency: input.currency, idempotency_key: input.idempotencyKey,
-        request_hash: input.requestHash,
+        request_hash: input.requestHash, follow_up_of_record_id: input.followUpOfRecordId ?? null,
     }).returning([...CONSULTATION_COLUMNS]);
     const row = rows[0];
     if (row === undefined) throw new Error("consultation_insert_returned_no_row");

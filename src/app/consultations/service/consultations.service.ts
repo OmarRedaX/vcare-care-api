@@ -11,6 +11,7 @@ import { addDays, localDateOf } from "../../../pkg/slots/local-date";
 import { isSlotOnGrid } from "../../../pkg/slots/slot-fit";
 import { toMs } from "../../../pkg/utils/time";
 import { DoctorsService } from "../../doctors/service/doctors.service";
+import { RecordLinksService } from "../../records/service/record-links.service";
 import { OutboxKind } from "../../notifications/enums";
 import { NotificationsService } from "../../notifications/service/notifications.service";
 import type { OutboxMessage, OutboxPayload } from "../../notifications/types";
@@ -22,7 +23,7 @@ import {
 import type { Consultation } from "../entity/consultation.entity";
 import { CancelledBy, ConsultationAuditAction, ConsultationChangeKind, ConsultationStatus } from "../enums";
 import {
-    BeyondBookingHorizon, BookingInPast, DoctorNotBookable, FollowUpNotSupported, InvalidTransition, OutsideWorkingHours, PolicyWindowViolation,
+    BeyondBookingHorizon, BookingInPast, DoctorNotBookable, InvalidTransition, OutsideWorkingHours, PolicyWindowViolation,
     ReasonRequiredOnCancel, ReasonRequiredOnReschedule, SlotUnavailable,
 } from "../errors";
 import {
@@ -53,10 +54,10 @@ export class ConsultationsService implements PatientRelationshipChecker {
         @inject(TOKENS.SchedulesService) private readonly schedules: SchedulesService,
         @inject(TOKENS.NotificationsService) private readonly notifications: NotificationsService,
         @inject(TOKENS.ConsultationRowsService) private readonly rows: ConsultationRowsService,
+        @inject(TOKENS.RecordLinksService) private readonly records: RecordLinksService,
     ) {}
 
     async book(actor: AuthContext, input: BookInput, idempotencyKey: string, requestHash: string): Promise<Consultation> {
-        if (input.followUpOfRecordId !== undefined) throw FollowUpNotSupported;
         let result: WriteResult;
         try {
             result = await this.bookOnce(actor, input, idempotencyKey, requestHash);
@@ -80,6 +81,10 @@ export class ConsultationsService implements PatientRelationshipChecker {
             if (!doctor.isBookable) throw DoctorNotBookable;
             const type = await this.schedules.findBookableType(doctor.profileId, input.typeId, trx);
             if (type === undefined) throw NotFound;
+            // A follow-up must link to a live record of THIS patient (the token, never the body) written by the chosen doctor; a missing, foreign,
+            // other-doctor or deleted record is the same 404 (no probing). A plain read: the FK takes FOR KEY SHARE on the record at insert.
+            if (input.followUpOfRecordId !== undefined
+                && !(await this.records.isFollowUpTarget(input.followUpOfRecordId, actor.userId, doctor.userId, trx))) throw NotFound;
             this.assertBookableStart(input.startsAtMs);
             await this.assertOnGrid(doctor.profileId, doctor.timezone, input.startsAtMs, type.durationMinutes, trx);
             const startsAt = new Date(input.startsAtMs);
@@ -87,7 +92,7 @@ export class ConsultationsService implements PatientRelationshipChecker {
             const created = await insertConsultation({
                 doctorUserId: doctor.userId, patientUserId: actor.userId, consultationTypeId: type.id, typeName: type.name, startsAt, endsAt,
                 complaintText: input.complaintText, patientTimezone: canonicalIanaTimezone(input.patientTimezone), price: type.price,
-                currency: type.currency, idempotencyKey, requestHash,
+                currency: type.currency, idempotencyKey, requestHash, followUpOfRecordId: input.followUpOfRecordId,
             }, trx);
             await this.notifications.enqueue(trx, this.partyMessages(OutboxKind.BookingConfirmed, created,
                 { startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString() }));

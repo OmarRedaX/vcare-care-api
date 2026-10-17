@@ -1,5 +1,5 @@
 import { AppError } from "../../../../src/lib/error/AppError";
-import { exclusionViolationConstraint, PG_EXCLUSION_VIOLATION, PG_UNIQUE_VIOLATION, uniqueViolationConstraint } from "../../../../src/lib/knex/pg-errors";
+import { checkViolationConstraint, exclusionViolationConstraint, PG_CHECK_VIOLATION, PG_EXCLUSION_VIOLATION, PG_UNIQUE_VIOLATION, uniqueViolationConstraint } from "../../../../src/lib/knex/pg-errors";
 
 describe("lib/knex/uniqueViolationConstraint", () => {
     it("should return the constraint when a pg-like error has the unique-violation code", () => {
@@ -35,5 +35,22 @@ describe("lib/knex/exclusionViolationConstraint", () => {
         ["the constraint is a number", { code: "23P01", constraint: 1 }],
     ])("should return undefined when %s", (_condition, error) => {
         expect(exclusionViolationConstraint(error)).toBeUndefined();
+    });
+});
+
+describe("lib/knex/checkViolationConstraint", () => {
+    it("should return the constraint when a pg-like error has the check-violation code", () => {
+        expect(PG_CHECK_VIOLATION).toBe("23514");
+        expect(checkViolationConstraint({ code: "23514", constraint: "trg_medical_records_forbid_update_after_lock" })).toBe("trg_medical_records_forbid_update_after_lock");
+    });
+
+    it.each([
+        ["the code is a unique violation", { code: "23505", constraint: "uq_x" }],
+        ["the constraint is missing", { code: "23514" }],
+        ["the constraint is a number", { code: "23514", constraint: 7 }],
+        ["the error is null", null],
+        ["the error is a string", "23514"],
+    ])("should return undefined when %s", (_condition, error) => {
+        expect(checkViolationConstraint(error)).toBeUndefined();
     });
 });

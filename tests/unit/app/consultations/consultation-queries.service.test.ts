@@ -30,12 +30,13 @@ function setup() {
     const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() } as unknown as Logger;
     const getUsersBatch = jest.fn().mockResolvedValue({ users: new Map(), degraded: false });
     const doctors = { findTimezone: jest.fn().mockResolvedValue("Africa/Cairo") };
-    const service = new ConsultationQueriesService(db, { record } as unknown as AuditRecorder, { now: () => NOW }, logger, { getUsersBatch } as never, doctors as never);
+    const records = { recordedConsultationIds: jest.fn().mockResolvedValue(new Set<number>()) };
+    const service = new ConsultationQueriesService(db, { record } as unknown as AuditRecorder, { now: () => NOW }, logger, { getUsersBatch } as never, doctors as never, records as never);
     const mocks = {
         listPage: jest.spyOn(repo, "listPage").mockResolvedValue([]),
         findById: jest.spyOn(repo, "findById").mockResolvedValue(row(1)),
     };
-    return { service, db, transaction, trx, record, logger, getUsersBatch, doctors, mocks };
+    return { service, db, transaction, trx, record, logger, getUsersBatch, doctors, records, mocks };
 }
 
 afterEach(() => { jest.restoreAllMocks(); });

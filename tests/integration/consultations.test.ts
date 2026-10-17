@@ -151,12 +151,11 @@ describe("consultations (integration: real routes, Postgres, Redis and a fake Id
             expect(identityServer.calls.filter((entry) => entry.path.startsWith("/internal/users"))).toHaveLength(0);
         });
 
-        it("should answer 400 without an Idempotency-Key and for followUpOfRecordId, and 403 for non-patients and unverified email", async () => {
+        it("should answer 400 without an Idempotency-Key, 404 for a followUpOfRecordId that is not the patient's record, and 403 for non-patients and unverified email", async () => {
             const missing = await call("post", "/api/consultations", "patient", body());
             expect(missing.status).toBe(400); expectErrorEnvelope(missing.body, "ValidationFailed");
             const followUp = await book("patient", body({ followUpOfRecordId: 5 }));
-            expect(followUp.status).toBe(400);
-            expect(followUp.body.error.details).toEqual([{ field: "followUpOfRecordId", issue: "is not supported yet" }]);
+            expect(followUp.status).toBe(404); expectErrorEnvelope(followUp.body, "NotFound");
             for (const actor of ["doctor", "admin"] as const) expect((await book(actor)).status).toBe(403);
             const unverified = await book("unverified");
             expect(unverified.status).toBe(403); expectErrorEnvelope(unverified.body, "EmailNotVerified");

@@ -8,6 +8,11 @@ const EXPECTED_KEYS = [
     "diagnosisText",
     "diagnosisCode",
     "treatmentPlan",
+    // records
+    "chiefComplaint",
+    "followUpInDays",
+    "amendments",
+    "amendmentReason",
     "allergies",
     "chronicConditions",
     "bloodType",

@@ -10,6 +10,10 @@ import { ConsultationsService } from "./app/consultations/service/consultations.
 import { NoopConsultationChangeListener } from "./app/consultations/service/noop-consultation-change.listener";
 import { buildScheduleImpactProvider } from "./app/consultations/service/schedule-impact.provider";
 import { ConsultationSuspensionImpactProvider } from "./app/consultations/service/suspension-impact.provider";
+import { RecordsController } from "./app/records/controller/records.controller";
+import { RecordLinksService } from "./app/records/service/record-links.service";
+import { RecordQueriesService } from "./app/records/service/record-queries.service";
+import { RecordsService } from "./app/records/service/records.service";
 import { SessionsController } from "./app/sessions/controller/sessions.controller";
 import { SessionQueriesService } from "./app/sessions/service/session-queries.service";
 import { SessionsService } from "./app/sessions/service/sessions.service";
@@ -80,6 +84,12 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.PatientsService, PatientsService);
     container.registerSingleton(TOKENS.PatientsController, PatientsController);
     container.registerSingleton(TOKENS.ConsultationRowsService, ConsultationRowsService);
+    // Records: the links service reads only the database, so it is registered before `consultations` and `sessions` (which inject it) and
+    // before the records services (which inject ConsultationRowsService and PatientsService, both registered above).
+    container.registerSingleton(TOKENS.RecordLinksService, RecordLinksService);
+    container.registerSingleton(TOKENS.RecordsService, RecordsService);
+    container.registerSingleton(TOKENS.RecordQueriesService, RecordQueriesService);
+    container.registerSingleton(TOKENS.RecordsController, RecordsController);
     container.registerSingleton(TOKENS.ConsultationsService, ConsultationsService);
     container.registerSingleton(TOKENS.ConsultationQueriesService, ConsultationQueriesService);
     container.registerSingleton(TOKENS.ConsultationsController, ConsultationsController);

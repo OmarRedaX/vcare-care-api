@@ -49,7 +49,8 @@ export class ConsultationResponseDto {
     /**
      * Viewer-aware: an admin never receives `complaintText`, and neither does any viewer unless `view.detail` is set (get-one and
      * the actor's own write responses). A viewer who is neither participant nor admin is a programming error (the ownership
-     * policy already answered 404). `room_id`, the idempotency columns, reminder marks and `cancelled_by_user_id` are never emitted.
+     * policy already answered 404). `hasRecord` is a boolean from the view, never record content. `room_id`, the idempotency columns,
+     * reminder marks and `cancelled_by_user_id` are never emitted.
      */
     static from(entity: Consultation, viewer: ConsultationViewer, view: ConsultationView): ConsultationResponseDto {
         const permitted = viewer.role === "admin" || (viewer.role === "patient" && viewer.userId === entity.patientUserId)
@@ -64,7 +65,7 @@ export class ConsultationResponseDto {
             timezone: view.timezone, patientTimezone: entity.patientTimezone, price: { amount: entity.price, currency: entity.currency },
             joinedAt: iso(entity.joinedAt), startedAt: iso(entity.startedAt), completedAt: iso(entity.completedAt), cancelledAt: iso(entity.cancelledAt),
             cancelledBy: entity.cancelledBy, cancelReason: entity.cancelReason, needsAdminFollowup: entity.needsAdminFollowup,
-            followupReason: entity.followupReason, followUpOfRecordId: entity.followUpOfRecordId, hasRecord: false,
+            followupReason: entity.followupReason, followUpOfRecordId: entity.followUpOfRecordId, hasRecord: view.hasRecord,
             createdAt: entity.createdAt.toISOString(), updatedAt: entity.updatedAt.toISOString(),
         };
         if (view.detail && viewer.role !== "admin") dto.complaintText = entity.complaintText;

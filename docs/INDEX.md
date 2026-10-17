@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-17
+last_verified: 2026-10-18
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -110,6 +110,7 @@ spec, tasks, manual-qa; `reviews/` exists only while a review has open findings)
 | [sessions/manual-qa.md](./sessions/manual-qa.md) | see the 2026-10-15 CURL run of the six session routes (279 pass, 0 fail) with video fault injection, RBAC matrix, windows, no-show grace, Case 2 degrade, and re-run with `scripts/curl-test-sessions.sh` (`scripts/sessions-qa-server.ts`) | how-to |
 | [records/brainstorm.md](./records/brainstorm.md) | see the agreed scope of `records` (create/get/patch+amend with the 24 h lock, patient timeline, `hasRecord`, `followUpOfRecordId` unlock and FK; attachments split to `record-attachments`; decisions R-D1..R-D10) before the spec | explanation |
 | [records/spec.md](./records/spec.md) | build or change `records` (v0.1.0, ready, not built): the four routes (`POST /consultations/{id}/record`, `GET`/`PATCH /records/{id}`, `GET /patients/{id}/records`) with roles, ownership resolvers, the creation-gate check order, the 24 h lock (database time, `FOR NO KEY UPDATE`, trigger `RecordLocked`), in-place vs amendment and the no-op rule, the timeline keyset and one-amendments-query rule, `hasRecord` batching, the `followUpOfRecordId` ownership check, R-D5 suspended-doctor `404` reads, audit actions, rate limits, migrations/grants, contract edits R1-R10 and the test plan | reference |
+| [records/tasks.md](./records/tasks.md) | see the records build tasks by build-order step, what is done and the as-built deviations from the spec | how-to |
 | [admin-doctors/brainstorm.md](./admin-doctors/brainstorm.md) | see the agreed scope of `admin-doctors` (suspend = Case 3 must-not-degrade 503, reinstate = Case 4 retry-report-pending 202, durable `suspension`/`reinstatement` sync jobs, flag-only bookings) and its open questions before writing the spec | explanation |
 | [admin-doctors/spec.md](./admin-doctors/spec.md) | build or change `admin-doctors` (v1.0.0, implemented, section 12 as-built notes): the two admin routes `suspend` (Case 3, 503 until Identity confirms) and `reinstate` (Case 4, 200/202), their policies, transactions, locking, audit and no-op semantics; the extraction of the Identity-sync engine into the shared `identity-sync` module (per-kind alert policy, one worker loop for all job kinds, `SyncTiming` injection), the consultation-flag port, the deterministic test plan | reference |
 | [admin-doctors/manual-qa.md](./admin-doctors/manual-qa.md) | see the 2026-10-09 CURL run of the suspend and reinstate endpoints (155 pass) against a loopback fake Identity: RBAC, Case 3 outage and recovery, Case 4 202 paths, 409 and no-op rules, idempotency, rate limit; re-run with `scripts/curl-test-admin-doctors.sh` | how-to |

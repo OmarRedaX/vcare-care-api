@@ -10,6 +10,11 @@ export const REDACTED_KEYS: readonly string[] = [
     "diagnosisText",
     "diagnosisCode",
     "treatmentPlan",
+    // records: the chief complaint, the follow-up interval, the nested amendments (carry `reason`) and a named amendment reason.
+    "chiefComplaint",
+    "followUpInDays",
+    "amendments",
+    "amendmentReason",
     "allergies",
     "chronicConditions",
     "bloodType",

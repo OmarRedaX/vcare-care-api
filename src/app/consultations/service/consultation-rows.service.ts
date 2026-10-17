@@ -6,9 +6,9 @@ import { currentRequestId } from "../../../lib/logger/request-context";
 import type { Consultation } from "../entity/consultation.entity";
 import type { ConsultationChangeKind, ConsultationStatus } from "../enums";
 import {
-    applyTransition, findById, findByIdForUpdate, isAssignedDoctor, isParticipant, listCalendar, listWaitingRoom, setRoomIfAbsent,
+    applyTransition, findById, findByIdForUpdate, findParties, isAssignedDoctor, isParticipant, listCalendar, listWaitingRoom, setRoomIfAbsent,
 } from "../repository/consultations.repo";
-import type { CalendarParams, ConsultationChangeListener, TransitionChanges, WaitingRoomParams } from "../types";
+import type { CalendarParams, ConsultationChangeListener, ConsultationParties, TransitionChanges, WaitingRoomParams } from "../types";
 
 /**
  * Row access for other modules (`sessions`): thin, no rules. It is how a module reaches `consultations` without importing a foreign
@@ -24,6 +24,11 @@ export class ConsultationRowsService {
 
     find(id: number, conn: Knex = this.db): Promise<Consultation | undefined> {
         return findById(id, conn);
+    }
+
+    /** Parties and status without the clinical text (the `records` creation gate and resolvers). */
+    findParties(id: number, conn: Knex = this.db): Promise<ConsultationParties | undefined> {
+        return findParties(id, conn);
     }
 
     /** `SELECT ... FOR UPDATE` of one live row: serializes lifecycle changes. */

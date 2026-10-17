@@ -64,4 +64,9 @@ export const TOKENS = {
     SessionsService: Symbol.for("SessionsService"),
     SessionQueriesService: Symbol.for("SessionQueriesService"),
     SessionsController: Symbol.for("SessionsController"),
+    /** `medical_records` access for other modules (`hasRecord` batch, follow-up target); depends only on the database. */
+    RecordLinksService: Symbol.for("RecordLinksService"),
+    RecordsService: Symbol.for("RecordsService"),
+    RecordQueriesService: Symbol.for("RecordQueriesService"),
+    RecordsController: Symbol.for("RecordsController"),
 } as const;
