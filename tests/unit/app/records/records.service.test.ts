@@ -85,13 +85,14 @@ describe("RecordsService.create (the creation gate)", () => {
         expect(rows.findParties).toHaveBeenCalledWith(7, trx);
     });
 
-    it("should answer NotAssignedDoctor before the status check so a related doctor never learns the status", async () => {
-        const { service, rows, mocks } = setup();
-        rows.findParties.mockResolvedValue(parties({ status: ConsultationStatus.Booked }));
+    it.each(["booked", "completed", "cancelled"] as const)("should answer NotFound, never NotAssignedDoctor and never the status error, to a doctor who is not the assigned one on a %s consultation (M1 defence in depth)", async (status) => {
+        const { service, rows, mocks, record } = setup();
+        rows.findParties.mockResolvedValue(parties({ status }));
         const err = await codeOf(() => service.create(otherDoctor, 7, { chiefComplaint: CHIEF }));
-        expect([err.code, err.status]).toEqual(["NotAssignedDoctor", 403]);
+        expect([err.code, err.status]).toEqual(["NotFound", 404]);
         expect(mocks.findLive).not.toHaveBeenCalled();
         expect(mocks.insert).not.toHaveBeenCalled();
+        expect(record).not.toHaveBeenCalled();
     });
 
     it.each(["booked", "waiting", "in_progress", "cancelled", "no_show"] as const)("should answer RecordRequiresCompleted for a %s consultation and write nothing", async (status) => {
@@ -192,15 +193,19 @@ describe("RecordsService.update", () => {
             expect(JSON.stringify(record.mock.calls)).not.toContain(PLAN);
         });
 
-        it("should return unchanged with no write and no audit row when every provided value equals the stored one (R-D7)", async () => {
+        it("should return unchanged with no record write and exactly one record.read audit row when every provided value equals the stored one (R-D7 as amended by M3)", async () => {
             const { service, mocks, record, events } = setup();
             const result = await service.update(doctor, 9, { changes: { chiefComplaint: CHIEF, examinationNotes: NOTES } });
             expect(result.kind).toBe("unchanged");
             expect(result.kind === "unchanged" && result.record.id).toBe(9);
             expect(mocks.update).not.toHaveBeenCalled();
             expect(mocks.amend).not.toHaveBeenCalled();
-            expect(record).not.toHaveBeenCalled();
-            expect(events).toEqual(["begin", "commit"]);
+            expect(events).toEqual(["begin", "audit", "commit"]);
+            expect(record).toHaveBeenCalledTimes(1);
+            expect(record).toHaveBeenCalledWith(trx, { actor: { kind: "user", userId: 202, role: "doctor" }, action: "record.read", entityType: "medical_record", entityId: 9,
+                metadata: { consultationId: 7, patientUserId: 101, viewerRole: "doctor", viaNoopPatch: true } });
+            const logged = JSON.stringify(record.mock.calls);
+            for (const marker of CLINICAL_MARKERS) expect(logged).not.toContain(marker);
         });
 
         it("should write only the field that differs when one value is equal and one is different", async () => {
@@ -224,7 +229,8 @@ describe("RecordsService.update", () => {
             const result = await service.update(doctor, 9, { changes: { chiefComplaint: CHIEF }, reason: REASON });
             expect(result.kind).toBe("unchanged");
             expect(mocks.update).not.toHaveBeenCalled();
-            expect(record).not.toHaveBeenCalled();
+            expect(record.mock.calls.map((call) => call[1].action)).toEqual(["record.read"]);
+            expect(JSON.stringify(record.mock.calls)).not.toContain(REASON);
         });
     });
 

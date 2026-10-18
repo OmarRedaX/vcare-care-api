@@ -109,11 +109,25 @@ describe("ConsultationQueriesService hasRecord batch", () => {
         expect(result.view.hasRecord).toBe(false);
     });
 
-    it("should render write responses with hasRecord false and make no lookup", async () => {
+    it.each([ConsultationStatus.Booked, ConsultationStatus.Cancelled])("should render a %s write response with hasRecord false and look nothing up", async (status) => {
         const { service, records } = setup();
-        const result = await service.renderOwn(doctor, row(1, ConsultationStatus.Completed));
+        const result = await service.renderOwn(doctor, row(1, status));
         expect(result.view.hasRecord).toBe(false);
-        expect(records.recordedConsultationIds).not.toHaveBeenCalled();
+        expect(records.recordedConsultationIds).toHaveBeenCalledWith([], expect.anything());
+    });
+
+    it("should report hasRecord true when a booking replay through the database idempotency path lands on a completed, recorded row (M9)", async () => {
+        const { service, records } = setup();
+        records.recordedConsultationIds.mockResolvedValue(new Set([1]));
+        const result = await service.renderOwn(patient, row(1, ConsultationStatus.Completed));
+        expect(records.recordedConsultationIds).toHaveBeenCalledWith([1], expect.anything());
+        expect(result.view.hasRecord).toBe(true);
+    });
+
+    it("should report hasRecord false for a replayed completed row that has no record yet", async () => {
+        const { service, records } = setup();
+        records.recordedConsultationIds.mockResolvedValue(new Set());
+        expect((await service.renderOwn(patient, row(1, ConsultationStatus.Completed))).view.hasRecord).toBe(false);
     });
 
     it("should let a lookup failure fail the read like any database error (no degrade)", async () => {

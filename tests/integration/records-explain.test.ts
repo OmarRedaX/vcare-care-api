@@ -16,7 +16,7 @@ jest.setTimeout(180_000);
 
 const PATIENT_USER = 105;
 const TIMELINE_INDEX = "idx_medical_records_patient_user_id_created_at_id";
-const AMENDMENTS_INDEX = "idx_medical_record_amendments_medical_record_id_created_at";
+const AMENDMENTS_INDEX = "idx_medical_record_amendments_medical_record_id_id";
 const UNIQUE_INDEX = "uq_medical_records_consultation_id";
 const DAY_MS = 86_400_000;
 /** The seeded rows start 60 days before now and run one hour per 200 consultations. */

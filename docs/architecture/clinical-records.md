@@ -20,8 +20,7 @@ Medical records carry the strictest privacy rules on the platform. The rules bel
 | Check | Error |
 |---|---|
 | caller is a doctor with `status=active`, not locally suspended | 403 `Forbidden` |
-| consultation visible to the caller | 404 `NotFound` |
-| caller is the consultation's `doctor_user_id` | 403 `NotAssignedDoctor` |
+| consultation exists and the caller is its `doctor_user_id` (every other caller, related or not, is told nothing) | 404 `NotFound` |
 | consultation `status='completed'` | 409 `RecordRequiresCompleted` |
 | no live record for the consultation (`uq_medical_records_consultation_id`) | 409 `Conflict` |
 

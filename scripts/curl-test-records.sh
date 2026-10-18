@@ -211,7 +211,7 @@ expect GET "/api/records/$NOBODY" patient-pending "$PPEND" 'get, patient token s
 expect GET "/api/patients/501/records" patient-pending "$PPEND" 'timeline, patient token status pending' '403 Forbidden'
 expect GET "/api/patients/501/records" doctor-pending "$DPEND" 'timeline, doctor token status pending' '403 Forbidden'
 expect GET "/api/records/$NOBODY" admin-suspended "$ASUSP" 'get, admin token status suspended' '403 Forbidden'
-expect POST "/api/consultations/$CMAIN/record" doctor-spoof "$D602" 'spoofed X-User-Id / X-Role are ignored (related doctor stays NotAssignedDoctor)' '403 NotAssignedDoctor' '' "$FULL" '' 'X-User-Id: 601'
+expect POST "/api/consultations/$CMAIN/record" doctor-spoof "$D602" 'spoofed X-User-Id / X-Role are ignored (related doctor stays 404: create is assigned-doctor-or-404)' '404 NotFound' '' "$FULL" '' 'X-User-Id: 601'
 check_value rbac 'denied calls created nothing and audited nothing' "0 0" "$(rec_n) $(audit_all)"
 
 # ---- 3. Create: validation (400) before any database gate, on a completed consultation without a record ----
@@ -265,8 +265,8 @@ for s in booked waiting in_progress cancelled no_show; do
 done
 check_value gate 'RecordRequiresCompleted created nothing' "0 0" "$(rec_n) $(audit_all)"
 XB="$(fut 601 501 booked)"
-expect POST "/api/consultations/$XB/record" doctor "$D602" 'related non-assigned doctor on a booked consultation: NotAssignedDoctor beats the status' '403 NotAssignedDoctor' '' "$FULL"
-expect POST "/api/consultations/$CV/record" doctor-related "$D602" 'related non-assigned doctor on a completed consultation' '403 NotAssignedDoctor' '' "$FULL"
+expect POST "/api/consultations/$XB/record" doctor "$D602" 'related non-assigned doctor on a booked consultation: 404, the status is not revealed (M1)' '404 NotFound' '' "$FULL"
+expect POST "/api/consultations/$CV/record" doctor-related "$D602" 'related non-assigned doctor on a completed consultation: 404, no existence oracle (M1)' '404 NotFound' '' "$FULL"
 expect POST "/api/consultations/$CV/record" doctor-unrelated "$D604" 'unrelated doctor (no consultation with the patient)' '404 NotFound' '' "$FULL"
 expect POST "/api/consultations/$CV/record" doctor-cancelled-only "$D606" 'doctor whose only rows with the patient are cancelled / no_show' '404 NotFound' '' "$FULL"
 expect POST "/api/consultations/$NOBODY/record" doctor "$D601" 'unknown consultation' '404 NotFound' '' "$FULL"
@@ -378,6 +378,7 @@ UPD0="$(sql "SELECT updated_at FROM medical_records WHERE id=$RID1")"
 expect PATCH "/api/records/$RID1" doctor "$D601" 'pre-lock no-op: values equal to the stored ones' 200 "$REC_SHAPE&&b.data.chiefComplaint==='$CH'&&b.data.followUpInDays===14&&b.data.isLocked===false&&b.data.amendments.length===0" "{\"chiefComplaint\":\"$CH\",\"followUpInDays\":14,\"diagnosisCode\":\"Z99.9\"}"
 expect PATCH "/api/records/$RID1" doctor "$D601" 'pre-lock no-op with a reason (ignored)' 200 "b.data.id===$RID1&&b.data.amendments.length===0" "{\"chiefComplaint\":\"$CH\",\"reason\":\"$RS\"}"
 check_value patch 'no-op wrote nothing: row byte-identical, updated_at unchanged, zero record.updated rows' "$BASE_HASH $UPD0 0" "$(rowhash "$RID1") $(sql "SELECT updated_at FROM medical_records WHERE id=$RID1") $(audit_n record.updated)"
+check_value audit 'each pre-lock no-op wrote exactly one record.read row flagged viaNoopPatch (the 200 discloses the record, M3)' 2 "$(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND action='record.read' AND entity_id=$RID1 AND metadata->>'viaNoopPatch'='true' AND actor_user_id=601")"
 PL2='QA-REC-PLAN-6604-B'
 expect PATCH "/api/records/$RID1" doctor "$D601" 'pre-lock change of one field updates in place' 200 "$REC_SHAPE&&b.data.treatmentPlan==='$PL2'&&b.data.chiefComplaint==='$CH'&&b.data.id===$RID1&&b.data.amendments.length===0&&Date.parse(b.data.updatedAt)>Date.parse(b.data.createdAt)" "{\"treatmentPlan\":\"$PL2\"}"
 RIDU="$(cat "$TMP/rid")"
@@ -602,7 +603,7 @@ NO_FLUSH=1 expect GET '/api/patients/502/records' patient-other "$P502" 'the 61s
 flush_redis
 
 # ---- 16. Hygiene: audit rows, clinical-free metadata, server log ----
-check_value audit 'every record audit row has only flat scalar metadata keys from the allowlist' 0 "$(sql "SELECT count(*) FROM audit_logs a, jsonb_object_keys(a.metadata) k WHERE a.created_at >= '$T0' AND a.action IN ('record.created','record.read','record.updated','record.amended','patient_records.listed') AND k NOT IN ('consultationId','patientUserId','doctorUserId','providedFields','viewerRole','viewerIsAuthor','amendmentCount','changedFields','amendmentId','reasonLength','recordCount','hasMore','firstPage')")"
+check_value audit 'every record audit row has only flat scalar metadata keys from the allowlist' 0 "$(sql "SELECT count(*) FROM audit_logs a, jsonb_object_keys(a.metadata) k WHERE a.created_at >= '$T0' AND a.action IN ('record.created','record.read','record.updated','record.amended','patient_records.listed') AND k NOT IN ('consultationId','patientUserId','doctorUserId','providedFields','viewerRole','viewerIsAuthor','viaNoopPatch','amendmentCount','changedFields','amendmentId','reasonLength','recordCount','hasMore','firstPage')")"
 check_value audit 'no audit row holds a clinical marker, a diagnosis code or the amendment reason' 0 "$(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND (metadata::text LIKE '%QA-REC-%' OR metadata::text LIKE '%Z99%' OR metadata::text LIKE '%coding fix%' OR metadata::text LIKE '%after the lock%')")"
 check_value audit 'record audit rows are all attributed to a doctor or a patient, never to an admin' 0 "$(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND action IN ('record.created','record.read','record.updated','record.amended','patient_records.listed') AND actor_role NOT IN ('doctor','patient')")"
 check_value audit 'record.created count equals the number of records created through the API' "$(sql "SELECT count(*) FROM medical_records WHERE chief_complaint NOT LIKE '%tie'")" "$(audit_n record.created)"

@@ -40,16 +40,48 @@ describe("records: update, lock, amendments, reads and the timeline (integration
             expect(await amendmentRows()).toHaveLength(0);
         });
 
-        it("should be a no-op when every value equals the stored one: 200 with the current record, no write, no audit row, updated_at unchanged (R-D7)", async () => {
+        it("should be a no-op when every value equals the stored one: 200 with the current record, no record write, updated_at unchanged, exactly one record.read audit row (R-D7 as amended by M3)", async () => {
             const id = await openRecord();
             const before = await rowOf(id);
             const versionBefore = await xmin(id);
+            const auditsBefore = await ownerDb("audit_logs").count<{ count: string }>("id as count").first();
             const res = await patchRecord(h, id, { chiefComplaint: CHIEF, examinationNotes: NOTES, diagnosisCode: DX_CODE, followUpInDays: 14 });
             expect(res.status).toBe(200);
             expect(res.body.data).toMatchObject({ id, chiefComplaint: CHIEF, examinationNotes: NOTES, diagnosisCode: DX_CODE, followUpInDays: 14, isLocked: false });
             expect(await rowOf(id)).toEqual(before);
             expect(await xmin(id)).toBe(versionBefore);
             expect(await audits("record.updated", "record.amended")).toHaveLength(0);
+            expect(await amendmentRows()).toHaveLength(0);
+            const reads = await audits("record.read");
+            expect(reads).toHaveLength(1);
+            expect(reads[0]).toMatchObject({ actor_user_id: DOCTOR, actor_role: "doctor", entity_type: "medical_record", entity_id: id, request_id: res.headers["x-request-id"] });
+            expect(reads[0]?.metadata).toEqual({ consultationId: before.consultation_id, patientUserId: PATIENT, viewerRole: "doctor", viaNoopPatch: true });
+            expect(Number((await ownerDb("audit_logs").count<{ count: string }>("id as count").first())?.count) - Number(auditsBefore?.count)).toBe(1);
+            for (const marker of [CHIEF, NOTES, DX_CODE]) expect(JSON.stringify(reads)).not.toContain(marker);
+        });
+
+        it("should fail the no-op PATCH with 500 and leave the record untouched when its record.read audit insert fails (the disclosure is never unaudited)", async () => {
+            const id = await openRecord();
+            const before = await rowOf(id);
+            await withFailingAudit("record.read", async () => {
+                const res = await patchRecord(h, id, { chiefComplaint: CHIEF });
+                expect(res.status).toBe(500);
+                expect(JSON.stringify(res.body)).not.toContain(CHIEF);
+            });
+            expect(await rowOf(id)).toEqual(before);
+            expect(await audits("record.read")).toHaveLength(0);
+        });
+
+        it("should reject a pre-lock reason that is too short with 400 although a reason is not used before the lock (M16), and accept a valid one", async () => {
+            const id = await openRecord();
+            const before = await rowOf(id);
+            const bad = await patchRecord(h, id, { treatmentPlan: "SYNTHETIC-PLAN-NEW", reason: "x" });
+            expect(bad.status).toBe(400);
+            expectErrorEnvelope(bad.body, "ValidationFailed");
+            expect(bad.body.error.details.map((detail: { field: string }) => detail.field)).toEqual(["reason"]);
+            expect(await rowOf(id)).toEqual(before);
+            const good = await patchRecord(h, id, { treatmentPlan: "SYNTHETIC-PLAN-NEW", reason: AMEND_REASON });
+            expect(good.status).toBe(200);
             expect(await amendmentRows()).toHaveLength(0);
         });
 
@@ -158,6 +190,23 @@ describe("records: update, lock, amendments, reads and the timeline (integration
             expect(again.status).toBe(201);
             expect(await amendmentRows()).toHaveLength(2);
             expect(await audits("record.amended")).toHaveLength(2);
+        });
+
+        it("should read amendments in append (id) order even when created_at is inverted by transaction start order (M7)", async () => {
+            const id = await lockedRecord();
+            const first = await patchRecord(h, id, { followUpInDays: 1, reason: AMEND_REASON });
+            const second = await patchRecord(h, id, { followUpInDays: 2, reason: AMEND_REASON });
+            expect([first.status, second.status]).toEqual([201, 201]);
+            // A double submit whose later-appended amendment began its transaction earlier: the owner inverts created_at to reproduce it.
+            await ownerDb("medical_record_amendments").where({ id: second.body.data.id }).update({ created_at: new Date(Date.now() - 3_600_000) });
+            await ownerDb("medical_record_amendments").where({ id: first.body.data.id }).update({ created_at: new Date() });
+            for (const actor of ["patient", "doctor"] as const) {
+                const read = await getRecord(h, id, actor);
+                expect(read.body.data.amendments.map((amendment: { id: number }) => amendment.id)).toEqual([first.body.data.id, second.body.data.id]);
+            }
+            const page = await timeline(h, PATIENT, "patient");
+            const item = (page.body.data.records as Array<{ id: number; amendments: Array<{ id: number }> }>).find((record) => record.id === id);
+            expect(item?.amendments.map((amendment) => amendment.id)).toEqual([first.body.data.id, second.body.data.id]);
         });
 
         it("should keep many amendments in the order they were made and show them oldest first on the next read, for the patient and the doctor", async () => {
@@ -315,7 +364,13 @@ describe("records: update, lock, amendments, reads and the timeline (integration
                 for (const change of [{ treatment_plan: PLAN }, { deleted_at: new Date() }, { chief_complaint: "SYNTHETIC-CHIEF-OTHER" }]) {
                     let failure: unknown;
                     try { await conn("medical_records").where({ id }).update(change); } catch (error) { failure = error; }
-                    expect([Object.keys(change)[0], checkViolationConstraint(failure)]).toEqual([Object.keys(change)[0], "trg_medical_records_forbid_update_after_lock"]);
+                    const column = Object.keys(change)[0];
+                    if (conn === db && column === "deleted_at") {
+                        // M5: the app role holds no UPDATE on deleted_at, so the statement never reaches the trigger.
+                        expect([column, (failure as { code?: string }).code]).toEqual([column, "42501"]);
+                    } else {
+                        expect([column, checkViolationConstraint(failure)]).toEqual([column, "trg_medical_records_forbid_update_after_lock"]);
+                    }
                 }
             }
             expect(await rowOf(id)).toEqual(before);
@@ -630,14 +685,17 @@ describe("records: update, lock, amendments, reads and the timeline (integration
             await timeline(h, PATIENT, "admin");
             await timeline(h, OTHER_PATIENT, "patient");
             await timeline(h, "me", "patient");
-            expect((await allRecordAudits()).map((row) => row.action)).toEqual(["record.created"]);
+            // The equal-value PATCH above is the only success besides the create: it is audited as a read (M3), nothing else is.
+            const early = await allRecordAudits();
+            expect(early.map((row) => row.action)).toEqual(["record.created", "record.read"]);
+            expect(early[1]?.metadata).toMatchObject({ viewerRole: "doctor", viaNoopPatch: true });
             await getRecord(h, id, "patient");
             await timeline(h, PATIENT, "doctor");
             await patchRecord(h, id, { treatmentPlan: "SYNTHETIC-PLAN-NEW" }, "doctor");
             await lockNow(id);
             await patchRecord(h, id, { treatmentPlan: PLAN, reason: AMEND_REASON }, "doctor");
             const rows = await allRecordAudits();
-            expect(rows.map((row) => row.action)).toEqual(["record.created", "record.read", "patient_records.listed", "record.updated", "record.amended"]);
+            expect(rows.map((row) => row.action)).toEqual(["record.created", "record.read", "record.read", "patient_records.listed", "record.updated", "record.amended"]);
             const flat = JSON.stringify(rows);
             for (const text of [CHIEF, NOTES, DX_TEXT, PLAN, AMEND_REASON, "SYNTHETIC-PLAN-NEW", DX_CODE]) expect(flat).not.toContain(text);
         });

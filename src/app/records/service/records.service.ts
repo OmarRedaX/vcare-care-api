@@ -32,16 +32,15 @@ export class RecordsService {
 
     /**
      * The creation gate (the order is part of the contract: the first failure wins). The caller already passed the role, account state,
-     * suspension check and the visibility resolver. The status is read without a lock: `completed` is terminal, so only the unique
+     * suspension check and the resolver that admits only the assigned doctor (everyone else is 404, owner decision M1). The status is read without a lock: `completed` is terminal, so only the unique
      * index can race (its loser gets `Conflict`).
      */
     async create(actor: AuthContext, consultationId: number, input: RecordCreateInput): Promise<MedicalRecord> {
         try {
             return await this.db.transaction(async (trx) => {
                 const parties = await this.rows.findParties(consultationId, trx);
-                if (parties === undefined) throw NotFound;
-                // A related doctor who is not the assigned one is told so before the status is revealed.
-                if (parties.doctorUserId !== actor.userId) throw NotAssignedDoctor;
+                // The resolver already admitted only the assigned doctor; a mismatch here (defence in depth) is the same 404, never a distinct code.
+                if (parties === undefined || parties.doctorUserId !== actor.userId) throw NotFound;
                 if (parties.status !== ConsultationStatus.Completed) throw RecordRequiresCompleted;
                 if (await findLiveIdByConsultationId(consultationId, trx) !== undefined) throw RecordAlreadyExists;
                 // Both user ids come from the consultation, never from the body.
@@ -59,8 +58,9 @@ export class RecordsService {
     }
 
     /**
-     * Before the lock: update in place (values equal to the stored ones are a no-op, R-D7). After the lock: append an amendment, always;
-     * the original row is never touched. `reason` is required only after the lock and is ignored before it.
+     * Before the lock: update in place (values equal to the stored ones are a no-op that writes one `record.read` audit row and nothing
+     * else, R-D7 as amended by M3). After the lock: append an amendment, always; the original row is never touched. `reason` is required
+     * only after the lock and is not used for the update before it.
      */
     async update(actor: AuthContext, recordId: number, input: RecordUpdateInput): Promise<RecordUpdateResult> {
         try {
@@ -70,7 +70,13 @@ export class RecordsService {
                 if (record.doctorUserId !== actor.userId) throw NotAssignedDoctor;
                 if (!record.isLocked) {
                     const diff = diffRecord(record, input.changes);
-                    if (diff.fields.length === 0) return { kind: "unchanged", record };
+                    if (diff.fields.length === 0) {
+                        // The 200 body discloses the clinical text, so the no-op is audited as a read (owner decision M3); nothing else is written.
+                        await this.audit.record(trx, { actor: actorFromAuth(actor), action: RecordAuditAction.Read, entityType: MEDICAL_RECORD_ENTITY_TYPE,
+                            entityId: record.id, metadata: { consultationId: record.consultationId, patientUserId: record.patientUserId,
+                                viewerRole: actor.role, viaNoopPatch: true } });
+                        return { kind: "unchanged", record };
+                    }
                     const updated = await updateRecordFields(record.id, diff.columns, trx);
                     await this.audit.record(trx, { actor: actorFromAuth(actor), action: RecordAuditAction.Updated, entityType: MEDICAL_RECORD_ENTITY_TYPE,
                         entityId: record.id, metadata: { consultationId: record.consultationId, patientUserId: record.patientUserId, changedFields: diff.fields.join(",") } });

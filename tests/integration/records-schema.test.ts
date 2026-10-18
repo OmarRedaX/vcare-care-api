@@ -39,7 +39,7 @@ describe("records schema (integration: real Postgres, owner care and app login c
             expect(await names("medical_records", "indexes")).toEqual(["idx_medical_records_patient_user_id_created_at_id", "medical_records_pkey", "uq_medical_records_consultation_id"]);
             expect(await names("medical_record_amendments", "constraints")).toEqual(["chk_medical_record_amendments_diagnosis_code", "chk_medical_record_amendments_follow_up",
                 "chk_medical_record_amendments_nonempty", "fk_medical_record_amendments_medical_record_id", "medical_record_amendments_pkey"]);
-            expect(await names("medical_record_amendments", "indexes")).toEqual(["idx_medical_record_amendments_medical_record_id_created_at", "medical_record_amendments_pkey"]);
+            expect(await names("medical_record_amendments", "indexes")).toEqual(["idx_medical_record_amendments_medical_record_id_id", "medical_record_amendments_pkey"]);
             const fks = await ownerDb.raw("SELECT conname, confdeltype FROM pg_constraint WHERE contype = 'f' AND conname IN (?, ?, ?) ORDER BY conname",
                 ["fk_medical_records_consultation_id", "fk_medical_record_amendments_medical_record_id", "fk_consultations_follow_up_of_record_id"]);
             expect(fks.rows).toEqual([{ conname: "fk_consultations_follow_up_of_record_id", confdeltype: "r" }, { conname: "fk_medical_record_amendments_medical_record_id", confdeltype: "r" },
@@ -160,10 +160,12 @@ describe("records schema (integration: real Postgres, owner care and app login c
             expect(await ownerDb("medical_records")).toHaveLength(0);
         });
 
-        it("should refuse a soft delete after the lock and any update of a column after the lock, and allow neither a delete nor a truncate for the app role", async () => {
+        it("should refuse a clinical update after the lock by trigger, refuse the lock and ownership columns by grant, and allow neither a delete nor a truncate for the app role", async () => {
             const id = (await insertRecord(await seedCompleted(h), "NOW() - interval '30 hours'")).rows[0].id as number;
-            expect((await failure(() => db("medical_records").where({ id }).update({ deleted_at: new Date() }))).constraint).toBe(TRIGGER);
-            expect((await failure(() => db("medical_records").where({ id }).update({ locked_at: new Date(Date.now() + 99_000_000) }))).constraint).toBe(TRIGGER);
+            expect((await failure(() => db("medical_records").where({ id }).update({ treatment_plan: "SYNTHETIC-PLAN" }))).constraint).toBe(TRIGGER);
+            // M5: the grant is column-level, so these never reach the trigger: permission denied (42501) for the app role.
+            expect((await failure(() => db("medical_records").where({ id }).update({ deleted_at: new Date() }))).code).toBe("42501");
+            expect((await failure(() => db("medical_records").where({ id }).update({ locked_at: new Date(Date.now() + 99_000_000) }))).code).toBe("42501");
             expect((await failure(() => db.raw("DELETE FROM medical_records WHERE id = ?", [id]))).code).toBe("42501");
             expect((await failure(() => db.raw("TRUNCATE medical_records"))).code).toBe("42501");
             expect(await ownerDb("medical_records").where({ id })).toHaveLength(1);
@@ -179,11 +181,26 @@ describe("records schema (integration: real Postgres, owner care and app login c
     describe("grants for the app login (ADR 0018)", () => {
         const privilege = async (sql: string, ...bindings: string[]): Promise<boolean> => (await ownerDb.raw(`SELECT ${sql} AS ok`, bindings)).rows[0].ok as boolean;
 
-        it("should give care_app select, insert and update on medical_records and no delete or truncate", async () => {
+        it("should give care_app select and insert on medical_records, no table-level update, delete or truncate", async () => {
             const flags = [] as boolean[];
             for (const kind of ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]) flags.push(await privilege("has_table_privilege('care_app', 'medical_records', ?)", kind));
-            expect(flags).toEqual([true, true, true, false, false, false, false]);
+            expect(flags).toEqual([true, true, false, false, false, false, false]);
             expect(await privilege("has_sequence_privilege('care_app', 'medical_records_id_seq', 'USAGE')")).toBe(true);
+        });
+
+        it("should let care_app update exactly the clinical columns and updated_at of medical_records (M5: the lock, parties and soft delete are out of reach)", async () => {
+            const updatable = ["chief_complaint", "examination_notes", "diagnosis_text", "diagnosis_code", "treatment_plan", "follow_up_in_days", "updated_at"];
+            const forbidden = ["id", "consultation_id", "patient_user_id", "doctor_user_id", "locked_at", "created_at", "deleted_at"];
+            for (const column of updatable) expect([column, await privilege("has_column_privilege('care_app', 'medical_records', ?, 'UPDATE')", column)]).toEqual([column, true]);
+            for (const column of forbidden) expect([column, await privilege("has_column_privilege('care_app', 'medical_records', ?, 'UPDATE')", column)]).toEqual([column, false]);
+        });
+
+        it("should refuse, by permission, a pre-lock statement that tries to extend the lock or re-home a record", async () => {
+            const id = (await insertRecord(await seedCompleted(h))).rows[0].id as number;
+            for (const statement of ["UPDATE medical_records SET created_at = created_at + interval '1 hour', locked_at = locked_at + interval '1 hour' WHERE id = ?",
+                "UPDATE medical_records SET patient_user_id = patient_user_id + 1 WHERE id = ?", "UPDATE medical_records SET deleted_at = NOW() WHERE id = ?"]) {
+                expect((await failure(() => db.raw(statement, [id]))).code).toBe("42501");
+            }
         });
 
         it("should make medical_record_amendments append-only for care_app: select and a nine column insert, never update, delete, truncate or the id and created_at columns", async () => {

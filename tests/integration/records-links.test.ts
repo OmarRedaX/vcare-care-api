@@ -3,6 +3,7 @@ import { expectErrorEnvelope } from "../helpers/contract";
 import { bookingBody, localStart, MINUTE, OTHER_DOCTOR, OTHER_PATIENT, useConsultationsHarness } from "../helpers/consultations-harness";
 import { ownerDb } from "../helpers/db";
 import { captureQueries, CHIEF, createRecord, getRecord, insertRecordRow, PLAN, provisionOtherDoctor, recordBody, seedCompleted, seedWithStatus } from "../helpers/records-fixtures";
+import { flushByPrefix } from "../helpers/redis";
 import { patch, seedSession, sessionStart } from "../helpers/sessions-fixtures";
 
 jest.setTimeout(120_000);
@@ -72,6 +73,29 @@ describe("records links: Consultation.hasRecord and the follow-up booking (integ
             expect(completed.body.data.hasRecord).toBe(false);
             await createRecord(h, id);
             expect((await consultation(id, "doctor")).body.data.hasRecord).toBe(true);
+        });
+
+        it("should report hasRecord truthfully when a booking is replayed through the database idempotency path after the consultation was completed and recorded (M9)", async () => {
+            const key = randomUUID();
+            const body = bookingBody();
+            const first = await h.book("patient", body, key);
+            expect(first.status).toBe(201);
+            expect(first.body.data.hasRecord).toBe(false);
+            const id = first.body.data.id as number;
+            // Still booked: the replay is the booking-time snapshot, no record possible.
+            await flushByPrefix(["idem:"]);
+            const early = await h.book("patient", body, key);
+            expect([early.status, early.body.data.id, early.body.data.hasRecord]).toEqual([201, id, false]);
+            await ownerDb("consultations").where({ id }).update({ status: "completed", completed_at: new Date() });
+            // Completed, no record yet: still false.
+            await flushByPrefix(["idem:"]);
+            expect((await h.book("patient", body, key)).body.data).toMatchObject({ id, status: "completed", hasRecord: false });
+            await createRecord(h, id);
+            await flushByPrefix(["idem:"]);
+            const replay = await h.book("patient", body, key);
+            expect(replay.status).toBe(201);
+            expect(replay.body.data).toMatchObject({ id, status: "completed", hasRecord: true });
+            expect((await consultation(id, "patient")).body.data.hasRecord).toBe(true);
         });
 
         it("should issue no medical_records query for a page without a completed row, and exactly one for a page with several", async () => {

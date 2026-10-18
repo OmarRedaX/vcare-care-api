@@ -36,6 +36,15 @@ Source: [spec.md](./spec.md) (v0.1.0, ready). Branch `feature/records`. Contract
 - [x] (manual-qa) ← /manual-qa (`scripts/curl-test-records.sh`): 328 pass / 0 fail, 2026-10-18, see `docs/records/manual-qa.md`
 - [ ] (docs) ← /update-docs (service-card, INDEX, architecture shards listed in spec section 11)
 
+## Fix-review 2026-10-18 (review-20261018-0432: M1, M3, M5, M7, M9, M11-M16)
+- [x] (contract) `createMedicalRecord` / `RecordWriteForbidden` (create never returns `NotAssignedDoctor`, M1), `updateMedicalRecord` (no-op audited as `record.read`, `x-audit-actions`, `reason` validation text, M3/M16), `listPatientRecords` audit entity (M15), `Cache-Control: no-store` on three error responses (M12), `Consultation.required` (M13), `ConsultationCreate.followUpOfRecordId` text and `minimum: 1` (M11, M14)
+- [x] (spec) `docs/records/spec.md` 1.2, 1.4 R2, 1.5 R-D7/decision 1, new 1.6 owner decisions, 2.1 grants, 2.2 index, 3.1, 3.5, 3.6, 3.7, 3.8, section 4/6/7/8/9/11
+- [x] (migration) edited in place (unmerged branch): column-level `UPDATE` grant on `medical_records` (M5); index `(medical_record_id, id)` on amendments (M7)
+- [x] (policies/service) create resolver is assigned-doctor-or-404 (M1); no-op `PATCH` writes one `record.read` row (M3); amendments `ORDER BY id` (M7); `ConsultationQueriesService.renderOwn` truthful `hasRecord` (M9); policy comment fixed
+- [x] (tests) probing regression (M1), RBAC matrix, no-op audit + failing audit, column grant tests, amendment order, replay `hasRecord`, contract tests, `followUpOfRecordId` 0/-3, pre-lock bad `reason`
+- [ ] (manual-qa) re-run `scripts/curl-test-records.sh` (create expectations moved to `404 NotFound`, no-op audit check added; `docs/records/manual-qa.md` rows 42, 96, 97 still show the old `403 NotAssignedDoctor`)
+- [ ] (docs) /update-docs: architecture shards that still describe `NotAssignedDoctor` on create or the old index/grant (`clinical-records.md`, `rbac.md`, `api.md`, `data-model.md`)
+
 ## As-built notes (deviations from the spec, found while implementing)
 - **Migration regex needs an escaped question mark.** `knex.raw` reads a bare `?` as a binding placeholder, so the diagnosis-code `CHECK` as written in spec 2.1/2.2 became `...{1,4})$1$` and rejected `A00.1`. Both migrations write the quantifier as a double-backslash question mark in the template literal (the constraint stored in Postgres is exactly `^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$`). The spec SQL itself is unchanged.
 - **`records/rules.ts` added** (not in the spec file list): the pure `providedFields` and `diffRecord` helpers (pre-lock no-op diff, audit field names). `RecordParties` is a fourth shared type in `types.ts` for the two write resolvers.

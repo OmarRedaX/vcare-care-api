@@ -136,7 +136,7 @@ Status changes on consultations are always audited regardless of the audit class
 |---|---|---|
 | Wrong role for the capability (e.g. patient calls an admin route, admin calls a record route) | 403 `Forbidden` | the capability's existence is public |
 | Allowed role, resource is private and not the caller's (consultation, record, patient profile, own-profile sub-resource `:id`) | 404 `NotFound` | do not reveal that the id exists |
-| Allowed role and owner, but the doctor is not the assigned doctor for a record write | 403 `NotAssignedDoctor` | the caller already sees the consultation |
+| `PATCH /records/{id}` by a doctor with a consultation relationship to the patient who is not the record's author | 403 `NotAssignedDoctor` | the caller already sees the record id in the patient timeline. Creating a record (`POST /consultations/{id}/record`) by anyone but the assigned doctor is `404` instead: the timeline does not list record-less consultations, so a 403 would be an existence oracle |
 | User token on `/internal/*` | 401 `ServiceTokenRequired` | only service principals |
 | Service token without `doctors:read` | 403 `InsufficientScope` | |
 

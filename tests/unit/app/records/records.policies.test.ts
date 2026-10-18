@@ -96,13 +96,24 @@ describe("record_write_consultation and record_write_record", () => {
         expect(relationship.hasConsultationRelationship).not.toHaveBeenCalled();
     });
 
-    it.each(cases)("should allow a related non-assigned doctor on %s (the service then answers NotAssignedDoctor)", async (name, _label, id) => {
-        expect(await resolve(policies[name].owner, ctx("doctor", 204, { id }))).toBe("allow");
+    it("should answer 404 on create to a doctor who holds a relationship with the patient but is not the assigned doctor, without any relationship lookup (M1)", async () => {
+        expect(await resolve(policies.create.owner, ctx("doctor", 204, { id: "7" }))).toBe("deny-not-found");
+        expect(relationship.hasConsultationRelationship).not.toHaveBeenCalled();
+    });
+
+    it("should allow a related non-author doctor on update (the service then answers NotAssignedDoctor)", async () => {
+        expect(await resolve(policies.update.owner, ctx("doctor", 204, { id: "9" }))).toBe("allow");
         expect(relationship.hasConsultationRelationship).toHaveBeenCalledWith(204, 101);
     });
 
     it.each(cases)("should answer 404 on %s for a doctor with no relationship to the patient", async (name, _label, id) => {
         expect(await resolve(policies[name].owner, ctx("doctor", 205, { id }))).toBe("deny-not-found");
+    });
+
+    it("should give the same decision on create for an absent consultation, a foreign one and a related doctor (no existence oracle)", async () => {
+        const decisions = await Promise.all([resolve(policies.create.owner, ctx("doctor", 204, { id: "999" })), resolve(policies.create.owner, ctx("doctor", 204, { id: "7" })),
+            resolve(policies.create.owner, ctx("doctor", 205, { id: "7" }))]);
+        expect(decisions).toEqual(["deny-not-found", "deny-not-found", "deny-not-found"]);
     });
 
     it("should take the id only from the path, never from anything else in the context", async () => {

@@ -72,11 +72,17 @@ export class ConsultationQueriesService {
         return { consultation, view: buildConsultationView(consultation, viewer, context, users, true, recorded) };
     }
 
-    /** The actor's own write response: both participants unhydrated (decision 1.5.5), clinical detail allowed for participants. */
+    /**
+     * The actor's own write response: both participants unhydrated (decision 1.5.5), clinical detail allowed for participants.
+     * `hasRecord` is truthful: a booking replayed through the database idempotency path returns the CURRENT row, which can be completed and
+     * recorded by now. The lookup runs only for a completed row (every other status can never have a record), so the normal write path
+     * makes no extra query.
+     */
     async renderOwn(actor: AuthContext, consultation: Consultation): Promise<RenderedConsultation> {
         const viewer: ConsultationViewer = { userId: actor.userId, role: actor.role };
+        const recorded = await this.records.recordedConsultationIds(consultation.status === ConsultationStatus.Completed ? [consultation.id] : [], this.db);
         // No hydration map: every participant, the counterpart included, renders as `profileHydrated: false`.
-        return { consultation, view: buildConsultationView(consultation, viewer, await this.viewContext(actor, undefined), new Map(), true) };
+        return { consultation, view: buildConsultationView(consultation, viewer, await this.viewContext(actor, undefined), new Map(), true, recorded) };
     }
 
     /** Admin: no clinical field is emitted, so no audit row (spec C-R15). */

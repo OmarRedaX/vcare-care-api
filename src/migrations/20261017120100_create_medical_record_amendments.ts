@@ -31,9 +31,10 @@ export async function up(knex: Knex): Promise<void> {
     }
 
     // The record view and the timeline load the amendments of a whole page in ONE query:
-    //   SELECT ... FROM medical_record_amendments WHERE medical_record_id = ANY($1) ORDER BY created_at, id
-    // (also the index of fk_medical_record_amendments_medical_record_id)
-    await knex.raw(`CREATE INDEX idx_medical_record_amendments_medical_record_id_created_at ON medical_record_amendments (medical_record_id, created_at, id);`);
+    //   SELECT ... FROM medical_record_amendments WHERE medical_record_id = ANY($1) ORDER BY id
+    // id order is append order (ids are assigned after the record row lock; created_at is the transaction start and can invert under a
+    // double submit). Also the index of fk_medical_record_amendments_medical_record_id.
+    await knex.raw(`CREATE INDEX idx_medical_record_amendments_medical_record_id_id ON medical_record_amendments (medical_record_id, id);`);
 
     await knex.raw(`GRANT SELECT ON medical_record_amendments TO vcare_app;`);
     await knex.raw(`GRANT INSERT (medical_record_id, author_user_id, chief_complaint, examination_notes, diagnosis_text, diagnosis_code, treatment_plan, follow_up_in_days, reason)

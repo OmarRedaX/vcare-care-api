@@ -180,7 +180,7 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
         }
     });
 
-    it("should grant vcare_app SELECT, INSERT and UPDATE but no DELETE or TRUNCATE on medical_records, and USAGE on its sequence", async () => {
+    it("should grant vcare_app SELECT and INSERT but no table-level UPDATE, DELETE or TRUNCATE on medical_records, and USAGE on its sequence", async () => {
         const result = await ownerDb.raw<{ rows: Array<Record<string, boolean>> }>(
             `SELECT has_table_privilege('vcare_app', 'medical_records', 'SELECT') AS sel,
                     has_table_privilege('vcare_app', 'medical_records', 'INSERT') AS ins,
@@ -189,7 +189,19 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
                     has_table_privilege('vcare_app', 'medical_records', 'TRUNCATE') AS trunc,
                     has_sequence_privilege('vcare_app', 'medical_records_id_seq', 'USAGE') AS seq`,
         );
-        expect(result.rows[0]).toEqual({ sel: true, ins: true, upd: true, del: false, trunc: false, seq: true });
+        expect(result.rows[0]).toEqual({ sel: true, ins: true, upd: false, del: false, trunc: false, seq: true });
+    });
+
+    it("should limit vcare_app UPDATE on medical_records to the six clinical columns and updated_at (the lock and the parties cannot be moved)", async () => {
+        const columns = ["id", "consultation_id", "patient_user_id", "doctor_user_id", "chief_complaint", "examination_notes", "diagnosis_text", "diagnosis_code",
+            "treatment_plan", "follow_up_in_days", "locked_at", "created_at", "updated_at", "deleted_at"];
+        const result = await ownerDb.raw<{ rows: Array<{ column_name: string; ok: boolean }> }>(
+            `SELECT c AS column_name, has_column_privilege('vcare_app', 'medical_records', c, 'UPDATE') AS ok FROM unnest(?::text[]) AS c`, [columns]);
+        const updatable = result.rows.filter((row) => row.ok).map((row) => row.column_name).sort();
+        expect(updatable).toEqual(["chief_complaint", "diagnosis_code", "diagnosis_text", "examination_notes", "follow_up_in_days", "treatment_plan", "updated_at"]);
+        for (const column of ["id", "consultation_id", "patient_user_id", "doctor_user_id", "locked_at", "created_at", "deleted_at"]) {
+            expect([column, result.rows.find((row) => row.column_name === column)?.ok]).toEqual([column, false]);
+        }
     });
 
     it("should make medical_record_amendments append-only for vcare_app: SELECT and a nine-column INSERT, never UPDATE, DELETE, TRUNCATE, id or created_at", async () => {

@@ -130,10 +130,11 @@ describe("medical-record-amendments.repo", () => {
         expect(result).toMatchObject({ id: 31, recordId: 9, authorUserId: 202, treatmentPlan: PLAN, reason: REASON, diagnosisText: null });
     });
 
-    it("should load the amendments of many records with one = ANY query ordered oldest first", () => {
+    it("should load the amendments of many records with one = ANY query in append (id) order, not created_at order (M7)", () => {
         const { sql, bindings } = listByRecordIdsQuery([9, 10, 11], dry).toSQL().toNative();
         expect(sql).toContain("medical_record_id = ANY($1::bigint[])");
-        expect(sql).toContain("order by created_at, id");
+        expect(sql).toContain("order by id");
+        expect(sql).not.toContain("created_at, id");
         expect(sql).not.toMatch(/select \*/i);
         expect(bindings).toEqual([[9, 10, 11]]);
     });

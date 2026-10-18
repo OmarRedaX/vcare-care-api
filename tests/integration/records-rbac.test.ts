@@ -17,9 +17,9 @@ const CANCELLED_ONLY_DOCTOR = 206;
 const BOOKED_ONLY_DOCTOR = 207;
 
 const MATRIX: readonly Cell[] = [
-    // POST /consultations/{id}/record: the assigned doctor only
+    // POST /consultations/{id}/record: the assigned doctor only; every other doctor, related or not, is 404 (M1)
     ["create", "none", 401, "Unauthorized"], ["create", "patient", 403, "Forbidden"], ["create", "otherPatient", 403, "Forbidden"], ["create", "author", 201, undefined],
-    ["create", "related", 403, "NotAssignedDoctor"], ["create", "unrelated", 404, "NotFound"], ["create", "cancelledOnly", 404, "NotFound"], ["create", "suspendedLocal", 403, "Forbidden"],
+    ["create", "related", 404, "NotFound"], ["create", "bookedOnly", 404, "NotFound"], ["create", "unrelated", 404, "NotFound"], ["create", "cancelledOnly", 404, "NotFound"], ["create", "suspendedLocal", 403, "Forbidden"],
     ["create", "pending", 403, "Forbidden"], ["create", "suspendedToken", 403, "Forbidden"], ["create", "admin", 403, "Forbidden"],
     // GET /records/{id}: the patient, the author and a consulted doctor; never an admin
     ["get", "none", 401, "Unauthorized"], ["get", "patient", 200, undefined], ["get", "otherPatient", 404, "NotFound"], ["get", "author", 200, undefined],

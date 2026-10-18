@@ -8,13 +8,32 @@ import type { RecordLinksService } from "./service/record-links.service";
 import type { RecordParties, RecordsPolicies } from "./types";
 
 /**
- * Write resolvers (`x-ownership: assigned-doctor`): visible to the assigned doctor OR to a doctor who holds a booked/waiting/in_progress/
- * completed consultation with the patient. The service then answers `NotAssignedDoctor` (403) for the latter; an unrelated doctor gets
- * `404`. A related doctor can already read the patient whole timeline, so the 403 reveals nothing new.
+ * `x-ownership: assigned-doctor` on create (`record_write_consultation`, owner decision M1): ONLY the consultation's assigned doctor passes.
+ * Every other caller, whether or not they hold a relationship with the patient and whatever the consultation's status, gets `404`
+ * identical to an absent id: the patient timeline lists only consultations that already have a record, so any other answer would be an
+ * existence oracle for the patient's record-less consultations.
  */
-function writeResolver(name: string, find: (id: number) => Promise<RecordParties | undefined>, relationship: PatientRelationshipChecker): OwnershipRule {
+function createResolver(rows: Pick<ConsultationRowsService, "findParties">): OwnershipRule {
     return {
-        kind: "resolver", name,
+        kind: "resolver", name: "record_write_consultation",
+        resolve: async ({ auth, params }: AccessContext): Promise<OwnershipDecision> => {
+            const id = parsePositiveId(params.id);
+            if (id === undefined) return "deny-not-found";
+            const row = await rows.findParties(id);
+            return row !== undefined && row.doctorUserId === auth.userId ? "allow" : "deny-not-found";
+        },
+    };
+}
+
+/**
+ * `x-ownership: assigned-doctor` on `PATCH /records/{id}` (`record_write_record`): visible to the record's author OR to a doctor who holds
+ * a booked/waiting/in_progress/completed consultation with the patient. The service then answers `NotAssignedDoctor` (403) for the
+ * latter; an unrelated doctor gets `404`. A related doctor already sees every record id in the patient's timeline, so the 403 reveals
+ * nothing new.
+ */
+function updateResolver(find: (id: number) => Promise<RecordParties | undefined>, relationship: PatientRelationshipChecker): OwnershipRule {
+    return {
+        kind: "resolver", name: "record_write_record",
         resolve: async ({ auth, params }: AccessContext): Promise<OwnershipDecision> => {
             const id = parsePositiveId(params.id);
             if (id === undefined) return "deny-not-found";
@@ -34,7 +53,7 @@ async function isSuspended(userId: number, doctors: Pick<DoctorsService, "isLoca
     return doctors.isLocallySuspended(userId);
 }
 
-/** `x-ownership: record-reader`: the record patient, its author, or a doctor with a consultation relationship to the patient. */
+/** `x-ownership: consulted-patient-or-self` on `GET /records/{id}` (resolver `record_reader`): the record patient, its author, or a doctor with a consultation relationship to the patient. */
 function recordReaderRule(doctors: Pick<DoctorsService, "isLocallySuspended">, links: Pick<RecordLinksService, "findAccessRow">,
     relationship: PatientRelationshipChecker): OwnershipRule {
     return {
@@ -81,8 +100,8 @@ export function buildRecordsPolicies(doctors: Pick<DoctorsService, "isLocallySus
     links: Pick<RecordLinksService, "findAccessRow">, relationship: PatientRelationshipChecker): RecordsPolicies {
     const notSuspended = [doctorNotSuspendedCheck(doctors)];
     return {
-        create: { kind: "user", roles: ["doctor"], owner: writeResolver("record_write_consultation", (id) => rows.findParties(id), relationship), checks: notSuspended, audit: "clinical-write" },
-        update: { kind: "user", roles: ["doctor"], owner: writeResolver("record_write_record", (id) => links.findAccessRow(id), relationship), checks: notSuspended, audit: "clinical-write" },
+        create: { kind: "user", roles: ["doctor"], owner: createResolver(rows), checks: notSuspended, audit: "clinical-write" },
+        update: { kind: "user", roles: ["doctor"], owner: updateResolver((id) => links.findAccessRow(id), relationship), checks: notSuspended, audit: "clinical-write" },
         get: { kind: "user", roles: ["patient", "doctor"], owner: recordReaderRule(doctors, links, relationship), audit: "clinical-read" },
         timeline: { kind: "user", roles: ["patient", "doctor"], owner: timelineReaderRule(doctors, relationship), audit: "clinical-read" },
     };

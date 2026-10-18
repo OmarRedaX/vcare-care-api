@@ -32,10 +32,10 @@ export async function insertAmendment(input: NewAmendment, trx: Knex.Transaction
     return toEntity(row);
 }
 
-/** Exported so EXPLAIN tests plan exactly what runs. Served by `idx_medical_record_amendments_medical_record_id_created_at`. */
+/** Exported so EXPLAIN tests plan exactly what runs. Served by `idx_medical_record_amendments_medical_record_id_id`; `id` order is append order (assigned under the record row lock). */
 export function listByRecordIdsQuery(recordIds: readonly number[], conn: Knex = db): Knex.QueryBuilder {
     return conn("medical_record_amendments").select([...AMENDMENT_COLUMNS]).whereRaw("medical_record_id = ANY(?::bigint[])", [[...recordIds]])
-        .orderByRaw("created_at, id");
+        .orderByRaw("id");
 }
 
 /**

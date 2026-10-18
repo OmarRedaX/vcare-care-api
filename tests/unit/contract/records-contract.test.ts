@@ -12,7 +12,7 @@ type Method = "get" | "post" | "patch";
 const OPERATIONS: Array<[string, string, Method, string[], string, string[], string, string[]]> = [
     ["createMedicalRecord", "/api/consultations/{id}/record", "post", ["doctor"], "assigned-doctor", ["201", "400", "401", "403", "404", "409", "429", "500"], "clinical-write", ["record.created"]],
     ["getMedicalRecord", "/api/records/{id}", "get", ["patient", "doctor"], "consulted-patient-or-self", ["200", "400", "401", "403", "404", "429", "500"], "clinical-read", ["record.read"]],
-    ["updateMedicalRecord", "/api/records/{id}", "patch", ["doctor"], "assigned-doctor", ["200", "201", "400", "401", "403", "404", "409", "429", "500"], "clinical-write", ["record.updated", "record.amended"]],
+    ["updateMedicalRecord", "/api/records/{id}", "patch", ["doctor"], "assigned-doctor", ["200", "201", "400", "401", "403", "404", "409", "429", "500"], "clinical-write", ["record.updated", "record.amended", "record.read"]],
     ["listPatientRecords", "/api/patients/{patientUserId}/records", "get", ["patient", "doctor"], "consulted-patient-or-self", ["200", "400", "401", "403", "404", "429", "500"], "clinical-read", ["patient_records.listed"]],
 ];
 
@@ -63,10 +63,10 @@ describe("records contract", () => {
     });
 
     it("should document the check order of create and patch, the no-op, the amendment, the lock and the trigger refusal", () => {
-        const create = contractOperationBlock("/api/consultations/{id}/record", "post");
-        for (const text of ["`403 NotAssignedDoctor`", "`409 RecordRequiresCompleted`", "`409 Conflict`", "a retried create after a lost response is", "locked_at = created_at + 24 h"]) expect(create).toContain(text);
-        const patch = contractOperationBlock("/api/records/{id}", "patch");
-        for (const text of ["no-op", "no write and no audit row", "`reason` is ignored", "always appended", "a `reason`-only or empty body is `400`", "cannot be cleared to null", "`409 RecordLocked`"]) expect(patch).toContain(text);
+        const create = contractOperationBlock("/api/consultations/{id}/record", "post").replace(/\s+/g, " ");
+        for (const text of ["this route never answers `403 NotAssignedDoctor`", "gets `404 NotFound`", "the caller is not its assigned doctor → `404 NotFound`", "`409 RecordRequiresCompleted`", "`409 Conflict`", "a retried create after a lost response is", "locked_at = created_at + 24 h"]) expect(create).toContain(text);
+        const patch = contractOperationBlock("/api/records/{id}", "patch").replace(/\s+/g, " ");
+        for (const text of ["no-op", "one `record.read` audit row", "validated (3..1000 characters, not blank)", "`reason` (3..1000 characters, not blank) is required", "always appended", "a `reason`-only or empty body is `400`", "cannot be cleared to null", "`409 RecordLocked`"]) expect(patch).toContain(text);
     });
 
     it("should document the timeline: newest first, one audit row per call, failing audit fails the read, nullable patient", () => {
@@ -88,6 +88,23 @@ describe("records contract", () => {
         expect(conflict).not.toContain("Retry-After");
         expect(conflict).not.toContain("in-flight");
         expect(responseBlock("RecordWriteForbidden")).toContain("NotAssignedDoctor");
+        expect(responseBlock("RecordWriteForbidden")).toContain("`POST /api/consultations/{id}/record` never returns `NotAssignedDoctor`");
+    });
+
+    it("should send Cache-Control no-store on the record error responses that were missing it (M12)", () => {
+        for (const name of ["RecordWriteForbidden", "RecordCreateConflict", "RecordLocked"]) expect([name, responseBlock(name)]).toEqual([name, expect.stringContaining("CacheControlNoStore")]);
+    });
+
+    it("should document the timeline audit row's stored entity type and id (M15)", () => {
+        expect(contractOperationBlock("/api/patients/{patientUserId}/records", "get").replace(/\s+/g, " ")).toContain("`entityType: patient_records` and `entityId` = the patient's Identity user id");
+    });
+
+    it("should list every always-emitted Consultation member as required, hasRecord included (M13), and bound followUpOfRecordId at 1 (M14)", () => {
+        const required = /required: \[(id, status[^\]]*)\]/.exec(schemaBlock("Consultation"))?.[1]?.split(",").map((name) => name.trim()) ?? [];
+        for (const name of ["hasRecord", "followUpOfRecordId", "followupReason", "joinedAt", "startedAt", "completedAt", "cancelledAt", "cancelledBy", "cancelReason"]) expect(required).toContain(name);
+        const create = schemaBlock("ConsultationCreate");
+        expect(/followUpOfRecordId:[\s\S]*?minimum: 1/.test(create)).toBe(true);
+        expect(create).not.toContain("recommended a follow-up");
     });
 
     it("should send no-store on the success responses that carry clinical text", () => {

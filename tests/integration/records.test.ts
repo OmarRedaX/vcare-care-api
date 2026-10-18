@@ -130,14 +130,39 @@ describe("records: the creation gate, concurrency and atomicity (integration: re
             expect(res.status).toBe(201);
         });
 
-        it("should answer 403 NotAssignedDoctor to a doctor who has a relationship with the patient but is not the consultation's doctor", async () => {
+        it("should answer 404 NotFound, never NotAssignedDoctor, to a doctor who has a relationship with the patient but is not the consultation's doctor (M1)", async () => {
             await provisionOtherDoctor(h);
             const id = await seedCompleted(h);
             const res = await postRecord(h, id, recordBody(), "otherDoctor");
-            expect(res.status).toBe(403);
-            expectErrorEnvelope(res.body, "NotAssignedDoctor");
+            expect(res.status).toBe(404);
+            expectErrorEnvelope(res.body, "NotFound");
             expect(await recordRows()).toHaveLength(0);
             expect(await allRecordAudits()).toHaveLength(0);
+        });
+
+        it("should give a related doctor probing cancelled, no-show, booked, other-doctor, recorded and record-less consultations of the same patient the identical 404 as an absent id (M1 existence oracle)", async () => {
+            await provisionOtherDoctor(h);
+            await h.seedDoctor(STRANGER_DOCTOR);
+            const probes: Record<string, number> = {
+                cancelled: await seedWithStatus(h, "cancelled"), noShow: await seedWithStatus(h, "no_show"), booked: await seedWithStatus(h, "booked"),
+                waiting: await seedWithStatus(h, "waiting", { joined_at: new Date() }), recordLess: await seedCompleted(h),
+                otherDoctorCompleted: await seedCompleted(h, { doctor_user_id: STRANGER_DOCTOR }), otherDoctorBooked: await relate(h, STRANGER_DOCTOR, PATIENT, "booked"),
+            };
+            probes.recorded = await seedCompleted(h);
+            await createRecord(h, probes.recorded);
+            const shape = (body: { error: { requestId?: string } }): unknown => ({ ...body, error: { ...body.error, requestId: "<id>" } });
+            const absent = await postRecord(h, 999999, recordBody(), "otherDoctor");
+            expect(absent.status).toBe(404);
+            const before = { records: await recordRows(), audits: await allRecordAudits() };
+            for (const [label, id] of Object.entries(probes)) {
+                // A valid body and an empty one: neither may be told apart from an absent id (an empty body must not reach validation).
+                for (const body of [recordBody(), {}]) {
+                    const res = await postRecord(h, id, body, "otherDoctor");
+                    expect([label, res.status]).toEqual([label, 404]);
+                    expect([label, shape(res.body)]).toEqual([label, shape(absent.body)]);
+                }
+            }
+            expect({ records: await recordRows(), audits: await allRecordAudits() }).toEqual(before);
         });
 
         it("should answer 404 to a doctor with no relationship to the patient, for an unknown id and for a non-numeric id", async () => {
@@ -164,12 +189,12 @@ describe("records: the creation gate, concurrency and atomicity (integration: re
             expectErrorEnvelope(res.body, "NotFound");
         });
 
-        it("should not let the related doctor learn the consultation status: NotAssignedDoctor, not RecordRequiresCompleted", async () => {
+        it("should not let the related doctor learn the consultation status: 404, neither NotAssignedDoctor nor RecordRequiresCompleted", async () => {
             await provisionOtherDoctor(h);
             const booked = await seedWithStatus(h, "booked");
             const res = await postRecord(h, booked, recordBody(), "otherDoctor");
-            expect(res.status).toBe(403);
-            expectErrorEnvelope(res.body, "NotAssignedDoctor");
+            expect(res.status).toBe(404);
+            expectErrorEnvelope(res.body, "NotFound");
         });
 
         describe("the documented check order", () => {
@@ -199,23 +224,26 @@ describe("records: the creation gate, concurrency and atomicity (integration: re
                 expectErrorEnvelope(res.body, "NotFound");
             });
 
-            it("should answer 400 for an invalid body before the assigned-doctor and status checks", async () => {
+            it("should answer 400 for an invalid body before the status check, for the assigned doctor, and 404 to any other doctor before the body is validated (M1)", async () => {
                 await provisionOtherDoctor(h);
                 const booked = await seedWithStatus(h, "booked");
                 const completed = await seedCompleted(h);
-                for (const [actor, id] of [["doctor", booked], ["otherDoctor", completed], ["otherDoctor", booked]] as const) {
-                    const res = await postRecord(h, id, { chiefComplaint: "x" }, actor);
-                    expect([actor, id, res.status]).toEqual([actor, id, 400]);
+                for (const id of [booked, completed]) {
+                    const res = await postRecord(h, id, { chiefComplaint: "x" }, "doctor");
+                    expect([id, res.status]).toEqual([id, 400]);
                     expectErrorEnvelope(res.body, "ValidationFailed");
                     expect(res.body.error.details.map((detail: { field: string }) => detail.field)).toEqual(["chiefComplaint"]);
+                    const other = await postRecord(h, id, { chiefComplaint: "x" }, "otherDoctor");
+                    expect([id, other.status]).toEqual([id, 404]);
+                    expectErrorEnvelope(other.body, "NotFound");
                 }
             });
 
-            it("should answer NotAssignedDoctor before RecordRequiresCompleted, and RecordRequiresCompleted before Conflict", async () => {
+            it("should answer 404 to a non-assigned doctor before RecordRequiresCompleted, and RecordRequiresCompleted before Conflict for the assigned doctor", async () => {
                 await provisionOtherDoctor(h);
                 const booked = await seedWithStatus(h, "booked");
                 const related = await postRecord(h, booked, recordBody(), "otherDoctor");
-                expectErrorEnvelope(related.body, "NotAssignedDoctor");
+                expectErrorEnvelope(related.body, "NotFound");
                 // A record row on a non-completed consultation (written by the owner; no route can) must not turn the status error into a conflict.
                 await insertRecordRow(booked, { created_at: new Date() });
                 const owner = await postRecord(h, booked, recordBody(), "doctor");

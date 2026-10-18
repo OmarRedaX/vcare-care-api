@@ -145,7 +145,7 @@ Live (2026-10-12, `consultations` module, [spec](../consultations/spec.md)): `PO
 ## records (admins are never allowed)
 | Method | Path | Roles | Ownership | Audit | Errors |
 |---|---|---|---|---|---|
-| POST | `/api/consultations/{id}/record` | doctor | assigned-doctor | clinical-write | 403 `NotAssignedDoctor`, 409 `RecordRequiresCompleted`/`Conflict` |
+| POST | `/api/consultations/{id}/record` | doctor | assigned-doctor (everyone else `404`) | clinical-write | 409 `RecordRequiresCompleted`/`Conflict` |
 | GET | `/api/records/{id}` | patient, doctor | owning patient, author, or doctor who consulted the patient (else 404) | clinical-read | attachment metadata only once ADR 0014 ships |
 | PATCH | `/api/records/{id}` | doctor | assigned-doctor | clinical-write | 200 in place before lock · 201 amendment after lock (`reason` required) · 403 `NotAssignedDoctor` |
 | POST | `/api/records/{id}/attachments` | doctor | assigned-doctor | clinical-write | 400 MIME/size, 403, 429 (20/h) — **to be replaced**, ADR 0013 |

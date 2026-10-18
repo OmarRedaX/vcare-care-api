@@ -73,7 +73,8 @@ describe("records contract conformance (integration: real responses against cont
         conforms(await postRecord(h, id, recordBody(), undefined), CREATE, "post", 401, "Unauthorized");
         conforms(await postRecord(h, id, { chiefComplaint: "x" }, "doctor"), CREATE, "post", 400, "ValidationFailed");
         conforms(await postRecord(h, id, recordBody(), "patient"), CREATE, "post", 403, "Forbidden");
-        conforms(await postRecord(h, id, recordBody(), "otherDoctor"), CREATE, "post", 403, "NotAssignedDoctor");
+        // M1: create never answers NotAssignedDoctor; a related non-assigned doctor is indistinguishable from an absent id.
+        conforms(await postRecord(h, id, recordBody(), "otherDoctor"), CREATE, "post", 404, "NotFound");
         conforms(await postRecord(h, 999999, recordBody(), "doctor"), CREATE, "post", 404, "NotFound");
         const booked = await seedWithStatus(h, "booked");
         conforms(await postRecord(h, booked, recordBody(), "doctor"), CREATE, "post", 409, "RecordRequiresCompleted");

@@ -60,8 +60,11 @@ export async function up(knex: Knex): Promise<void> {
     await knex.raw(`CREATE TRIGGER trg_medical_records_forbid_update_after_lock
         BEFORE UPDATE ON medical_records FOR EACH ROW EXECUTE FUNCTION forbid_update_after_lock();`);
 
-    // ADR 0018: explicit grants, no DELETE, no TRUNCATE.
-    await knex.raw(`GRANT SELECT, INSERT, UPDATE ON medical_records TO vcare_app;`);
+    // ADR 0018: explicit grants, no DELETE, no TRUNCATE. Least privilege on UPDATE: only the clinical columns and updated_at, so the app
+    // role can never move created_at/locked_at (the lock), re-home a record (consultation_id, patient_user_id, doctor_user_id) or set deleted_at.
+    await knex.raw(`GRANT SELECT, INSERT ON medical_records TO vcare_app;`);
+    await knex.raw(`GRANT UPDATE (chief_complaint, examination_notes, diagnosis_text, diagnosis_code, treatment_plan, follow_up_in_days, updated_at)
+        ON medical_records TO vcare_app;`);
     await knex.raw(`GRANT USAGE ON SEQUENCE medical_records_id_seq TO vcare_app;`);
 }
 
