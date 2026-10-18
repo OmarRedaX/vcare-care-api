@@ -33,6 +33,7 @@ export QA_MARKERS="$CH,$NO,$DX,$PL,$RS,$AL"
 uuid() { node -e 'process.stdout.write(require("node:crypto").randomUUID())'; }
 sql() { psql "$CARE_OWNER_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 -c "$1" | tr -d '\r'; }
 asapp() { psql "$CARE_APP_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 -c "$1" 2>&1 | tr -d '\r' || true; }
+asappv() { psql "$CARE_APP_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1 | tr -d '\r' || true; }  # verbose: prints the SQLSTATE (42501)
 mint() { curl -fsS "$FAKE_IDENTITY_URL/mint?case=$1"; }
 pt() { mint "patient-$1"; }; dt() { mint "doctor-$1"; }; at() { mint "admin-$1"; }
 js() { node -e 'const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(eval(process.argv[2])))' "$TMP/body" "$1"; }
@@ -298,6 +299,20 @@ LC="$(mkrow 601 501 -7200 in_progress)"
 expect PATCH "/api/consultations/$LC/complete" doctor "$D601" 'setup: complete an in_progress consultation through the real route' 200 "b.data.status==='completed'&&b.data.hasRecord===false"
 expect POST "/api/consultations/$LC/record" doctor "$D601" 'create right after the real complete' 201 "$REC_SHAPE" "$FULL"
 
+# M1 probing: every caller who is not the assigned doctor sees ONE answer, identical in shape to an absent id (no existence / status oracle)
+errshape() { node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(JSON.stringify([b.success,b.error.code,b.error.message,b.error.details]))}catch{process.stdout.write("invalid-body")}' "$TMP/body"; }
+probe() { local s; s="$(call POST "/api/consultations/$2/record" "$1" "$FULL")"; echo "$s|$(errshape)"; }
+XC="$(fut 601 501 cancelled)"; XN="$(fut 601 501 no_show)"; XW="$(fut 601 501 waiting)"; XI="$(fut 601 501 in_progress)"
+R0="$(rec_n)"; A0M1="$(audit_all)"; : > "$TMP/shapes"
+probe "$D602" "$NOBODY" >> "$TMP/shapes"                       # the reference: an absent id
+for cid in "$CV" "$CMAIN" "$XB" "$XC" "$XN" "$XW" "$XI" "$LC"; do probe "$D602" "$cid" >> "$TMP/shapes"; done   # related doctor 602 (booked row with patient 501): completed, recorded, booked, cancelled, no_show, waiting, in_progress
+for cid in "$CV" "$CMAIN" "$XC"; do probe "$D604" "$cid" >> "$TMP/shapes"; probe "$D606" "$cid" >> "$TMP/shapes"; done  # unrelated (604) and cancelled-only (606) doctors
+check_value gate 'M1: 15 non-assigned-doctor creates (related, unrelated, cancelled-only; every consultation status, recorded or not) all answer 404' "404" "$(cut -d'|' -f1 "$TMP/shapes" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check_value gate 'M1: all 15 bodies are identical in shape (success, code, message, details) to the absent-id body' 1 "$(cut -d'|' -f2- "$TMP/shapes" | sort -u | wc -l | tr -d ' ')"
+check_value gate 'M1: that one shape is NotFound with a non-empty message and an empty details array' '[false,"NotFound",true,[]]' "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").split("\n")[0].split("|").slice(1).join("|");const [s,c,m,d]=JSON.parse(l);process.stdout.write(JSON.stringify([s,c,typeof m==="string"&&m.length>0,d]))' "$TMP/shapes")"
+check_value gate 'M1: NotAssignedDoctor never appears on create' 0 "$(grep -c NotAssignedDoctor "$TMP/shapes" || true)"
+check_value gate 'M1: the probes created no record and no audit row' "$R0 $A0M1" "$(rec_n) $(audit_all)"
+
 # ---- 6. Create: concurrency and the suspended author ----
 pcall() { # pcall <name> <method> <path> <token> [body]: background call, status in $TMP/par_<name>
   local name="$1" method="$2" path="$3" token="$4" body="${5:-}"
@@ -377,8 +392,12 @@ check_value patch 'validation failures changed nothing and audited nothing' "$BA
 UPD0="$(sql "SELECT updated_at FROM medical_records WHERE id=$RID1")"
 expect PATCH "/api/records/$RID1" doctor "$D601" 'pre-lock no-op: values equal to the stored ones' 200 "$REC_SHAPE&&b.data.chiefComplaint==='$CH'&&b.data.followUpInDays===14&&b.data.isLocked===false&&b.data.amendments.length===0" "{\"chiefComplaint\":\"$CH\",\"followUpInDays\":14,\"diagnosisCode\":\"Z99.9\"}"
 expect PATCH "/api/records/$RID1" doctor "$D601" 'pre-lock no-op with a reason (ignored)' 200 "b.data.id===$RID1&&b.data.amendments.length===0" "{\"chiefComplaint\":\"$CH\",\"reason\":\"$RS\"}"
+RIDN="$(cat "$TMP/rid")"
 check_value patch 'no-op wrote nothing: row byte-identical, updated_at unchanged, zero record.updated rows' "$BASE_HASH $UPD0 0" "$(rowhash "$RID1") $(sql "SELECT updated_at FROM medical_records WHERE id=$RID1") $(audit_n record.updated)"
 check_value audit 'each pre-lock no-op wrote exactly one record.read row flagged viaNoopPatch (the 200 discloses the record, M3)' 2 "$(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND action='record.read' AND entity_id=$RID1 AND metadata->>'viaNoopPatch'='true' AND actor_user_id=601")"
+check_value audit 'M3: the no-op record.read rows are flat ids and flags only (consultationId, patientUserId, viewerRole, viaNoopPatch), attributed to the doctor, entity medical_record' 2 "$(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND action='record.read' AND entity_type='medical_record' AND entity_id=$RID1 AND actor_role='doctor' AND actor_user_id=601 AND metadata->>'viaNoopPatch'='true' AND metadata->>'viewerRole'='doctor' AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(metadata) k)=ARRAY['consultationId','patientUserId','viaNoopPatch','viewerRole']")"
+check_value audit 'M3: the last no-op row carries the no-op request id' 1 "$(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND action='record.read' AND entity_id=$RID1 AND request_id='$RIDN' AND metadata->>'viaNoopPatch'='true'")"
+check_value audit 'M3: the no-ops wrote no record.updated and no record.amended row, and no amendment' "0 0 0" "$(audit_n record.updated "$RID1") $(audit_n record.amended "$RID1") $(amd_n "$RID1")"
 PL2='QA-REC-PLAN-6604-B'
 expect PATCH "/api/records/$RID1" doctor "$D601" 'pre-lock change of one field updates in place' 200 "$REC_SHAPE&&b.data.treatmentPlan==='$PL2'&&b.data.chiefComplaint==='$CH'&&b.data.id===$RID1&&b.data.amendments.length===0&&Date.parse(b.data.updatedAt)>Date.parse(b.data.createdAt)" "{\"treatmentPlan\":\"$PL2\"}"
 RIDU="$(cat "$TMP/rid")"
@@ -397,6 +416,7 @@ expect PATCH "/api/records/$RID1" doctor-cancelled-only "$D606" 'patch by a doct
 expect PATCH "/api/records/$RID1" patient "$P501" 'patch by the owning patient' '403 Forbidden' '' '{"followUpInDays":5}'
 expect PATCH "/api/records/$RID1" admin "$ADMIN" 'patch by an admin' '403 Forbidden' '' '{"followUpInDays":5}'
 expect PATCH "/api/records/$NOBODY" doctor "$D601" 'patch on an unknown record' '404 NotFound' '' '{"followUpInDays":5}'
+check_value audit 'M3: only the two no-ops wrote viaNoopPatch rows; changed PATCHes and every denied PATCH wrote none; the plain reads of the record are unchanged (4)' "2 4" "$(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND action='record.read' AND entity_id=$RID1 AND metadata->>'viaNoopPatch'='true'") $(sql "SELECT count(*) FROM audit_logs WHERE created_at >= '$T0' AND action='record.read' AND entity_id=$RID1 AND NOT (metadata ? 'viaNoopPatch')")"
 expect PATCH "/api/records/$RID1" doctor "$D601" 'patch of the author after the checks: row still the last accepted value' 200 "b.data.followUpInDays===32" '{"followUpInDays":32}'
 
 # ---- 9. PATCH at the lock boundary (database time) and amendments ----
@@ -418,6 +438,10 @@ check_value audit 'one record.amended row (amendmentId, reasonLength, changedFie
 expect PATCH "/api/records/$RMIN" doctor "$D601" 'after the lock a value equal to the original still appends (no diff)' 201 "$AKEYS&&b.data.id>$AM1&&b.data.treatmentPlan==='$PL'" "{\"treatmentPlan\":\"$PL\",\"reason\":\"re-stating the plan\"}"
 expect PATCH "/api/records/$RMIN" doctor "$D601" 'after the lock a multi-field amendment' 201 "$AKEYS&&b.data.diagnosisCode==='B01.1'&&b.data.followUpInDays===7&&b.data.treatmentPlan===null" '{"diagnosisCode":"B01.1","followUpInDays":7,"reason":"coding fix"}'
 expect GET "/api/records/$RMIN" patient "$P501" 'get after amendments: original untouched, amendments oldest first, patient sees the reason' 200 "$REC_SHAPE&&b.data.isLocked===true&&b.data.treatmentPlan==='$PL'&&b.data.diagnosisCode===null&&b.data.amendments.length===3&&b.data.amendments.map(a=>a.id).join()===[...b.data.amendments.map(a=>a.id)].sort((x,y)=>x-y).join()&&b.data.amendments[0].id===$AM1&&b.data.amendments[0].reason==='$RS'&&b.data.amendments[2].diagnosisCode==='B01.1'&&b.data.amendments.every(a=>a.recordId===$RMIN&&a.authorUserId===601)"
+check_value amend 'M4: amendments come back in append order: the API id order equals SELECT ... ORDER BY id' "$(sql "SELECT string_agg(id::text, ',' ORDER BY id) FROM medical_record_amendments WHERE medical_record_id=$RMIN")" "$(js 'b.data.amendments.map(a=>a.id).join()')"
+sql "UPDATE medical_record_amendments SET created_at = created_at + interval '2 hours' WHERE id=$AM1" >/dev/null
+expect GET "/api/records/$RMIN" patient "$P501" 'M4: with the first amendment given the LATEST created_at (owner SQL), the order is still by id, not by time' 200 "b.data.amendments[0].id===$AM1&&b.data.amendments.map(a=>a.id).join()===[...b.data.amendments.map(a=>a.id)].sort((x,y)=>x-y).join()&&Date.parse(b.data.amendments[0].createdAt)>Date.parse(b.data.amendments[2].createdAt)"
+sql "UPDATE medical_record_amendments SET created_at = created_at - interval '2 hours' WHERE id=$AM1" >/dev/null
 check_value audit 'record.read for the amended record reports amendmentCount 3' 3 "$(sql "SELECT (metadata->>'amendmentCount')::int FROM audit_logs WHERE created_at >= '$T0' AND action='record.read' AND entity_id=$RMIN ORDER BY id DESC LIMIT 1")"
 expect GET "/api/records/$RMIN" doctor-related "$D602" 'a related doctor also sees the amendments' 200 'b.data.amendments.length===3'
 expect PATCH "/api/records/$RMIN" doctor-related "$D602" 'locked record: related non-author doctor' '403 NotAssignedDoctor' '' "{\"treatmentPlan\":\"x\",\"reason\":\"$RS\"}"
@@ -433,7 +457,17 @@ expect PATCH "/api/records/$RID1" doctor "$D601" 'full record, about 3 s after t
 # direct database guarantees (care_app login)
 if [ -n "${CARE_APP_DATABASE_URL:-}" ]; then
   check_value db 'care_app UPDATE of a locked record is refused by the trigger' 1 "$(asapp "UPDATE medical_records SET follow_up_in_days=9 WHERE id=$RID1" | grep -c 'is locked')"
-  check_value db 'care_app soft delete of a locked record is refused by the trigger' 1 "$(asapp "UPDATE medical_records SET deleted_at=now() WHERE id=$RID1" | grep -c 'is locked')"
+  check_value db 'M5: care_app soft delete (UPDATE deleted_at) of a locked record is refused by the column grant (42501), not the trigger' 1 "$(asappv "UPDATE medical_records SET deleted_at=now() WHERE id=$RID1" | grep -c '42501')"
+  check_value db 'the owner soft delete of a locked record is refused by the trigger' 1 "$(psql "$CARE_OWNER_DATABASE_URL" -XAt -c "UPDATE medical_records SET deleted_at=now() WHERE id=$RID1" 2>&1 | grep -c 'is locked')"
+  R603H="$(rowhash "$R603")"
+  for col in id consultation_id patient_user_id doctor_user_id created_at locked_at deleted_at; do
+    check_value db "M5: care_app UPDATE of medical_records.$col on an open record is permission denied (SQLSTATE 42501)" 1 "$(asappv "UPDATE medical_records SET $col = $col WHERE id=$R603" | grep -c '42501')"
+  done
+  LK=0; for col in locked_at created_at deleted_at; do LK=$((LK + $(asappv "UPDATE medical_records SET $col = $col WHERE id=$RID1" | grep -c '42501'))); done
+  check_value db 'M5: care_app UPDATE of locked_at / created_at / deleted_at on a LOCKED record is also 42501 (the privilege check runs before the trigger)' 3 "$LK"
+  check_value db 'M5: the refused updates left the open record untouched' "$R603H" "$(rowhash "$R603")"
+  check_value db 'M5: control, care_app can still UPDATE the six clinical columns and updated_at of an open record' 1 "$(asappv "UPDATE medical_records SET chief_complaint = chief_complaint, examination_notes = examination_notes, diagnosis_text = diagnosis_text, diagnosis_code = diagnosis_code, treatment_plan = treatment_plan, follow_up_in_days = follow_up_in_days, updated_at = updated_at WHERE id=$R603" | grep -c '^UPDATE 1')"
+  check_value db 'M5: the column-level UPDATE grant of vcare_app on medical_records is exactly the six clinical columns plus updated_at, no table-level UPDATE' "chief_complaint,diagnosis_code,diagnosis_text,examination_notes,follow_up_in_days,treatment_plan,updated_at false" "$(sql "SELECT string_agg(column_name, ',' ORDER BY column_name) FROM information_schema.column_privileges WHERE grantee='vcare_app' AND table_schema='public' AND table_name='medical_records' AND privilege_type='UPDATE'") $(sql "SELECT has_table_privilege('vcare_app','medical_records','UPDATE')::text")"
   check_value db 'the owner is refused too (the trigger fires for every role)' 1 "$(psql "$CARE_OWNER_DATABASE_URL" -XAt -c "UPDATE medical_records SET follow_up_in_days=9 WHERE id=$RID1" 2>&1 | grep -c 'is locked')"
   check_value db 'care_app has no DELETE on medical_records' 1 "$(asapp "DELETE FROM medical_records WHERE id=$RID1" | grep -c 'permission denied')"
   check_value db 'care_app has no UPDATE on amendments' 1 "$(asapp "UPDATE medical_record_amendments SET reason='xxx' WHERE medical_record_id=$RID1" | grep -c 'permission denied')"
@@ -559,6 +593,19 @@ sql "UPDATE medical_records SET deleted_at=now() WHERE id=$RLOW" >/dev/null
 expect POST /api/consultations patient-502 "$P502" 'book with a soft-deleted record (owner SQL, pre-lock) of this patient and doctor' '404 NotFound' '' "$(fbody 601 "$TYPE601" "$S5" ",\"followUpOfRecordId\":$RLOW")" "$(uuid)"
 expect GET "/api/records/$RLOW" patient-502 "$P502" 'get of the soft-deleted record' '404 NotFound'
 sql "UPDATE medical_records SET deleted_at=NULL WHERE id=$RLOW" >/dev/null
+# M9: a booking replayed through the database idempotency path (call() flushes Redis, so the Redis key is gone) reports a truthful hasRecord
+S6="$(slot 11 10:00)"; S7="$(slot 11 11:00)"; FK9="$(uuid)"; FK9b="$(uuid)"; B9="$(fbody 601 "$TYPE601" "$S6")"; B9b="$(fbody 601 "$TYPE601" "$S7")"
+expect POST /api/consultations patient "$P501" 'M9 setup: book a consultation (first execution: hasRecord false)' 201 'b.data.hasRecord===false&&b.data.status==="booked"' "$B9" "$FK9"
+C9="$(js 'b.data.id')"
+expect POST /api/consultations patient "$P501" 'M9 setup: book a second consultation' 201 'b.data.hasRecord===false' "$B9b" "$FK9b"
+C9b="$(js 'b.data.id')"
+sql "UPDATE consultations SET status='completed', joined_at=now(), started_at=now(), completed_at=now() WHERE id IN ($C9,$C9b)" >/dev/null
+expect POST "/api/consultations/$C9/record" doctor "$D601" 'M9 setup: the doctor records the first consultation' 201 "$REC_SHAPE" "$FULL"
+N9="$(sql 'select count(*) from consultations')"
+expect POST /api/consultations patient "$P501" 'M9: replay (Redis flushed, database idempotency path) of a booking whose consultation is now completed AND recorded: hasRecord true' 201 "b.data.id===$C9&&b.data.status==='completed'&&b.data.hasRecord===true&&!JSON.stringify(b).includes('QA-REC-')" "$B9" "$FK9"
+expect POST /api/consultations patient "$P501" 'M9: replay of a booking whose consultation is completed WITHOUT a record: hasRecord false' 201 "b.data.id===$C9b&&b.data.status==='completed'&&b.data.hasRecord===false" "$B9b" "$FK9b"
+expect POST /api/consultations patient "$P501" 'M9: replay of the earlier booked follow-up row stays hasRecord false' 201 "b.data.id===$FUC&&b.data.status==='booked'&&b.data.hasRecord===false" "$(fbody 601 "$TYPE601" "$S1" ",\"followUpOfRecordId\":$RID1")" "$FK1"
+check_value db 'M9: the three replays created no consultation row' "$N9" "$(sql 'select count(*) from consultations')"
 
 # ---- 14. Idempotency-Key is not used; no clinical text in Redis ----
 IK="$(uuid)"; CIK="$(comp 601 502)"

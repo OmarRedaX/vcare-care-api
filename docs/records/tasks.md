@@ -33,7 +33,7 @@ Source: [spec.md](./spec.md) (v0.1.0, ready). Branch `feature/records`. Contract
 - [x] (routes) `records/rate-limits.ts`, `records/routes.ts`
 - [x] (mount) `src/routes.ts` — after the consultations router
 - [x] (tests) ← /write-tests (unit + integration + RBAC + contract + concurrency + lock + privacy + EXPLAIN + schema; see "Test notes")
-- [x] (manual-qa) ← /manual-qa (`scripts/curl-test-records.sh`): 328 pass / 0 fail, 2026-10-18, see `docs/records/manual-qa.md`
+- [x] (manual-qa) ← /manual-qa (`scripts/curl-test-records.sh`): 328 pass / 0 fail, 2026-10-18 (first run; superseded by the fix-review re-run below: 359 pass / 0 fail), see `docs/records/manual-qa.md`
 - [ ] (docs) ← /update-docs (service-card, INDEX, architecture shards listed in spec section 11)
 
 ## Fix-review 2026-10-18 (review-20261018-0432: M1, M3, M5, M7, M9, M11-M16)
@@ -42,7 +42,7 @@ Source: [spec.md](./spec.md) (v0.1.0, ready). Branch `feature/records`. Contract
 - [x] (migration) edited in place (unmerged branch): column-level `UPDATE` grant on `medical_records` (M5); index `(medical_record_id, id)` on amendments (M7)
 - [x] (policies/service) create resolver is assigned-doctor-or-404 (M1); no-op `PATCH` writes one `record.read` row (M3); amendments `ORDER BY id` (M7); `ConsultationQueriesService.renderOwn` truthful `hasRecord` (M9); policy comment fixed
 - [x] (tests) probing regression (M1), RBAC matrix, no-op audit + failing audit, column grant tests, amendment order, replay `hasRecord`, contract tests, `followUpOfRecordId` 0/-3, pre-lock bad `reason`
-- [ ] (manual-qa) re-run `scripts/curl-test-records.sh` (create expectations moved to `404 NotFound`, no-op audit check added; `docs/records/manual-qa.md` rows 42, 96, 97 still show the old `403 NotAssignedDoctor`)
+- [x] (manual-qa) re-run `scripts/curl-test-records.sh` after the fix-review: 359 pass / 0 fail, 2026-10-18 (create is `404 NotFound` for every non-assigned doctor, no-op `PATCH` audited as `record.read`, amendment id order, column-level `UPDATE` grant, truthful `hasRecord` on a booking replay); see `docs/records/manual-qa.md`
 - [ ] (docs) /update-docs: architecture shards that still describe `NotAssignedDoctor` on create or the old index/grant (`clinical-records.md`, `rbac.md`, `api.md`, `data-model.md`)
 
 ## As-built notes (deviations from the spec, found while implementing)
