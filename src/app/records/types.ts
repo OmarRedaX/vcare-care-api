@@ -39,7 +39,7 @@ export interface RecordColumnChanges {
 export interface RecordDiff { fields: RecordField[]; columns: RecordColumnChanges }
 export interface NewAmendment { recordId: number; authorUserId: number; changes: RecordChanges; reason: string }
 
-/** `unchanged` is the pre-lock no-op (R-D7): nothing written, nothing audited. */
+/** `unchanged` is the pre-lock no-op (R-D7): no record write; one `record.read` audit row (M3). */
 export type RecordUpdateResult =
     | { kind: "updated" | "unchanged"; record: MedicalRecord }
     | { kind: "amended"; amendment: MedicalRecordAmendment };

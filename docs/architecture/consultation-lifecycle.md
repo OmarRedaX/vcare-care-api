@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 tags: [consultations, lifecycle, state-machine, reschedule, cancellation, sessions]
-related: [consultations-spec, sessions-spec, scheduling-slots, clinical-records, rbac, data-model, api]
+related: [consultations-spec, sessions-spec, scheduling-slots, clinical-records, records-spec, rbac, data-model, api]
 ---
 
 # Consultation Lifecycle
@@ -87,6 +87,11 @@ is generic so `sessions` reuses it.
 5. `no-show` (assigned doctor or admin, from `booked`/`waiting`, once `now >= starts_at + grace`): `→ no_show`, audit `consultation.no_show` with `noteLength` only (the optional note is not stored); the change listener frees the interval.
 
 **Provider failure.** No provider call is inside a transaction. Failure before commit: `503 VideoUnavailable`, state unchanged. Failure after commit (token issue): `503`, the state is already valid (`waiting`/`in_progress`) and repeating `join` returns a token. Check order: not found / not participant `404` → status `InvalidTransition` → window `RoomNotOpen` / grace `NoShowTooEarly`.
+
+## After `completed` — records, `hasRecord` and the follow-up link (as built 2026-10-18, [records spec](../records/spec.md))
+- `completed` is terminal and is the only status that can hold a medical record. `POST /consultations/{id}/record` (assigned doctor only) is the single way to create one; a record never changes the consultation row.
+- **`Consultation.hasRecord`** is true when a live `medical_records` row exists for the consultation. It is emitted to every viewer (a boolean, no content) on get-one, the list and the doctor's calendar from **one batched lookup per page over the `completed` rows only** (`RecordLinksService.recordedConsultationIds`; no query when the page has none, so the waiting room never queries). Write responses (book, reschedule, cancel, join, start, complete, no-show) are `false` by construction, with one exception: a booking replayed through the database idempotency key returns the *current* row, which may be `completed` and recorded, so `ConsultationQueriesService.renderOwn` looks it up when, and only when, the row is `completed`.
+- **Follow-up link.** `POST /consultations` accepts `followUpOfRecordId`. Inside the booking transaction, after the doctor-profile `FOR SHARE` lock, the bookable check and the consultation-type lookup and before the past/horizon/grid checks, `RecordLinksService.isFollowUpTarget(recordId, patientUserId = caller, doctorUserId = chosen doctor)` must hold, else `404 NotFound` (missing, foreign, other-doctor and deleted records are indistinguishable). Ownership only: no timing or `followUpInDays` check. The id is stored in `consultations.follow_up_of_record_id`, protected by `fk_consultations_follow_up_of_record_id` (the insert takes `FOR KEY SHARE` on the record, which does not block a record `PATCH`'s `FOR NO KEY UPDATE`). The idempotent replay path returns the stored consultation before this check.
 
 ## Flow D — Reschedule
 ```mermaid

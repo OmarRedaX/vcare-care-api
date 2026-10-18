@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -86,10 +86,10 @@ flowchart LR
 | `identity-sync` (built 2026-10-09, extracted from `verification`; ADR 0021) | the Identity status-sync engine: durable jobs, per-doctor advisory lock, kind policies, the `identity-sync` worker loop; no routes | `identity_sync_jobs` | identity-client (Cases 1, 3, 4); called by `verification`, `admin-doctors` and the worker |
 | `schedules` (built 2026-10-09) | working hours, exceptions, consultation types, conflict detection (behind the `ScheduleImpactProvider` port; no-op until `consultations`) | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
-| `consultations` | booking, reschedule, cancel, no-show, lists, calendar | `consultations` | `availability`, `doctors` (bookability), email, identity-client (Case 2) |
+| `consultations` | booking, reschedule, cancel, no-show, lists, calendar; `hasRecord` and the follow-up link via `records` (2026-10-18) | `consultations` | `availability`, `doctors` (bookability), `records` (`RecordLinksService`), email, identity-client (Case 2) |
 | `sessions` | waiting room, calendar, join/start/complete/no-show, room tokens (built 2026-10-15) | `consultations` (session columns, via `ConsultationRowsService`) | video, notifications (`doctor_joined` outbox), identity-client (Case 2) |
-| `patients` (profile built 2026-10-11; doctor read and timeline planned) | patient profile (`GET/PATCH /api/patients/me`), clinical timeline (planned) | `patient_profiles` | `records`, `consultations` (relationship check) |
-| `records` | medical records, amendments, attachments | `medical_records`, `medical_record_amendments`, `record_attachments` | storage (uploads, download URLs), `consultations` |
+| `patients` (built: profile 2026-10-11, doctor read 2026-10-12; timeline route lives in `records`) | patient profile (`GET/PATCH /api/patients/me`, `GET /api/patients/{patientUserId}`); `PatientsService.findProfile` serves the records timeline | `patient_profiles` | `consultations` (relationship check) |
+| `records` (built 2026-10-18; attachments are the next module, `record-attachments`) | medical records, amendments, the patient timeline (`GET /api/patients/{patientUserId}/records`), `Consultation.hasRecord` and the follow-up link through `RecordLinksService`; attachments planned | `medical_records`, `medical_record_amendments` (built); `record_attachments` (planned) | `consultations` (parties lookup, relationship port), `doctors` (suspension), `patients` (profile), `audit`; storage for attachments later. No Identity call |
 | `help-articles` | help center content | `help_articles` | — |
 | `audit` (read API built 2026-10-09) | append-only audit log (written through `lib/audit`) and `GET /api/audit-logs`: admin-only, time-bounded `[from, to)`, keyset page with a signed cursor; no table of its own beyond three read indexes, no audit row for the read | `audit_logs` | — (written by every module through `lib/audit`; the read module calls nothing) |
 | `identity-client` (lib) | outbound Identity calls and their policies | — | identity-service |

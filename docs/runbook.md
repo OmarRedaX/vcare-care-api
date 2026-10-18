@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 tags: [runbook, operations, on-call, care]
-related: [resilience, integration, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [resilience, integration, records-spec, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # Runbook — care-service
@@ -230,6 +230,12 @@ The video room provider failed or exceeded its 2 s bound while creating the room
 `GET /internal/doctors/{userId}/summary` (service token) or the admin application view: `isBookable` requires
 `verificationStatus=approved`, `identitySyncStatus=synced`, not suspended, accepting patients, and an active
 consultation type.
+
+### A record `PATCH` answers 409 RecordLocked, or a record read answers 500
+No new alert; the `records` module (2026-10-18) adds no metric. Never read clinical rows to diagnose; use ids, statuses and the request id ([trace a request](#trace-a-request-by-x-request-id)).
+- **`409 RecordLocked` on `PATCH /api/records/{id}`.** Expected only as a backstop: the service decides the lock with database time under the row lock, so a normal `PATCH` after `locked_at` is `201` (an amendment), never `409`. A `409` means the `trg_medical_records_forbid_update_after_lock` trigger refused an in-place `UPDATE` the service thought allowed. The service and the trigger read the same transaction-start `NOW()`, so this can happen only if the row was altered outside the service (or a code regression bypassed the lock check). Check the record's `locked_at` against `created_at + interval '24 hours'` (they must be equal, `chk_medical_records_lock`) and look for out-of-band `UPDATE`s by an owner session. The access log line (`route`, `status`, `requestId`) carries the 409; the error handler logs nothing more for a 4xx. A record cannot be unlocked by design; a correction is an amendment (`PATCH` after the lock with a `reason`).
+- **`500` on `GET /api/records/{id}`, `GET /api/patients/{id}/records` or a pre-lock no-op `PATCH`** while the record exists: the audit row could not be written, and by design the read then fails with no body (a clinical read that cannot be audited does not happen). Look for `audit_write_failed` (error level, `action` `record.read` or `patient_records.listed`; the `AuditWriteFailures` page fires) and follow that alert's row: grants (`care_app` needs `INSERT` on `audit_logs` and its partitions), a missing monthly partition, disk, or a `chk_audit_logs_*` violation. A failing `record.created` / `record.updated` / `record.amended` rolls the write back the same way (the response is `500`, no record row, no amendment).
+- **A dev or test database that ran the first version of the records migrations** keeps a table-level `UPDATE` grant on `medical_records` and the old amendments index name (the two migrations were edited in place before merge). Symptom: a `care_app` `UPDATE` of `locked_at` succeeds, or `\d medical_record_amendments` shows `idx_medical_record_amendments_medical_record_id_created_at`. Fix: `npm run migrate:rollback` (last batch; repeat while `npm run migrate:status` still lists `20261017120000_create_medical_records`), `npm run migrate`, `npm run migrate:ensure-app-login`. Production never ran the old files. See [records spec 2.6](./records/spec.md).
 
 ## Escalation
 care on-call → care-team lead. Identity-side failures (Cases 1 and 3) → identity-service on-call

@@ -5,12 +5,19 @@ service: care-service
 module: records
 status: draft
 diataxis: explanation
-last_verified: 2026-10-17
+last_verified: 2026-10-18
 tags: [brainstorm, records, clinical, amendments, timeline, follow-up]
 related: [system-design, clinical-records, consultation-lifecycle, data-model, rbac, sessions-brainstorm, consultations-brainstorm, patients-brainstorm]
 ---
 
 # records — Brainstorm
+
+> **Status note (2026-10-18).** This brief is the historical record of the scoping decisions and is not rewritten. The module is
+> **built** ([spec.md](./spec.md) v0.2.0, implemented). Decision **R-D7** was amended by the owner on 2026-10-18 (spec section 1.6,
+> M3): a pre-lock no-op `PATCH` still returns `200` and writes no record row, but it **is audited** as one `record.read` row
+> because the body discloses the clinical text. Related fix-review outcomes that refine this brief are in spec 1.6: create is
+> assigned-doctor-or-404 (M1; `NotAssignedDoctor` only on `PATCH`), least-privilege column-level `UPDATE` grant (M5) and
+> amendments read in id order (M7).
 
 Scope decided 2026-10-17 (branch `feature/records`, from `main` @ b92607d). Fifth lifecycle slice after
 patients → consultations → notifications → sessions. The design already exists in

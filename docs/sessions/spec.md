@@ -4,11 +4,11 @@ owner: care-team
 service: care-service
 module: sessions
 status: implemented
-version: 0.2.0
+version: 0.2.1
 diataxis: reference
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 tags: [spec, sessions, lifecycle, join, start, complete, no-show, waiting-room, calendar, video-port, case-2]
-related: [sessions-brainstorm, consultations-spec, schedules-spec, notifications-spec, consultation-lifecycle, data-model, rbac, integration, resilience, infrastructure, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping]
+related: [sessions-brainstorm, consultations-spec, records-spec, schedules-spec, notifications-spec, consultation-lifecycle, data-model, rbac, integration, resilience, infrastructure, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -384,5 +384,6 @@ The design above is implemented as specified (six routes, no migration, contract
 6. **Malformed JSON on bodyless routes.** join, start, complete and the waiting-room declare `400 ValidationFailed` in the contract (the global body parser rejects malformed JSON before the handler); a well-formed body is ignored. Covered by a test (commit c793e33).
 7. **Contract lint.** `npx -y @redocly/cli lint contracts/openapi.yaml` valid with 8 pre-existing warnings.
 8. **CLAUDE.md is not edited by this unit.** It still lacks the `VideoUnavailable | 503` row in "Error codes owned by Care" and the widened "503" status-code line (owner edit, spec V1).
+9. **Calendar `hasRecord` (2026-10-18, version 0.2.1, `records` module).** `SessionQueriesService` takes a `RecordLinksService` (`TOKENS.RecordLinksService`, registered before it in `bootstrap.ts`). `render` (used by the waiting room and the calendar) asks `recordedConsultationIds` once over the `completed` rows of the response and passes the set to `buildConsultationView`, so `Consultation.hasRecord` is truthful on calendar items. The waiting room holds only `booked`/`waiting` rows, so it issues no query. `renderOwn` (the session write responses) is unchanged: `complete` returns the row it just completed, before any record can exist, so its `hasRecord` is `false`. No session route, status code or contract shape changed; the calendar timing guard in section 8 gains one indexed lookup (`uq_medical_records_consultation_id`) only when the window contains a completed row. See [records spec](../records/spec.md) section 3.7.
 
 Verification: unit and contract tests (`tests/unit/app/sessions/*`, `tests/unit/contract/sessions-contract.test.ts`, `lib/video`, `hydrate`, `session-window`, env), integration tests (`tests/integration/sessions*.test.ts`, including EXPLAIN and log hygiene) and manual QA (279 pass, 0 fail; see [manual-qa.md](./manual-qa.md)). The code review of 2026-10-15 09:35 was verified clean and its file deleted.

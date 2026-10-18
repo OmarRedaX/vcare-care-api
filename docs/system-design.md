@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-09
+last_verified: 2026-10-18
 tags: [system-design, architecture, router, care]
 related: [overview, data-model, adr-0021-identity-sync-engine-module, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
@@ -17,11 +17,11 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | Shard | Read it when you need to… | Lens |
 |---|---|---|
 | [architecture/overview.md](./architecture/overview.md) | see containers, module map, layering, request pipeline | explanation |
-| [architecture/data-model.md](./architecture/data-model.md) | look up tables, constraints, indexes, ERD | reference |
+| [architecture/data-model.md](./architecture/data-model.md) | look up tables, constraints, indexes, ERD (as-built DDL for `medical_records` and `medical_record_amendments` included) | reference |
 | [architecture/api.md](./architecture/api.md) | look up routes with roles, ownership, audit | reference |
 | [architecture/scheduling-slots.md](./architecture/scheduling-slots.md) | understand availability, timezones, booking re-validation, caches | explanation |
 | [architecture/consultation-lifecycle.md](./architecture/consultation-lifecycle.md) | understand statuses, transitions, windows, flows D/E/F | explanation |
-| [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records, lock, amendments, attachments, AI boundary | explanation |
+| [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records (built with `records`, 2026-10-18: creation gate, 24 h lock, amendments, timeline, `hasRecord`, follow-up link), and the designed attachments and AI boundary | explanation |
 | [architecture/rbac.md](./architecture/rbac.md) | check permissions, per-route policies, viewer-aware DTOs | reference |
 | [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–4 (Cases 1 and 2 built with verification; Cases 3 and 4 built with admin-doctors) | explanation |
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts, retries, durable jobs, idempotency, alerts | explanation |

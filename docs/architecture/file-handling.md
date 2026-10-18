@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-08
+last_verified: 2026-10-18
 tags: [architecture, files, uploads, downloads, object-storage, s3, security, clinical, audit]
 related: [verification-spec, clinical-records, data-model, api, rbac, infrastructure, deployment, resilience, runbook, adr-0013-verified-direct-upload-lifecycle, adr-0014-on-demand-download-urls, adr-0015-aws-sdk-storage-adapter, hub-adr-0011-object-storage-host]
 ---
@@ -35,7 +35,7 @@ DOWNLOAD
 ```
 
 ## 2. Contract changes (verification operations applied; record-attachment operations still planned)
-The verification-document rows below are in `contracts/openapi.yaml` (applied 2026-10-07, checked against the routes 2026-10-08); the multipart verification operation and its inline `downloadUrl` are gone. The `record_attachments` rows land with the `records` module.
+The verification-document rows below are in `contracts/openapi.yaml` (applied 2026-10-07, checked against the routes 2026-10-08); the multipart verification operation and its inline `downloadUrl` are gone. The `record_attachments` rows land with the `record-attachments` module (the `records` module shipped on 2026-10-18 without attachments; `MedicalRecord.attachments` is always `[]` until then). The `403 NotAssignedDoctor` in the first record-attachment row is that future module's decision: the built record routes answer `404` to every non-assigned caller on create, and `NotAssignedDoctor` only on `PATCH /records/{id}`; decide the upload-intent behaviour with the same existence-oracle reasoning ([records spec](../records/spec.md) 1.5.1).
 
 | Operation | Roles / ownership (`x-roles`, `x-ownership`) | Request | Responses | Audit |
 |---|---|---|---|---|
