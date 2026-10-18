@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 tags: [data-model, postgresql, schema, indexes, erd]
-related: [scheduling-slots, clinical-records, integration, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
+related: [scheduling-slots, clinical-records, integration, file-handling, records-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
@@ -16,8 +16,8 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
 (see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
-`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
-remaining modules will build. Written in the style migrations
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below); records (2026-10-18) — `20261017120000_create_medical_records` (table, lock `CHECK`, trigger, column-level `UPDATE` grant), `20261017120100_create_medical_record_amendments` (append-only by grant), `20261017120200_add_consultations_follow_up_fk` (the deferred FK; no table); see `medical_records` and `medical_record_amendments` below. `knex_migrations` records migration names without the file extension. Everything else below is the design the
+remaining modules will build (`record_attachments`, `help_articles`, and the remaining tables). Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
 - `id BIGSERIAL` everywhere; FKs `BIGINT` with named constraints and a leading-column index.
@@ -416,13 +416,12 @@ CREATE INDEX idx_consultations_booked_starts_at ON consultations (starts_at) WHE
 
 -- FK index for follow-up bookings: WHERE follow_up_of_record_id = $1
 CREATE INDEX idx_consultations_follow_up_of_record_id ON consultations (follow_up_of_record_id) WHERE follow_up_of_record_id IS NOT NULL;
--- fk_consultations_follow_up_of_record_id is added after medical_records exists (circular reference):
--- NOT created yet (medical_records does not exist): the records migration adds it.
+-- fk_consultations_follow_up_of_record_id is added after medical_records exists (circular reference);
+-- built by the records migration 20261017120200 (SET LOCAL lock_timeout = '5s' first: it takes SHARE ROW EXCLUSIVE on consultations):
 ALTER TABLE consultations ADD CONSTRAINT fk_consultations_follow_up_of_record_id
     FOREIGN KEY (follow_up_of_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT;
 ```
-**Built** by `consultations` (migrations `20261011130000`, `20261011130100`). As built: everything above except the deferred pieces
-marked in the comments — `fk_consultations_follow_up_of_record_id` is not created yet (the records migration adds it); `idx_consultations_follow_up_of_record_id` and `idx_consultations_booked_starts_at` (reminder scan, migration `20261012120100`) are. `vcare_app` holds `SELECT, INSERT, UPDATE` and sequence `USAGE` (no `DELETE`: soft delete only,
+**Built** by `consultations` (migrations `20261011130000`, `20261011130100`). As built: everything above, including `idx_consultations_follow_up_of_record_id`, `idx_consultations_booked_starts_at` (reminder scan, migration `20261012120100`) and, since the `records` module (2026-10-18, migration `20261017120200`), `fk_consultations_follow_up_of_record_id` (created by `consultations`' first migration without it, because `medical_records` did not exist yet; the column was unwritable until then, so no row could violate it). A booking with `followUpOfRecordId` is checked against the record in the booking transaction and the insert takes `FOR KEY SHARE` on the record through this FK. `vcare_app` holds `SELECT, INSERT, UPDATE` and sequence `USAGE` (no `DELETE`: soft delete only,
 no route sets `deleted_at`). Reads that render a list item use the explicit `CONSULTATION_LIST_COLUMNS` projection (21 columns): it omits
 `complaint_text`, `request_hash`, `idempotency_key`, `room_id`, the reminder marks, `no_show_marked_at` and `cancelled_by_user_id`, so clinical text is
 not even read by a bulk list; get-one and the write paths use `CONSULTATION_COLUMNS`. Flagging (`needs_admin_followup`, `followup_reason`) skips rows
@@ -458,6 +457,7 @@ Allergies and conditions are free-text lists that are only displayed, never filt
 As built: migration `20261011120000_create_patient_profiles` (grants `SELECT, INSERT, UPDATE` to `vcare_app`). The `CHECK`s cap the item count only; per-item length, non-blank and duplicate rules are DTO-only (a CHECK cannot iterate an array without a helper function).
 
 ## `medical_records`
+**Built** by `records` (2026-10-18, migration `20261017120000_create_medical_records`; [spec](../records/spec.md) section 2.1). As built:
 ```sql
 CREATE TABLE medical_records (
     id                  BIGSERIAL PRIMARY KEY,
@@ -467,36 +467,47 @@ CREATE TABLE medical_records (
     chief_complaint     TEXT NOT NULL,
     examination_notes   TEXT,
     diagnosis_text      TEXT,
-    diagnosis_code      VARCHAR(16),                    -- ICD-10
+    diagnosis_code      VARCHAR(16),                    -- ICD-10 format only (no catalog)
     treatment_plan      TEXT,
     follow_up_in_days   INT,
-    locked_at           TIMESTAMPTZ NOT NULL,           -- created_at + interval '24 hours'
+    locked_at           TIMESTAMPTZ NOT NULL,           -- no default: set in SQL as NOW() + interval '24 hours'
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at          TIMESTAMPTZ,
     CONSTRAINT fk_medical_records_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id) ON DELETE RESTRICT,
     CONSTRAINT chk_medical_records_lock CHECK (locked_at = created_at + interval '24 hours'),
-    CONSTRAINT chk_medical_records_follow_up CHECK (follow_up_in_days IS NULL OR follow_up_in_days BETWEEN 1 AND 365)
+    CONSTRAINT chk_medical_records_follow_up CHECK (follow_up_in_days IS NULL OR follow_up_in_days BETWEEN 1 AND 365),
+    CONSTRAINT chk_medical_records_diagnosis_code CHECK (diagnosis_code IS NULL OR diagnosis_code ~ '^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$')
 );
--- Domain rule 13: one record per consultation (live); covers the consultation_id FK.
+-- Domain rule 13: one record per consultation (live). Serves the create-gate duplicate check, the hasRecord batch
+-- (WHERE consultation_id = ANY($1) AND deleted_at IS NULL) and the concurrent-create guarantee (23505 -> 409 Conflict); covers the consultation_id FK.
 CREATE UNIQUE INDEX uq_medical_records_consultation_id ON medical_records (consultation_id) WHERE deleted_at IS NULL;
 -- Patient timeline GET /patients/:id/records keyset newest first:
---   WHERE patient_user_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC
+--   WHERE patient_user_id = $1 AND deleted_at IS NULL [AND (created_at, id) < ($t, $id)] ORDER BY created_at DESC, id DESC LIMIT $n + 1
 CREATE INDEX idx_medical_records_patient_user_id_created_at_id ON medical_records (patient_user_id, created_at DESC, id DESC) WHERE deleted_at IS NULL;
 
--- Domain rule 15 at the database level (from the write-migration skill):
+-- Domain rule 15 at the database level. The CONSTRAINT option lets the service recognize the refusal by error.constraint
+-- (lib/knex/pg-errors checkViolationConstraint) and map it to 409 RecordLocked:
 CREATE OR REPLACE FUNCTION forbid_update_after_lock() RETURNS trigger AS $$
 BEGIN
     IF OLD.locked_at <= NOW() THEN
-        RAISE EXCEPTION 'record % is locked', OLD.id USING ERRCODE = 'check_violation';
+        RAISE EXCEPTION 'record % is locked', OLD.id
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'trg_medical_records_forbid_update_after_lock';
     END IF;
     RETURN NEW;
 END $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_medical_records_forbid_update_after_lock
     BEFORE UPDATE ON medical_records FOR EACH ROW EXECUTE FUNCTION forbid_update_after_lock();
+
+-- Grants (ADR 0018), least privilege: no DELETE, no TRUNCATE; UPDATE is column-level so the app role can never move the lock or re-home a record.
+GRANT SELECT, INSERT ON medical_records TO vcare_app;
+GRANT UPDATE (chief_complaint, examination_notes, diagnosis_text, diagnosis_code, treatment_plan, follow_up_in_days, updated_at) ON medical_records TO vcare_app;
+GRANT USAGE ON SEQUENCE medical_records_id_seq TO vcare_app;
 ```
+As built, beyond the original design: the extra `chk_medical_records_diagnosis_code` (the migration file writes the quantifier escaped because `knex.raw` reads a bare `?` as a binding; the stored pattern is as shown), the trigger `CONSTRAINT` option, and the column-level `UPDATE` grant (an `UPDATE` of `id`, `consultation_id`, `patient_user_id`, `doctor_user_id`, `locked_at`, `created_at` or `deleted_at` fails with `42501`). The trigger refuses every `UPDATE` once `OLD.locked_at <= NOW()`, a soft delete included; no route sets `deleted_at`. `COMMENT ON` marks the clinical columns "Clinical; never logged". The migration was edited in place before merge (the grant was table-level `UPDATE` at first): a dev database that already ran the earlier file needs `npm run migrate:rollback` and `npm run migrate` ([records spec 2.6](../records/spec.md)).
 
 ## `medical_record_amendments`
+**Built** by `records` (migration `20261017120100_create_medical_record_amendments`; spec 2.2). As built:
 ```sql
 CREATE TABLE medical_record_amendments (
     id                  BIGSERIAL PRIMARY KEY,
@@ -513,13 +524,22 @@ CREATE TABLE medical_record_amendments (
     CONSTRAINT fk_medical_record_amendments_medical_record_id FOREIGN KEY (medical_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT,
     CONSTRAINT chk_medical_record_amendments_nonempty CHECK (
         chief_complaint IS NOT NULL OR examination_notes IS NOT NULL OR diagnosis_text IS NOT NULL
-     OR diagnosis_code IS NOT NULL OR treatment_plan IS NOT NULL OR follow_up_in_days IS NOT NULL)
+     OR diagnosis_code IS NOT NULL OR treatment_plan IS NOT NULL OR follow_up_in_days IS NOT NULL),
+    CONSTRAINT chk_medical_record_amendments_follow_up CHECK (follow_up_in_days IS NULL OR follow_up_in_days BETWEEN 1 AND 365),
+    CONSTRAINT chk_medical_record_amendments_diagnosis_code CHECK (diagnosis_code IS NULL OR diagnosis_code ~ '^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$')
 );
--- Record view loads amendments in order: WHERE medical_record_id = ANY($1) ORDER BY created_at, id
-CREATE INDEX idx_medical_record_amendments_medical_record_id_created_at ON medical_record_amendments (medical_record_id, created_at, id);
--- Append-only: no updated_at/deleted_at.
-REVOKE UPDATE, DELETE ON medical_record_amendments FROM vcare_app;
+-- Record view and timeline load the amendments of a whole page in ONE query:
+--   WHERE medical_record_id = ANY($1) ORDER BY id   (id order is append order: ids are assigned after the record row lock;
+--   created_at is the transaction start and can invert under a double submit). Also the index of the FK.
+CREATE INDEX idx_medical_record_amendments_medical_record_id_id ON medical_record_amendments (medical_record_id, id);
+-- Append-only by grant (ADR 0018); no REVOKE needed because nothing else is granted: SELECT and a column-level INSERT,
+-- so the app can never set id or created_at and holds no UPDATE, DELETE or TRUNCATE.
+GRANT SELECT ON medical_record_amendments TO vcare_app;
+GRANT INSERT (medical_record_id, author_user_id, chief_complaint, examination_notes, diagnosis_text, diagnosis_code, treatment_plan, follow_up_in_days, reason)
+    ON medical_record_amendments TO vcare_app;
+GRANT USAGE ON SEQUENCE medical_record_amendments_id_seq TO vcare_app;
 ```
+As built, beyond the original design: two extra `CHECK`s (`follow_up_in_days` range and the diagnosis-code format), the positive grants in place of `REVOKE UPDATE, DELETE`, and the index `(medical_record_id, id)` (renamed from `..._created_at` by the in-place edit before merge). `reason` is `NOT NULL` and deliberately outside the non-empty `CHECK`; the `CHECK` is why a field cannot be cleared to null by an amendment (accepted MVP limitation).
 
 ## `record_attachments`
 ```sql

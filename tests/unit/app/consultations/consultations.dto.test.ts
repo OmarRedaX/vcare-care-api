@@ -24,7 +24,7 @@ describe("consultations request DTOs", () => {
     it.each([
         ["doctorId", { doctorId: 0 }], ["doctorId", { doctorId: "202" }], ["typeId", { typeId: 1.5 }], ["startsAt", { startsAt: "2030-03-01T10:00:00" }],
         ["complaintText", { complaintText: "ab" }], ["complaintText", { complaintText: "   " }], ["complaintText", { complaintText: "a".repeat(4001) }],
-        ["complaintText", { complaintText: "bad\u0000text" }], ["patientTimezone", { patientTimezone: "Mars/Olympus" }], ["followUpOfRecordId", { followUpOfRecordId: null }],
+        ["complaintText", { complaintText: "bad\u0000text" }], ["patientTimezone", { patientTimezone: "Mars/Olympus" }], ["followUpOfRecordId", { followUpOfRecordId: null }], ["followUpOfRecordId", { followUpOfRecordId: 0 }], ["followUpOfRecordId", { followUpOfRecordId: -3 }],
         ["endsAt", { endsAt: "2030-03-01T10:30:00+02:00" }],
     ])("should reject a booking body whose %s is invalid", async (field, change) => {
         expect(await fields(() => validateBody(ConsultationCreateDto, { ...create, ...change }))).toContain(field);

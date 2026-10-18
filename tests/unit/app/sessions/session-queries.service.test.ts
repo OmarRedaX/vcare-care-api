@@ -29,8 +29,9 @@ function setup() {
     const rows = { listWaitingRoom: jest.fn().mockResolvedValue([]), listCalendar: jest.fn().mockResolvedValue([]) };
     const doctors = { findTimezone: jest.fn().mockResolvedValue("Africa/Cairo") };
     const schedules = { listExceptionsForCalendar: jest.fn().mockResolvedValue({ timezone: "Africa/Cairo", exceptions: [] }) };
-    const service = new SessionQueriesService(db, { now: () => NOW }, ENV, log.logger, { getUsersBatch } as never, rows as never, doctors as never, schedules as never);
-    return { service, db, log, getUsersBatch, rows, doctors, schedules };
+    const records = { recordedConsultationIds: jest.fn().mockResolvedValue(new Set<number>()) };
+    const service = new SessionQueriesService(db, { now: () => NOW }, ENV, log.logger, { getUsersBatch } as never, rows as never, doctors as never, schedules as never, records as never);
+    return { service, db, log, getUsersBatch, rows, doctors, schedules, records };
 }
 
 describe("SessionQueriesService.waitingRoom", () => {

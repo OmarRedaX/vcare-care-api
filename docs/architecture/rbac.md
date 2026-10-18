@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, consultations-spec, schedules-spec, clinical-records, integration, infrastructure, file-handling, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [api, consultations-spec, schedules-spec, clinical-records, integration, infrastructure, file-handling, records-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # RBAC and Ownership
@@ -85,7 +85,7 @@ rateLimit(byUser)? → idempotency()? → handler`; every module `routes.ts` ret
 The local `suspended_at` check closes the up-to-15-minute window in which a suspended doctor's access token is
 still valid. It is a policy `AccessCheck` named `doctor_not_suspended` (`appliesTo: ["doctor"]`) supplied by the
 doctors module. It is live on `PATCH /doctors/me` and, since 2026-10-09, on all eight `schedules` routes (re-read under the profile row lock on writes); the other three onboarding routes stay readable or usable by a
-locally suspended doctor when their token state allows it. Since 2026-10-12 it is also on `PATCH /consultations/:id/cancel` and `GET /patients/:patientUserId` (doctor callers). Reads of a doctor's own consultations (`GET /consultations`, `GET /consultations/:id`) stay open to a locally suspended doctor. Later practising routes must add this check. Booking's check of the **target** doctor is a consultations service rule,
+locally suspended doctor when their token state allows it. Since 2026-10-12 it is also on `PATCH /consultations/:id/cancel` and `GET /patients/:patientUserId` (doctor callers); since 2026-10-18 on the two record writes (`POST /consultations/:id/record`, `PATCH /records/:id`, `403`), while the two record reads fold the suspension into the ownership resolver (`404`). Reads of a doctor's own consultations (`GET /consultations`, `GET /consultations/:id`) stay open to a locally suspended doctor. Later practising routes must add this check. Booking's check of the **target** doctor is a consultations service rule,
 not a policy check (`FOR SHARE` on the profile row, so it serializes with a suspension).
 
 ## Per-route policy table
@@ -104,7 +104,7 @@ not a policy check (`FOR SHARE` on the profile row, so it serializes with a susp
 | `GET /patients/me` (live, 2026-10-11) | patient (token `status=active`; doctor and admin `403`) | self | clinical-read: `patient_profile.read`, metadata `{ patientUserId }` |
 | `PATCH /patients/me` (live, 2026-10-11) | patient (as above) | self | clinical-write: `patient_profile.updated`, metadata `{ created, changedFields }` (names only) |
 | `GET /patients/:patientUserId` (**live**, 2026-10-12) | patient, doctor (token `status=active`; doctor not locally suspended; admin `403`) | `consulted-patient-or-self`: patient `:id = auth.userId`; doctor has a `booked`, `waiting`, `in_progress` or `completed` consultation with the patient (decision D-R4; `EXISTS` over `idx_consultations_doctor_user_id_patient_user_id`); else `deny-not-found`; a non-numeric id is `404`; no profile yet `404` | clinical-read: `patient_profile.read`, metadata `{ patientUserId, viewerRole }` |
-| `GET /patients/:patientUserId/records` (**planned**, with `records`) | patient, doctor | same resolver | clinical-read |
+| `GET /patients/:patientUserId/records` (**live**, 2026-10-18, `records`) | patient, doctor (token `status=active`; admin `403`) | resolver `records_timeline_reader`: patient `:patientUserId = auth.userId`; doctor not locally suspended **and** holds the D-R4 relationship with the patient; else `deny-not-found` (a suspended doctor, `me` and any non-numeric id included). A separate resolver from `consulted_patient_or_self` because a suspended doctor is answered `404` here, `403` on `GET /patients/:id` | clinical-read: `patient_records.listed` (entity type `patient_records`, entity id = the patient's user id), one row per call |
 | `POST /consultations` (**live**, 2026-10-12) | patient (active, email verified) | `self` — `patient_user_id := auth.userId` | `consultation.booked` |
 | `GET /consultations` (**live**) | patient, doctor, admin | none at the guard; the repository `WHERE` comes from `auth` (patient own, doctor own, admin all with the admin DTO); admin-only filters (`doctorUserId`, `patientUserId`, `needsAdminFollowup`) by a non-admin → `403 Forbidden` | — (list items carry no clinical text) |
 | `GET /consultations/:id` (**live**) | patient, doctor, admin | resolver `consultation_participant_or_admin` (patient owner, assigned doctor, or admin; others and non-numeric ids `deny-not-found`) | `consultation.read` for participants; none for admin |
@@ -114,9 +114,9 @@ not a policy check (`FOR SHARE` on the profile row, so it serializes with a susp
 | `PATCH /consultations/:id/start`, `/complete` | doctor | `assigned-doctor` | — |
 | `PATCH /consultations/:id/no-show` | doctor, admin | `assigned-doctor-or-admin` (admin passes; other doctors `404`) | admin-action for admin; admin exempt from the local-suspension check |
 | `GET /consultations/waiting-room`, `GET /consultations/calendar` | doctor | self | — |
-| `POST /consultations/:id/record` | doctor | `assigned-doctor` + consultation `completed` | clinical-write |
-| `GET /records/:id` | patient, doctor | owning patient, author, or doctor who consulted the patient; else `deny-not-found` | clinical-read |
-| `PATCH /records/:id` | doctor | `assigned-doctor` (author) | clinical-write |
+| `POST /consultations/:id/record` (**live**, 2026-10-18) | doctor (active; check `doctor_not_suspended`, `403`) | resolver `record_write_consultation`: `allow` only when the consultation's `doctor_user_id = auth.userId`; every other caller (related or not, any status) `deny-not-found`. The service re-checks in the transaction (a mismatch is `404`) and then requires `completed` | clinical-write: `record.created` |
+| `GET /records/:id` (**live**) | patient, doctor (admin `403`) | resolver `record_reader`: patient owns the record; doctor not locally suspended (`deny-not-found` otherwise) **and** author or D-R4 relationship with the record's patient; else `deny-not-found` | clinical-read: `record.read` |
+| `PATCH /records/:id` (**live**) | doctor (active; check `doctor_not_suspended`, `403`) | resolver `record_write_record`: `allow` for the author **or** a doctor with a D-R4 relationship to the patient, else `deny-not-found`; the service then answers `403 NotAssignedDoctor` to a related non-author | clinical-write: `record.updated` (before the lock) / `record.amended` (after); a pre-lock no-op writes one `record.read` |
 | `POST /records/:id/attachments`, `DELETE /records/:id/attachments/:aid` | doctor | `assigned-doctor`; delete only before lock | clinical-write |
 | `POST /records/:id/attachments/uploads`, `…/uploads/:uploadId/complete` (planned, ADR 0013) | doctor (active, not suspended) | `assigned-doctor`; `complete` also requires intent owner = caller (else `deny-not-found`) and re-checks assignment | clinical-write on complete |
 | `POST /records/:id/attachments/:aid/download-url` (planned, ADR 0014) | patient, doctor | same as `GET /records/:id`; admins 403 | clinical-read (`attachment.url_issued`) |
@@ -129,14 +129,14 @@ not a policy check (`FOR SHARE` on the profile row, so it serializes with a susp
 
 Status changes on consultations are always audited regardless of the audit class above. Built so far: `consultation.booked`, `.rescheduled`, `.cancelled` (any caller role, `byRole` in the metadata) and `consultation.read`; since 2026-10-15 (`sessions`) also `consultation.waiting` (patient `booked → waiting` only), `.started`, `.completed` and `.no_show` (metadata `byRole`, `fromStatus`, `noteLength?`; never the note, tokens or room ids). Token-only re-joins and the waiting-room and calendar views write no audit row (no clinical field is returned).
 
-**Doctor-patient relationship (decision D-R4, 2026-10-12).** A doctor "has consulted" a patient when a non-deleted consultation in `booked`, `waiting`, `in_progress` or `completed` links them. `booked` is included so a doctor can read the intake profile before the visit; a `cancelled` or `no_show`-only relationship grants nothing. Every read is audited. The records routes reuse the same resolver once `records` ships.
+**Doctor-patient relationship (decision D-R4, 2026-10-12).** A doctor "has consulted" a patient when a non-deleted consultation in `booked`, `waiting`, `in_progress` or `completed` links them. `booked` is included so a doctor can read the intake profile before the visit; a `cancelled` or `no_show`-only relationship grants nothing. Every read is audited. The `records` routes (live 2026-10-18) reuse the same `PatientRelationshipChecker` port (`TOKENS.PatientRelationship`, implemented by `ConsultationsService`) inside their own resolvers (`record_reader`, `records_timeline_reader`, `record_write_record`); `record_write_consultation` deliberately uses **no** relationship (assigned doctor only).
 
 ## Deny-not-found vs forbidden
 | Situation | Response | Why |
 |---|---|---|
 | Wrong role for the capability (e.g. patient calls an admin route, admin calls a record route) | 403 `Forbidden` | the capability's existence is public |
 | Allowed role, resource is private and not the caller's (consultation, record, patient profile, own-profile sub-resource `:id`) | 404 `NotFound` | do not reveal that the id exists |
-| Allowed role and owner, but the doctor is not the assigned doctor for a record write | 403 `NotAssignedDoctor` | the caller already sees the consultation |
+| `PATCH /records/{id}` by a doctor with a consultation relationship to the patient who is not the record's author | 403 `NotAssignedDoctor` | the caller already sees the record id in the patient timeline. Creating a record (`POST /consultations/{id}/record`) by anyone but the assigned doctor is `404` instead: the timeline does not list record-less consultations, so a 403 would be an existence oracle |
 | User token on `/internal/*` | 401 `ServiceTokenRequired` | only service principals |
 | Service token without `doctors:read` | 403 `InsufficientScope` | |
 

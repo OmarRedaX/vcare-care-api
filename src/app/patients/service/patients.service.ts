@@ -52,6 +52,14 @@ export class PatientsService {
         @inject(TOKENS.AuditRecorder) private readonly audit: AuditRecorder,
     ) {}
 
+    /**
+     * The live profile row of a patient, or `undefined`: a plain read for another module that renders it inside its own audited
+     * transaction (the records timeline). It writes no `patient_profile.read` row; the caller audits its own access.
+     */
+    findProfile(patientUserId: number, conn: Knex = this.db): Promise<PatientProfile | undefined> {
+        return findProfileByUserId(patientUserId, conn);
+    }
+
     getOwn(actor: AuthContext): Promise<PatientProfile> {
         return this.db.transaction(async (trx) => {
             const profile = await findProfileByUserId(actor.userId, trx);

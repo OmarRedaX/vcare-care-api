@@ -1754,6 +1754,15 @@ paths:
         - bearerUser: []
       x-roles: [patient, doctor]
       x-ownership: consulted-patient-or-self
+      description: |
+        Keyset-paginated, newest first (`created_at DESC, id DESC`); each record carries its amendments. The patient
+        themself or a doctor holding a `booked`, `waiting`, `in_progress` or `completed` consultation with the patient.
+        Admins are never allowed (`403 Forbidden`); every other caller gets `404 NotFound` (a non-owner, a doctor without a
+        relationship, a locally suspended doctor, `me` or any non-numeric id). One `patient_records.listed` audit row per
+        call, written before the response; if it fails the read fails. The row is stored with `entityType:
+        patient_records` and `entityId` = the patient's Identity user id (not `medical_record`). `data.patient` is `null` when the patient has no
+        profile row yet. Rate limit 60 timeline reads/min per user.
+      x-account-state: 'status active; a locally suspended doctor receives 404'
       x-audit: clinical-read
       x-audit-actions: [patient_records.listed]
       parameters:
@@ -1809,8 +1818,9 @@ paths:
         Same key + same body replays the original 201; same key + different body → `422 IdempotencyConflict`.
         The confirmation email is queued asynchronously and never blocks or rolls back the booking.
         `patientTimezone` is validated, canonicalized and stored as a per-consultation snapshot; the patient profile is neither
-        read nor written. `followUpOfRecordId` is rejected with `400 ValidationFailed` (`details[].field = followUpOfRecordId`)
-        until the records module ships.
+        read nor written. `followUpOfRecordId` (optional) must reference a live medical record whose patient is the caller and
+        whose doctor is the chosen doctor; otherwise `404 NotFound` (a missing and a foreign record are indistinguishable). No
+        timing or `followUpInDays` check; the link is stored on the consultation.
         Budget p95 < 200 ms. Rate limit 10 booking writes/min per user.
       security:
         - bearerUser: []
@@ -2398,9 +2408,16 @@ paths:
       tags: [records]
       summary: Write the medical record for a completed consultation (assigned doctor)
       description: |
-        Only for a `completed` consultation (`409 RecordRequiresCompleted`), only by its assigned doctor
-        (`403 NotAssignedDoctor`), one record per consultation (`409 Conflict`). `locked_at = created_at + 24 h`.
-        Record insert and audit row are one transaction.
+        Only for a `completed` consultation (`409 RecordRequiresCompleted`), only by its assigned doctor, one record per
+        consultation (`409 Conflict`). `locked_at = created_at + 24 h`. Every other doctor, whether or not they hold a
+        relationship with the patient and whatever the consultation's status, gets `404 NotFound` (identical to an absent
+        id): this route never answers `403 NotAssignedDoctor`.
+        Record insert and audit row are one transaction. No `Idempotency-Key`: a retried create after a lost response is
+        `409 Conflict` (the record id is in the patient timeline).
+        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; consultation missing, or the
+        caller is not its assigned doctor → `404 NotFound`; body → `400 ValidationFailed`; then in one transaction: status
+        not `completed` → `409 RecordRequiresCompleted`; a live record exists → `409 Conflict`.
+        Rate limit 20 record writes/min per user (shared with `PATCH /api/records/{id}`).
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2411,7 +2428,6 @@ paths:
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdPath'
-        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       requestBody:
         required: true
         content:
@@ -2431,8 +2447,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/RecordCreateConflict'
-        '422':
-          $ref: '#/components/responses/IdempotencyConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -2442,22 +2456,27 @@ paths:
     get:
       operationId: getMedicalRecord
       tags: [records]
-      summary: Read a medical record with amendments and signed attachment URLs
+      summary: Read a medical record with its amendments
       description: |
         The owning patient, the authoring doctor, or a doctor who has consulted the patient. Admins are never allowed
-        (`403 Forbidden`); other callers get `404 NotFound`. The audit row is written before the response; if it fails the read fails.
+        (`403 Forbidden`); other callers get `404 NotFound` (a non-owner, a locally suspended doctor, a non-numeric id).
+        The audit row is written before the response; if it fails the read fails. The query string takes no members.
+        Rate limit 120 record reads/min per user.
       security:
         - bearerUser: []
       x-roles: [patient, doctor]
       x-ownership: consulted-patient-or-self
+      x-account-state: 'status active; a locally suspended doctor receives 404'
       x-audit: clinical-read
-      x-audit-actions: [record.read, attachment.url_issued]
+      x-audit-actions: [record.read]
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdPath'
       responses:
         '200':
           $ref: '#/components/responses/MedicalRecordOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2473,16 +2492,28 @@ paths:
       tags: [records]
       summary: Update a record before its lock, or append an amendment after it (authoring doctor)
       description: |
-        Before `locked_at`: fields are updated in place → **200** with the record (each update audited).
-        After `locked_at`: the original is untouched and a `medical_record_amendments` row is created → **201** with the
-        amendment; `reason` is required for an amendment. Never a silent overwrite.
+        Before `locked_at`: fields are updated in place → **200** with the record (each update audited); values equal to
+        the stored ones are a no-op → **200** with the current record and nothing is written except one `record.read` audit
+        row (the response discloses the clinical text, so it is audited as a read; `updated_at` and the record are
+        untouched, no `record.updated` row). `reason`, when present, is validated (3..1000 characters, not blank) and
+        otherwise ignored for the update.
+        After `locked_at`: the original is untouched and a `medical_record_amendments` row is always appended → **201**
+        with the amendment; `reason` (3..1000 characters, not blank) is required for an amendment (`400` without it).
+        Never a silent overwrite.
+        At least one record field is required (a `reason`-only or empty body is `400`); a field cannot be cleared to null.
+        The lock is decided in the write transaction with database time; if the database trigger still refuses an
+        in-place update, the response is `409 RecordLocked`.
+        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; record missing, or the doctor is
+        neither its author nor has a relationship with its patient → `404 NotFound`; body → `400 ValidationFailed`;
+        then in the write transaction: a related doctor who is not the author → `403 NotAssignedDoctor`.
+        Rate limit 20 record writes/min per user (shared with `POST /api/consultations/{id}/record`).
       security:
         - bearerUser: []
       x-roles: [doctor]
       x-ownership: assigned-doctor
       x-account-state: 'status active; not locally suspended'
       x-audit: clinical-write
-      x-audit-actions: [record.updated, record.amended]
+      x-audit-actions: [record.updated, record.amended, record.read]
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdPath'
@@ -2520,6 +2551,8 @@ paths:
           $ref: '#/components/responses/RecordWriteForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RecordLocked'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -3418,7 +3451,7 @@ components:
               data:
                 $ref: '#/components/schemas/SessionJoin'
     MedicalRecordOk:
-      description: The medical record with amendments and signed attachment URLs.
+      description: The medical record with its amendments.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -3590,8 +3623,10 @@ components:
               details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordWriteForbidden:
-      description: '`NotAssignedDoctor` (a doctor other than the consultation''s doctor) or `Forbidden` (wrong role, suspended doctor).'
+      description: '`NotAssignedDoctor` (`PATCH /api/records/{id}` only: a doctor with a consultation relationship to the patient who is not the record''s author) or `Forbidden` (wrong role, suspended doctor). `POST /api/consultations/{id}/record` never returns `NotAssignedDoctor`: a non-assigned doctor gets `404`.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -3786,12 +3821,12 @@ components:
               details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordCreateConflict:
-      description: '`RecordRequiresCompleted` (consultation not `completed`) or `Conflict` (a record already exists). Also `Conflict` with `Retry-After: 1` when a request with the same `Idempotency-Key` is still being processed (retry after the delay; not a final conflict).'
+      description: '`RecordRequiresCompleted` (consultation not `completed`) or `Conflict` (a record already exists, including a retried create).'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
-        Retry-After:
-          $ref: '#/components/headers/RetryAfter'
       content:
         application/json:
           schema:
@@ -3804,8 +3839,10 @@ components:
               details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordLocked:
-      description: '`RecordLocked` — attachments cannot be deleted after the 24 h lock.'
+      description: '`RecordLocked` — the record is locked (an in-place edit was refused) or an attachment cannot be deleted after the 24 h lock.'
       headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
@@ -4985,7 +5022,7 @@ components:
         waiting-room and calendar entries a hydrated patient (Case 2, degrade).
         Write responses (book, reschedule, cancel) carry `doctor` and `patient` as `{ userId, displayName: null,
         avatarUrl: null, profileHydrated: false }`; so does the viewer's own side on reads.
-      required: [id, status, doctor, patient, consultationType, startsAt, endsAt, startsAtLocal, endsAtLocal, timezone, patientTimezone, price, needsAdminFollowup, createdAt, updatedAt]
+      required: [id, status, doctor, patient, consultationType, startsAt, endsAt, startsAtLocal, endsAtLocal, timezone, patientTimezone, price, joinedAt, startedAt, completedAt, cancelledAt, cancelledBy, cancelReason, needsAdminFollowup, followupReason, followUpOfRecordId, hasRecord, createdAt, updatedAt]
       properties:
         id:
           type: integer
@@ -5056,7 +5093,7 @@ components:
           format: int64
         hasRecord:
           type: boolean
-          description: Always `false` until the records module ships.
+          description: True when a live medical record exists for the consultation (only a `completed` consultation can have one). A boolean only; no record content.
         createdAt:
           type: string
           format: date-time
@@ -5091,7 +5128,8 @@ components:
         followUpOfRecordId:
           type: integer
           format: int64
-          description: Optional; a record of this patient with this doctor that recommended a follow-up.
+          minimum: 1
+          description: Optional; a live record of this patient written by the chosen doctor. Any other record id (missing or foreign) is `404 NotFound`. No timing or `followUpInDays` check.
       example:
         doctorId: 204
         typeId: 31
@@ -5243,7 +5281,10 @@ components:
       required: [patient, records]
       properties:
         patient:
-          $ref: '#/components/schemas/PatientProfile'
+          description: The patient profile; `null` when the patient has no profile row yet.
+          oneOf:
+            - $ref: '#/components/schemas/PatientProfile'
+            - type: 'null'
         records:
           type: array
           items:
@@ -5288,12 +5329,14 @@ components:
           description: created_at + 24 h.
         isLocked:
           type: boolean
+          description: Computed with database time at read (`locked_at <= now`).
         amendments:
           type: array
           items:
             $ref: '#/components/schemas/MedicalRecordAmendment'
         attachments:
           type: array
+          description: Always `[]` until the `record-attachments` module ships.
           items:
             $ref: '#/components/schemas/RecordAttachment'
         createdAt:
@@ -5305,6 +5348,7 @@ components:
     MedicalRecordCreate:
       type: object
       additionalProperties: false
+      description: Optional text fields must not be blank and no text field may contain NUL; a field is set or absent (JSON `null` is rejected).
       required: [chiefComplaint]
       properties:
         chiefComplaint:
@@ -5313,15 +5357,18 @@ components:
           maxLength: 2000
         examinationNotes:
           type: string
+          minLength: 1
           maxLength: 10000
         diagnosisText:
           type: string
+          minLength: 1
           maxLength: 2000
         diagnosisCode:
           type: string
           pattern: '^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$'
         treatmentPlan:
           type: string
+          minLength: 1
           maxLength: 10000
         followUpInDays:
           type: integer
@@ -5331,7 +5378,10 @@ components:
       type: object
       additionalProperties: false
       minProperties: 1
-      description: Before the lock updates in place; after the lock becomes an amendment and `reason` is required.
+      description: |
+        At least one record field is required (a `reason`-only body is `400`). Before the lock updates in place (values equal
+        to the stored ones are a no-op; `reason` is ignored); after the lock an amendment is always appended and `reason` is
+        required (`400` without it). A field cannot be cleared to null. Text fields must not be blank and must not contain NUL.
       properties:
         chiefComplaint:
           type: string
@@ -5339,15 +5389,18 @@ components:
           maxLength: 2000
         examinationNotes:
           type: string
+          minLength: 1
           maxLength: 10000
         diagnosisText:
           type: string
+          minLength: 1
           maxLength: 2000
         diagnosisCode:
           type: string
           pattern: '^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$'
         treatmentPlan:
           type: string
+          minLength: 1
           maxLength: 10000
         followUpInDays:
           type: integer

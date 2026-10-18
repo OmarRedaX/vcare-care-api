@@ -72,7 +72,8 @@ describe("consultations contract", () => {
     it("should declare the Consultation required members and the Participant shape", () => {
         expect(inlineLists(schemaBlock("Consultation"), "required")[0]).toEqual([
             "id", "status", "doctor", "patient", "consultationType", "startsAt", "endsAt", "startsAtLocal", "endsAtLocal", "timezone",
-            "patientTimezone", "price", "needsAdminFollowup", "createdAt", "updatedAt"]);
+            "patientTimezone", "price", "joinedAt", "startedAt", "completedAt", "cancelledAt", "cancelledBy", "cancelReason", "needsAdminFollowup", "followupReason",
+            "followUpOfRecordId", "hasRecord", "createdAt", "updatedAt"]);
         expect(schemaBlock("Participant")).toContain("#/components/schemas/HydratedUserFields");
         expect(inlineLists(schemaBlock("Participant"), "required")[0]).toEqual(["userId"]);
         expect(inlineLists(schemaBlock("HydratedUserFields"), "required")[0]).toEqual(["displayName", "avatarUrl", "profileHydrated"]);

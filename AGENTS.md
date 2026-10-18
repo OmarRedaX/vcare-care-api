@@ -228,8 +228,8 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 | `NoShowTooEarly` | 409 | no-show before start + grace |
 | `RoomNotOpen` | 409 | join/start outside the session window |
 | `RecordRequiresCompleted` | 409 | record on a non-`completed` consultation |
-| `NotAssignedDoctor` | 403 | record write by a doctor other than the consultation's doctor |
-| `RecordLocked` | 409 | deleting an attachment after the 24 h lock |
+| `NotAssignedDoctor` | 403 | `PATCH /records/:id` by a doctor who has a consultation relationship with the patient but is not the record's author (creating a record on a consultation that is not yours is `404`) |
+| `RecordLocked` | 409 | an in-place record edit refused because the record is locked, or deleting an attachment after the 24 h lock |
 | `ApplicationNotReviewable` | 409 | approve/reject on an application not in `submitted` |
 | `ScheduleConflictsUnconfirmed` | 409 | blocking time that holds bookings without `confirmConflicts=true` |
 | `IdentityUnavailable` | 503 | a **must-succeed** Identity call is still failing (suspension reported as pending) |

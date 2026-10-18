@@ -38,7 +38,11 @@ export interface ReminderDbRow { id: number; patient_user_id: number; doctor_use
 export interface NewConsultation {
     doctorUserId: number; patientUserId: number; consultationTypeId: number; typeName: string; startsAt: Date; endsAt: Date;
     complaintText: string; patientTimezone: string; price: number; currency: string; idempotencyKey: string; requestHash: string;
+    /** An already ownership-checked medical record id (the booking transaction verifies it); `undefined` for an ordinary booking. */
+    followUpOfRecordId?: number;
 }
+/** Who is on a consultation and where it stands: no clinical text. The `records` module's creation gate and resolvers read it. */
+export interface ConsultationParties { id: number; doctorUserId: number; patientUserId: number; status: ConsultationStatus }
 export interface TransitionChanges {
     cancelled_at?: Date; cancelled_by?: CancelledBy; cancelled_by_user_id?: number; cancel_reason?: string | null;
     room_id?: string; joined_at?: Date; started_at?: Date; completed_at?: Date; no_show_marked_at?: Date;
@@ -70,7 +74,7 @@ export interface ConsultationListEntry { consultation: Consultation; cursorTimes
 export interface ConsultationViewer { userId: number; role: Role }
 export interface ParticipantView { userId: number; displayName: string | null; avatarUrl: string | null; profileHydrated: boolean }
 /** How one consultation is rendered for one viewer: zone, participants, and whether clinical detail is allowed. */
-export interface ConsultationView { timezone: string; doctor: ParticipantView; patient: ParticipantView; detail: boolean }
+export interface ConsultationView { timezone: string; doctor: ParticipantView; patient: ParticipantView; detail: boolean; hasRecord: boolean }
 /** Per-request rendering inputs: the explicit `timezone` query (canonical) and the viewing doctor's own zone. */
 export interface ViewContext { timezone: string | undefined; doctorTimezone: string | undefined }
 export interface RenderedConsultation { consultation: Consultation; view: ConsultationView }

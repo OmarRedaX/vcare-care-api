@@ -50,7 +50,8 @@ describe("consultations contract conformance (integration: real responses agains
         expect(typeof data.timezone).toBe("string");
         expect(typeof data.patientTimezone).toBe("string");
         expect(typeof data.needsAdminFollowup).toBe("boolean");
-        if (data.hasRecord !== undefined) expect(data.hasRecord).toBe(false);
+        expect(typeof data.hasRecord).toBe("boolean");
+        expect(data.hasRecord).toBe(false);
         const type = data.consultationType as Record<string, unknown>;
         expect(Object.keys(type).sort()).toEqual(["durationMinutes", "id", "name"]);
         const price = data.price as Record<string, unknown>;

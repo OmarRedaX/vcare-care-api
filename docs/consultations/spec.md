@@ -4,11 +4,11 @@ owner: care-team
 service: care-service
 module: consultations
 status: implemented
-version: 0.2.0
+version: 0.3.0
 diataxis: reference
-last_verified: 2026-10-14
+last_verified: 2026-10-18
 tags: [spec, consultations, booking, reschedule, cancel, exclusion-constraint, idempotency, outbox, ports, clinical-privacy]
-related: [consultations-brainstorm, patients-spec, schedules-spec, admin-doctors-spec, doctors-spec, access-spec, data-model, scheduling-slots, consultation-lifecycle, rbac, integration, adr-0003-db-exclusion-constraint, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [consultations-brainstorm, records-spec, patients-spec, schedules-spec, admin-doctors-spec, doctors-spec, access-spec, data-model, scheduling-slots, consultation-lifecycle, rbac, integration, adr-0003-db-exclusion-constraint, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -49,7 +49,7 @@ Precedents: [patients/spec.md](../patients/spec.md), [schedules/spec.md](../sche
 ### 1.3 Dependencies
 - **Other modules (services only):** `doctors` (`DoctorsService`: booking target, suspension, timezone), `schedules` (`SchedulesService`: types, open intervals), `notifications` (new: outbox insert), `audit` (`AuditRecorder`), `patients` (consumes the relationship port; its `findProfileByUserId` and response DTO serve `GET /patients/{id}`).
 - **Other service:** identity-service, **Case 2 only** (batched hydration on list and get-one, degrade). No Case 1, 3, 4 call is made here; Case 3's flagging is now real through the filled port.
-- **Later consumers:** `sessions` (join/start/complete/no-show, adds routes and reuses `applyTransition`), `records` (`hasRecord`, `follow_up_of_record_id` FK), discovery (fills `ConsultationChangeListener`).
+- **Later consumers:** `sessions` (join/start/complete/no-show, adds routes and reuses `applyTransition`), `records` (built 2026-10-18: `hasRecord`, the follow-up link and `fk_consultations_follow_up_of_record_id`, see section 14), discovery (fills `ConsultationChangeListener`).
 
 ### 1.4 Contract drift check (against `contracts/openapi.yaml`, 2026-10-11)
 Operations `bookConsultation`, `listConsultations`, `getConsultation`, `rescheduleConsultation`, `cancelConsultation`, `getPatientProfile`; schemas `Consultation`, `ConsultationCreate`, `Reschedule`, `Cancel`, `Participant`, `HydratedUserFields`; responses `ConsultationOk`, `BookingForbidden`, `BookingConflict`, `RescheduleConflict`, `CancelConflict`, `BookingUnprocessable`, `PatientProfileOk`.
@@ -63,10 +63,10 @@ Everything not listed below matches (roles, ownership, status codes, error codes
 | C3 | List `timezone` default says "viewer's own timezone"; `Consultation` says admin default UTC and a `timezone` query for admins only | both | `timezone` honored for every role; defaults: patient `patientTimezone`, doctor the doctor's zone, admin UTC |
 | C4 | Cancel op never states the policy window length | reschedule says 120 | patient window is `CANCELLATION_POLICY_MINUTES` (120) for both operations; `reason` required for doctor/admin is a `400 ValidationFailed` |
 | C5 | List items: clinical text in an unaudited bulk read | `complaintText` "participants only" on `Consultation` | list items **omit `complaintText`** for every viewer; it is returned by get-one (audited) and by the actor's own write responses |
-| C6 | `followUpOfRecordId` accepted by `ConsultationCreate` but `records` does not exist | optional field | `400 ValidationFailed` (`details[].field = followUpOfRecordId`, "is not supported yet") until `records` ships |
+| C6 | `followUpOfRecordId` accepted by `ConsultationCreate` but `records` does not exist | optional field | `400 ValidationFailed` (`details[].field = followUpOfRecordId`, "is not supported yet") until `records` ships. **Lifted 2026-10-18 by `records`:** the field is accepted and checked (section 14) |
 | C7 | `x-audit: admin-action` on reschedule/cancel although patients (and a doctor) call them | class only | every successful call writes `consultation.rescheduled` / `.cancelled` for **any** caller; `byRole` in metadata. Description clarification only |
 | C8 | `GET /patients/{patientUserId}`: doctor suspended, profile not created, non-numeric id | silent | suspended doctor `403 Forbidden`; no profile yet `404`; non-numeric id `404` (no `400` declared, none added). Description only |
-| C9 | `Consultation.hasRecord` | optional | always `false` until `records` ships. Description only |
+| C9 | `Consultation.hasRecord` | optional | always `false` until `records` ships. Description only. **Lifted 2026-10-18 by `records`:** truthful (section 14) |
 
 ### 1.5 Owner decisions folded in (2026-10-11)
 1. **Patient timezone.** The required `patientTimezone` is validated as an IANA zone (luxon), stored canonical as `patient_timezone` (a per-consultation snapshot). No `patient_profiles` row is needed to book; the profile is neither read nor written, even when one exists.
@@ -189,7 +189,7 @@ Common: guard `userGuard()` → `authorize(policy)` → limiter(s) → [`idempot
 | Errors | 400, 401, 403, 429, 500 | 400 (bad `timezone`), 401, 403, 404, 429, 500 | 401, 403, 404, 429, 500 |
 
 **Request rules (class-validator, `forbidNonWhitelisted`, implicit conversion off):**
-- `ConsultationCreateDto`: `doctorId` `@IsInt @Min(1)`; `typeId` same; `startsAt` string + `IsIsoDateTimeWithOffset`; `complaintText` string, `NotBlank`, `CodePointLength(3,4000)`, `NoControlCharacters("nul")` (newlines allowed); `patientTimezone` string + `IsIanaTimezone` (≤ 64), stored via `canonicalIanaTimezone`; `followUpOfRecordId` optional `@IsInt @Min(1)` (service rejects, C6).
+- `ConsultationCreateDto`: `doctorId` `@IsInt @Min(1)`; `typeId` same; `startsAt` string + `IsIsoDateTimeWithOffset`; `complaintText` string, `NotBlank`, `CodePointLength(3,4000)`, `NoControlCharacters("nul")` (newlines allowed); `patientTimezone` string + `IsIanaTimezone` (≤ 64), stored via `canonicalIanaTimezone`; `followUpOfRecordId` optional `@IsInt @Min(1) @Max(Number.MAX_SAFE_INTEGER)` (the service rejected it under C6 until `records`; see section 14).
 - `RescheduleDto`: `startsAt` as above (required); `reason` optional, `NotBlank`, `CodePointLength(3,1000)`, `NoControlCharacters("nul")`. Required for admin (service, `400` `details[].field = reason`).
 - `CancelDto`: `reason` optional, same rules. Required for doctor and admin (service, before any DB access).
 - `ListConsultationsQueryDto` (composes `PaginationQueryDto`): `scope` `@IsIn(["upcoming","past","all"])` default `upcoming` set explicitly; `status` `ToCommaList()` + `@IsArray @ArrayMaxSize(6) @IsIn(statuses,{each})` (repeated param → `400`; duplicates removed); `from`, `to` `IsIsoDateTimeWithOffset` (`from >= to` → `400`); `doctorUserId`, `patientUserId` `ToInt @IsInt @Min(1)`; `needsAdminFollowup` `ToBoolean @IsBoolean`; `timezone` `IsIanaTimezone`; unknown query members rejected.
@@ -197,7 +197,7 @@ Common: guard `userGuard()` → `authorize(policy)` → limiter(s) → [`idempot
 - Admin-only filters from a non-admin → `403 Forbidden` (C2), checked before any query.
 
 **Response `Consultation`** (`ConsultationResponseDto.from(entity, viewer, view)`; `view = { timezone, doctor, patient, detail }`):
-`id, status, doctor, patient, consultationType{ id, name, durationMinutes }, startsAt, endsAt` (UTC ISO `Z`), `startsAtLocal, endsAtLocal` (ISO with offset in `timezone`, `toIsoInZone`), `timezone, patientTimezone, price{ amount, currency }, complaintText?, joinedAt, startedAt, completedAt, cancelledAt, cancelledBy, cancelReason, needsAdminFollowup, followupReason, followUpOfRecordId, hasRecord (false, C9), createdAt, updatedAt`.
+`id, status, doctor, patient, consultationType{ id, name, durationMinutes }, startsAt, endsAt` (UTC ISO `Z`), `startsAtLocal, endsAtLocal` (ISO with offset in `timezone`, `toIsoInZone`), `timezone, patientTimezone, price{ amount, currency }, complaintText?, joinedAt, startedAt, completedAt, cancelledAt, cancelledBy, cancelReason, needsAdminFollowup, followupReason, followUpOfRecordId, hasRecord (false until `records`, C9; truthful since 2026-10-18, section 14), createdAt, updatedAt`.
 - `durationMinutes` = `(endsAt − startsAt)` in minutes (snapshot); `consultationType.name` joined from `consultation_types` (current name).
 - `complaintText`: present for patient/doctor viewers when `detail = true` (get-one and write responses); absent for admin always and for every viewer on list items (C5).
 - `timezone` (render zone): `?timezone` if given (any role, C3), else patient → `patient_timezone`, doctor → the doctor's profile timezone (`DoctorsService.findTimezone`, one indexed query), admin → `UTC`. Write responses use the same defaults.
@@ -262,7 +262,7 @@ Edited: `bootstrap.ts`, `lib/di/tokens.ts` (`ConsultationsService`, `Consultatio
 **`ConsultationsService`** (`@injectable()`; deps `Db, AuditRecorder, Env, Logger, Clock, DoctorsService, SchedulesService, NotificationsService, ConsultationChangeListener`).
 
 `book(actor, input, idempotencyKey, requestHash)`:
-0. `followUpOfRecordId` present → `400` (C6), before any DB access.
+0. ~~`followUpOfRecordId` present → `400` (C6), before any DB access.~~ **Removed 2026-10-18 (`records`)**: the follow-up check now runs inside `bookOnce` (section 14).
 1. `outer try { return await this.bookOnce(…) } catch`: map `exclusionViolationConstraint(e) === 'excl_consultations_doctor_no_overlap'` → `SlotUnavailable`; map `uniqueViolationConstraint(e) === 'uq_consultations_idempotency'` → fresh read by key and compare `request_hash` (equal → replay, else `IdempotencyConflict`). The transaction is already rolled back when these run (a failed statement aborts it).
 2. `bookOnce`, one `db.transaction`:
    1. `findByIdempotencyKey` → exists: same `request_hash` → return it (replay); different → `422 IdempotencyConflict`. Replay skips every later check.
@@ -374,7 +374,7 @@ A retried cancel with a **new** key (or after Redis loss) is `409 InvalidTransit
 ## 6. Error codes
 | Code | HTTP | When |
 |---|---|---|
-| `ValidationFailed` | 400 | DTO failure; missing/non-UUID `Idempotency-Key`; absent cancel body; `reason` missing for doctor/admin (cancel) or admin (reschedule); `followUpOfRecordId` supplied (C6); `from >= to`; bad `timezone`/`status`/cursor |
+| `ValidationFailed` | 400 | DTO failure; missing/non-UUID `Idempotency-Key`; absent cancel body; `reason` missing for doctor/admin (cancel) or admin (reschedule); `followUpOfRecordId` supplied (C6, until `records` shipped; now `404` for a record that is not the caller's, see section 14); `from >= to`; bad `timezone`/`status`/cursor |
 | `Unauthorized` / `TokenExpired` | 401 | token problems |
 | `EmailNotVerified` | 403 | booking with `ev=false` |
 | `Forbidden` | 403 | wrong role (admin on `/patients/{id}`), non-active account, suspended doctor on cancel / patient read, admin-only filter by a non-admin |
@@ -424,7 +424,7 @@ Integration (`tests/integration/consultations.test.ts`, `patients.test.ts` addit
 - No-store: four malformed-JSON tests (3.10).
 
 ## 10. Out of scope
-`join`, `start`, `complete`, `no-show`, `waiting-room`, `calendar`, `lib/video` (sessions unit); `/patients/{id}/records`, `hasRecord` truth, the `follow_up_of_record_id` FK (records); doctor search, slots endpoint, `next-available`, cache implementation (discovery); outbox delivery, reminder scan, `OUTBOX_*` env, outbox `UPDATE/DELETE` grants and claim/purge indexes (notification/worker unit, ADR 0011); doctor-initiated follow-up booking; **impact check for a doctor timezone change** via `PATCH /doctors/me` (recorded as deferred in the doctors and schedules specs — it can reuse `ScheduleImpactProvider` with `change.kind='working_hours'`; needs a `confirmConflicts` contract edit and its own unit); an endpoint to dismiss a follow-up flag without cancel/reschedule (admins use reschedule/cancel; reschedule clears the flag); patient double-booking across doctors; notifications for suspension.
+`join`, `start`, `complete`, `no-show`, `waiting-room`, `calendar`, `lib/video` (sessions unit); `/patients/{id}/records`, `hasRecord` truth, the `follow_up_of_record_id` FK (records; **all built 2026-10-18**); doctor search, slots endpoint, `next-available`, cache implementation (discovery); outbox delivery, reminder scan, `OUTBOX_*` env, outbox `UPDATE/DELETE` grants and claim/purge indexes (notification/worker unit, ADR 0011); doctor-initiated follow-up booking; **impact check for a doctor timezone change** via `PATCH /doctors/me` (recorded as deferred in the doctors and schedules specs — it can reuse `ScheduleImpactProvider` with `change.kind='working_hours'`; needs a `confirmConflicts` contract edit and its own unit); an endpoint to dismiss a follow-up flag without cancel/reschedule (admins use reschedule/cancel; reschedule clears the flag); patient double-booking across doctors; notifications for suspension.
 
 ## 11. Open questions
 No undecided design question remains; items below are the pending actions.
@@ -435,10 +435,10 @@ No undecided design question remains; items below are the pending actions.
 - **C3** `listConsultations` / `getConsultation` / `Consultation`: `timezone` honored for every role; defaults patient `patientTimezone`, doctor the doctor's zone, admin `UTC`.
 - **C4** `cancelConsultation`: patient window = 120 minutes (`CANCELLATION_POLICY_MINUTES`), `reason` required for doctor/admin (`400`).
 - **C5** `Consultation` / `listConsultations`: list items omit `complaintText` for every viewer.
-- **C6** `bookConsultation`: `followUpOfRecordId` → `400 ValidationFailed` until `records` ships.
+- **C6** `bookConsultation`: `followUpOfRecordId` → `400 ValidationFailed` until `records` ships (**lifted**; the contract now says `404 NotFound` for a record that is not the caller's).
 - **C7** `rescheduleConsultation` / `cancelConsultation`: audit row written for any caller; `x-audit: admin-action` is the policy class.
 - **C8** `getPatientProfile`: suspended doctor `403`; profile not yet created and non-numeric id `404`.
-- **C9** `Consultation.hasRecord`: `false` until `records` ships.
+- **C9** `Consultation.hasRecord`: `false` until `records` ships (**lifted**; the contract now says true when a live record exists).
 
 **Platform changes required (/system-design):** none.
 
@@ -474,3 +474,9 @@ Built, tested (unit 125 suites / 2322 tests; integration 33 suites / 1062 passed
 - **Owner decision D-R4 applied to CLAUDE.md** (2026-10-12): the wording "completed or current consultation" now names `booked`, `waiting`, `in_progress` or `completed`.
 - **Redis idempotency retention (24 h)** is accepted and recorded in section 7, `architecture/clinical-records.md` and `architecture/resilience.md`.
 - Docs refreshed at `/update-docs` (section 11 list): `data-model`, `api`, `rbac`, `consultation-lifecycle`, `scheduling-slots`, `integration`, `infrastructure`, `resilience`, `patients/spec.md` (1.2.0), `schedules/spec.md` (1.2.0), `runbook`, `service-card`, `INDEX`.
+
+## 14. As-built change by `records` (2026-10-18, version 0.3.0)
+The `records` module lifted the two stubs left here; this section amends the design text above (sections 1.4 C6/C9, 3.6 step 0, 6, 10, 11). Authoritative detail: [records spec](../records/spec.md) section 3.7.
+- **C6 lifted - `followUpOfRecordId` is accepted.** `ConsultationsService.bookOnce` calls `RecordLinksService.isFollowUpTarget(recordId, patientUserId = actor.userId, doctorUserId = doctor.userId, trx)` after the doctor-profile `FOR SHARE` lock, the bookable check and the type lookup and **before** the past/horizon/grid checks; a missing, foreign, other-doctor or soft-deleted record is `404 NotFound` (no probing). Ownership only: no timing or `followUpInDays` check. `insertConsultation` writes `follow_up_of_record_id`; `fk_consultations_follow_up_of_record_id` (records migration `20261017120200`) protects it. The former step 0 and the `FollowUpNotSupported` error are removed. The idempotent replay returns the stored consultation before the check. The request DTO also caps the id at `Number.MAX_SAFE_INTEGER`; the contract has `minimum: 1`.
+- **C9 lifted - `hasRecord` is truthful.** `buildConsultationView(..., recordedIds = NO_RECORDS)` sets `hasRecord` from a set; `ConsultationQueriesService.list` / `get` (and `SessionQueriesService.calendar`) ask `RecordLinksService.recordedConsultationIds` once, over the `completed` rows only. `ConsultationQueriesService.renderOwn` (book, reschedule, cancel responses) does the same lookup for its one row only when it is `completed`, so a booking replayed through the database idempotency path reports the truth; every other write response is `false` by construction. `ConsultationQueriesService` and `ConsultationsService` gained a `RecordLinksService` constructor argument (registered before them in `bootstrap.ts`).
+- New cross-module service API for `records`: `ConsultationRowsService.findParties(id, conn)` (id, both user ids, status; reads no complaint text) and, unchanged, the `PatientRelationshipChecker` port.

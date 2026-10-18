@@ -11,9 +11,11 @@ import { toMs } from "../../../pkg/utils/time";
 import type { Consultation } from "../../consultations/entity/consultation.entity";
 import { TimeRangeReversed } from "../../consultations/errors";
 import { ConsultationRowsService } from "../../consultations/service/consultation-rows.service";
+import { ConsultationStatus } from "../../consultations/enums";
 import type { ConsultationViewer, RenderedConsultation } from "../../consultations/types";
 import { buildConsultationView } from "../../consultations/view";
 import { DoctorsService } from "../../doctors/service/doctors.service";
+import { RecordLinksService } from "../../records/service/record-links.service";
 import { SchedulesService } from "../../schedules/service/schedules.service";
 import { CALENDAR_MAX_ENTRIES, CALENDAR_MAX_WINDOW_DAYS, WAITING_ROOM_MAX_ENTRIES } from "../constants";
 import { CalendarWindowTooLarge } from "../errors";
@@ -35,6 +37,7 @@ export class SessionQueriesService {
         @inject(TOKENS.ConsultationRowsService) private readonly rows: ConsultationRowsService,
         @inject(TOKENS.DoctorsService) private readonly doctors: DoctorsService,
         @inject(TOKENS.SchedulesService) private readonly schedules: SchedulesService,
+        @inject(TOKENS.RecordLinksService) private readonly records: RecordLinksService,
     ) {}
 
     async waitingRoom(actor: AuthContext): Promise<RenderedConsultation[]> {
@@ -69,6 +72,9 @@ export class SessionQueriesService {
         doctorTimezone: string | undefined): Promise<RenderedConsultation[]> {
         const users = await hydrateUsersOrEmpty(this.identity, this.logger, consultations.map((consultation) => consultation.patientUserId));
         const viewer: ConsultationViewer = { userId: actor.userId, role: actor.role };
-        return consultations.map((consultation) => ({ consultation, view: buildConsultationView(consultation, viewer, { timezone, doctorTimezone }, users, false) }));
+        // Only completed rows can have a record: the waiting room (booked/waiting) never queries, a calendar window does once.
+        const recorded = await this.records.recordedConsultationIds(consultations.filter((consultation) => consultation.status === ConsultationStatus.Completed)
+            .map((consultation) => consultation.id), this.db);
+        return consultations.map((consultation) => ({ consultation, view: buildConsultationView(consultation, viewer, { timezone, doctorTimezone }, users, false, recorded) }));
     }
 }

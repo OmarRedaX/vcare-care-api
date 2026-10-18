@@ -21,6 +21,9 @@ import * as outboxDeliveryMigration from "../../src/migrations/20261012120000_no
 import * as outboxPendingCreatedAtMigration from "../../src/migrations/20261015120000_notification_outbox_pending_created_at_index";
 import * as outboxDeleteSentOnlyMigration from "../../src/migrations/20261015120100_notification_outbox_delete_sent_only";
 import * as reminderIndexMigration from "../../src/migrations/20261012120100_consultations_reminder_index";
+import * as medicalRecordsMigration from "../../src/migrations/20261017120000_create_medical_records";
+import * as medicalRecordAmendmentsMigration from "../../src/migrations/20261017120100_create_medical_record_amendments";
+import * as followUpFkMigration from "../../src/migrations/20261017120200_add_consultations_follow_up_fk";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -294,6 +297,10 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         try {
             // The schedules tables reference doctor_profiles (ON DELETE RESTRICT): they go first and come back last;
             // consultations reference consultation_types and the outbox references consultations, so those go before them.
+            // The records tables reference consultations (and consultations reference medical_records back): they go first.
+            await followUpFkMigration.down(migrator);
+            await medicalRecordAmendmentsMigration.down(migrator);
+            await medicalRecordsMigration.down(migrator);
             await outboxDeleteSentOnlyMigration.down(migrator);
             await outboxPendingCreatedAtMigration.down(migrator);
             await reminderIndexMigration.down(migrator);
@@ -329,6 +336,9 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await reminderIndexMigration.up(migrator);
             await outboxPendingCreatedAtMigration.up(migrator);
             await outboxDeleteSentOnlyMigration.up(migrator);
+            await medicalRecordsMigration.up(migrator);
+            await medicalRecordAmendmentsMigration.up(migrator);
+            await followUpFkMigration.up(migrator);
         }
         const result = await migrator.raw<{ rows: Array<{ name: string }> }>(
             "SELECT indexname AS name FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'",
@@ -359,10 +369,11 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
 
     it("should round-trip the consultations and outbox migrations with named constraints, indexes and grants", async () => {
         await truncateAll();
+        // contype 'n' (NOT NULL) rows appear in pg_constraint from PostgreSQL 18; the expected lists name the CHECK/PK/FK/UNIQUE/EXCLUDE constraints only.
         const names = async (table: string, kind: "indexes" | "constraints"): Promise<string[]> => {
             const result = kind === "indexes"
                 ? await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT indexname AS name FROM pg_indexes WHERE schemaname = 'public' AND tablename = ? ORDER BY indexname", [table])
-                : await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT conname AS name FROM pg_constraint WHERE conrelid = to_regclass(?) ORDER BY conname", [`public.${table}`]);
+                : await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT conname AS name FROM pg_constraint WHERE conrelid = to_regclass(?) AND contype <> 'n' ORDER BY conname", [`public.${table}`]);
             return result.rows.map((row) => row.name);
         };
         const expectedConsultationIndexes = [
@@ -373,7 +384,7 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         const expectedConsultationConstraints = [
             "chk_consultations_cancel_shape", "chk_consultations_cancelled_by", "chk_consultations_followup_reason", "chk_consultations_price",
             "chk_consultations_status", "chk_consultations_time_order", "consultations_pkey", "excl_consultations_doctor_no_overlap",
-            "fk_consultations_consultation_type_id", "uq_consultations_idempotency",
+            "fk_consultations_consultation_type_id", "fk_consultations_follow_up_of_record_id", "uq_consultations_idempotency",
         ];
         const expectedOutboxConstraints = [
             "chk_notification_outbox_attempts", "chk_notification_outbox_kind", "chk_notification_outbox_payload_object", "chk_notification_outbox_sent_shape",
@@ -387,6 +398,9 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
         expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);
 
+        await followUpFkMigration.down(migrator);
+        await medicalRecordAmendmentsMigration.down(migrator);
+        await medicalRecordsMigration.down(migrator);
         await outboxDeleteSentOnlyMigration.down(migrator);
         await outboxPendingCreatedAtMigration.down(migrator);
         await reminderIndexMigration.down(migrator);
@@ -404,6 +418,9 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         await reminderIndexMigration.up(migrator);
         await outboxPendingCreatedAtMigration.up(migrator);
         await outboxDeleteSentOnlyMigration.up(migrator);
+        await medicalRecordsMigration.up(migrator);
+        await medicalRecordAmendmentsMigration.up(migrator);
+        await followUpFkMigration.up(migrator);
         expect(await names("consultations", "indexes")).toEqual(expectedConsultationIndexes);
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
         expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);

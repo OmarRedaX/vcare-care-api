@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-15
+last_verified: 2026-10-18
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -133,8 +133,8 @@ owner-defined `SECURITY DEFINER` function `audit_logs_ensure_partitions(int)`.
 - Migrations are raw SQL (`knex.raw`), one change per file, real `down` ([ADR 0001](../adr/0001-no-orm-knex-raw-sql.md)).
   The first migration creates `btree_gist`. `knex_migrations.name` is recorded **without** the file extension, so
   `node dist/migrate.js` and `npm run migrate` (tsx over `src/`) agree on one database.
-- The application role (`vcare_app`) has `INSERT`/`SELECT` only on `audit_logs` (and every partition) and, when it
-  lands, `medical_record_amendments` — by explicit grant, so `UPDATE`/`DELETE`/`TRUNCATE` fail with `42501`.
+- The application role (`vcare_app`) has `INSERT`/`SELECT` only on `audit_logs` (and every partition) and on
+  `medical_record_amendments` (built with `records`, 2026-10-18; its `INSERT` is column-level too) — by explicit grant, so `UPDATE`/`DELETE`/`TRUNCATE` fail with `42501`. `medical_records` has no `DELETE`/`TRUNCATE` and only a column-level `UPDATE` (clinical columns and `updated_at`).
 - **Read replica (when introduced):** discovery reads (search, doctor profile, slots) may use `DATABASE_READ_URL`.
   Writes, booking/reschedule re-validation, ownership checks for clinical data, and audit writes always use the
   primary. Replica lag is acceptable for discovery because booking re-proves availability on the primary.
@@ -178,7 +178,7 @@ tokens, request bodies of clinical or consultation routes.
 `key.toLowerCase().replace(/[_-]/g, "")`, so `date_of_birth` and `date-of-birth` match `dateOfBirth`; a match is
 replaced by `"[REDACTED]"`, recursively through objects and arrays; depth > 8 → `"[Truncated]"`; cycles →
 `"[Circular]"`; the `message` string is never rewritten. Keys: `complaintText`, `examinationNotes`, `diagnosisText`,
-`diagnosisCode`, `treatmentPlan`, `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `objectKey`,
+`diagnosisCode`, `treatmentPlan`, `chiefComplaint`, `followUpInDays`, `amendments`, `amendmentReason` (records, 2026-10-18), `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `objectKey`,
 `downloadUrl`, `uploadUrl`, `joinToken`, `authorization`, `cookie`, `setCookie`, `fullName`, `displayName`,
 `firstName`, `lastName`, `email`, `phone`, `password`, `token`, `accessToken`, `refreshToken`, `serviceToken`,
 `clientSecret`, `body`, `requestBody`, `connectionString`, `databaseUrl`, `migrationDatabaseUrl`, `headline`, `bio`,

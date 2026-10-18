@@ -4,13 +4,14 @@ import { buildAuditRouter } from "./app/audit/routes";
 import { buildConsultationsRouter } from "./app/consultations/routes";
 import { buildDoctorsRouter } from "./app/doctors/routes";
 import { buildPatientsRouter } from "./app/patients/routes";
+import { buildRecordsRouter } from "./app/records/routes";
 import { buildSchedulesRouter } from "./app/schedules/routes";
 import { buildSessionsRouter } from "./app/sessions/routes";
 import { buildSpecialtiesRouter } from "./app/specialties/routes";
 import { buildVerificationRouter } from "./app/verification/routes";
 
 /** Prefixes whose every response is `Cache-Control: no-store`; `app.ts` applies it before body parsing. */
-export const NO_STORE_PREFIXES: readonly string[] = ["/api/patients", "/api/consultations", "/api/admin", "/api/audit-logs"];
+export const NO_STORE_PREFIXES: readonly string[] = ["/api/patients", "/api/consultations", "/api/records", "/api/admin", "/api/audit-logs"];
 
 /** Public module routers are mounted here (under `/api`). Health is mounted separately in `app.ts`. */
 export function buildPublicRoutes(): Router {
@@ -28,5 +29,7 @@ export function buildPublicRoutes(): Router {
     // Sessions first: its literals `/consultations/waiting-room` and `/consultations/calendar` must precede `GET /consultations/:id`.
     router.use(buildSessionsRouter());
     router.use(buildConsultationsRouter());
+    // Records last: `/consultations/:id/record` and `/patients/:patientUserId/records` are distinct paths from the routers above.
+    router.use(buildRecordsRouter());
     return router;
 }

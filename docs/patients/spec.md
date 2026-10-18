@@ -4,11 +4,11 @@ owner: care-team
 service: care-service
 module: patients
 status: implemented
-version: 1.2.0
+version: 1.3.0
 diataxis: reference
-last_verified: 2026-10-12
+last_verified: 2026-10-18
 tags: [spec, patients, patient-profile, clinical-privacy, audit, migration, upsert]
-related: [patients-brainstorm, doctors-spec, schedules-spec, access-spec, audit-spec, data-model, api, rbac, clinical-records, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, adr-0019-luxon-for-doctor-timezone-validation]
+related: [patients-brainstorm, records-spec, doctors-spec, schedules-spec, access-spec, audit-spec, data-model, api, rbac, clinical-records, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, adr-0019-luxon-for-doctor-timezone-validation]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -22,7 +22,7 @@ for upsert, race handling, DTO and test style.
 Scope follows [brainstorm.md](./brainstorm.md) (decided 2026-10-11). The doctor-facing `GET /api/patients/{patientUserId}`
 and `GET /api/patients/{patientUserId}/records` are **not** built here: both need the doctor-to-patient `EXISTS` on
 `consultations` (the timeline also needs `medical_records`) and ship with `consultations` / `records`. The contract
-operations stay as written; this module does not mount them. *(As built: `GET /api/patients/{patientUserId}` shipped with `consultations` on 2026-10-12, see section 14; the `/records` timeline is still planned.)*
+operations stay as written; this module does not mount them. *(As built: `GET /api/patients/{patientUserId}` shipped with `consultations` on 2026-10-12, see section 14; the `/records` timeline shipped with `records` on 2026-10-18, see section 14.)*
 
 Binding rules: CLAUDE.md → "Database rules", "API conventions", "Authorization — RBAC and ownership", "Privacy and
 logging", "Security rules", "Domain rules" (16, 17, 19, 20, 22), "Testing policy", "Build order for a new module".
@@ -50,7 +50,7 @@ Precedents: [doctors/spec.md](../doctors/spec.md), [schedules/spec.md](../schedu
 - **No Identity data.** No name, email, phone or avatar is stored or returned.
 
 ### 1.3 Dependencies
-- **Other modules:** none at runtime. Later: `consultations` (reads the patient's timezone to render local times, owns the doctor-facing profile read), `records` (patient timeline).
+- **Other modules:** none at runtime. Later: `consultations` (reads the patient's timezone to render local times, owns the doctor-facing profile read), `records` (patient timeline; built 2026-10-18, it calls `PatientsService.findProfile`).
 - **Other service:** none. Platform deltas: none.
 
 ### 1.4 Contract confirmation (drift check against `contracts/openapi.yaml`)
@@ -386,7 +386,7 @@ CURL both routes with patient, doctor and admin tokens plus `X-Request-Id`; comp
 ---
 
 ## 10. Out of scope
-- `GET /api/patients/{patientUserId}` and `GET /api/patients/{patientUserId}/records` (doctor access via `consultations` `EXISTS`; timeline needs `medical_records`) — `consultations` / `records`.
+- `GET /api/patients/{patientUserId}` and `GET /api/patients/{patientUserId}/records` (doctor access via `consultations` `EXISTS`; timeline needs `medical_records`) — `consultations` / `records` (**both built by those modules**, section 14).
 - Names, emails, phones, avatars (Identity-owned; hydrated by Case 2 elsewhere); any Identity call.
 - A delete or deactivate endpoint (`deleted_at` exists for the platform rule only).
 - Medical-record fields, attachments, documents, uploads.
@@ -421,5 +421,5 @@ Intentional divergences from sections 1-13; the contract is unchanged.
 - **Policies declare the audit class.** `PATIENTS_POLICIES` sets `audit: "clinical-read"` (`getMe`) and `audit: "clinical-write"` (`updateMe`), mirroring the contract's `x-audit`; the field is declarative, the service writes the rows (section 3.10 updated).
 - **`gender` added to `REDACTED_KEYS`** (`src/lib/logger/redact.ts`), as planned.
 - **`GET /api/patients/{patientUserId}` is built (2026-10-12, version 1.2.0, `consultations` module).** The route lives in this module's router, registered after `/patients/me`; policy `getById` (roles patient and doctor, resolver `consulted_patient_or_self`, check `doctor_not_suspended`, audit class `clinical-read`). Access: the patient only for their own id; a doctor with a non-deleted `booked`, `waiting`, `in_progress` or `completed` consultation with that patient (decision D-R4: a `booked` consultation counts, for pre-visit intake; `cancelled`/`no_show` alone do not); everyone else `404`; admin `403`; a suspended doctor `403`; a patient with no profile row yet `404`; a non-numeric id `404`. `PatientsService.getForViewer` loads the profile and writes `patient_profile.read` (`{ patientUserId, viewerRole }`) in a transaction before returning; `PatientProfileResponseDto.from` accepts the owning patient or a doctor viewer and still throws for an admin. The relationship comes through the `PatientRelationshipChecker` port (implemented by `ConsultationsService.hasConsultationRelationship`, `idx_consultations_doctor_user_id_patient_user_id`). Rate limit: the patients read limiter, 120/min per user, shared with `/patients/me`. [consultations spec](../consultations/spec.md) section 3.1.
-- **Still planned:** `GET /api/patients/{patientUserId}/records` (needs `medical_records`; ships with `records`) and its use of the same relationship resolver.
+- **`GET /api/patients/{patientUserId}/records` is built (2026-10-18, version 1.3.0, `records` module).** The route and its policy live in the `records` router (`records/policies.ts`, resolver `records_timeline_reader`), not in this module; it reuses the `PatientRelationshipChecker` port but answers `404` (not `403`) to a locally suspended doctor, so it is a separate resolver from `consulted_patient_or_self`. This module's only change is the new read method `PatientsService.findProfile(patientUserId, conn = this.db): Promise<PatientProfile | undefined>`: a plain read of the live profile (`findProfileByUserId`) for another module that renders it inside its own audited transaction; it writes **no** `patient_profile.read` row (the timeline writes one `patient_records.listed` row per call instead) and returns `undefined` rather than `404` when no profile exists (the timeline then returns `data.patient: null`). `PatientProfileResponseDto.from` is reused unchanged for the timeline's `patient`. See [records spec](../records/spec.md) sections 3.6 and 1.5.6.
 - Verification: manual QA 135 pass / 0 fail ([manual-qa.md](./manual-qa.md)).
