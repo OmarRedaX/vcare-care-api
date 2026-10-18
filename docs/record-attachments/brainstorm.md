@@ -3,7 +3,7 @@ title: record-attachments — Brainstorm
 owner: care-team
 service: care-service
 module: record-attachments
-status: draft
+status: approved
 diataxis: explanation
 last_verified: 2026-10-18
 tags: [brainstorm, record-attachments, records, attachments, uploads, object-storage, clinical-privacy]
@@ -132,12 +132,14 @@ Applied first in `contracts/openapi.yaml` (step 0), then mirrored to the hub cop
 | RA-D10 | `description` is clinical free text (never in logs/audit/Redis); optional, same text rules as record fields (not blank, no NUL, ≤ 500 code points) | default |
 
 ## Open questions
-1. **Confirm the defaults RA-D6 to RA-D10** at approval (or override); none blocks the spec.
-2. **Redaction key for `description`:** a bare `description` key may collide with non-clinical modules (consultation types, help articles). The spec decides between a scoped key such as `attachmentDescription` in `redact.ts` or relying on "bodies and metadata are never logged" plus a test. Needs a grep of `REDACTED_KEYS` and current log call sites.
-3. **Where the record lookup for the writer resolver lives** (`RecordLinksService.findAccessRow` returns ids only; the lock verdict needs `is_locked` from the row-locked read inside the transaction). Spec picks between extending `RecordLinksService` and a small `RecordsService` method; no repository import across modules either way.
-4. **CLAUDE.md edit:** the `AttachmentLimitReached` row in "Error codes owned by Care" (and a "Domain rules" line for the cap) is an owner edit, the same route `RecordLocked` took.
-5. **Capacity roll-up:** confirm 20 × 10 MB per record fits `capacity.md` storage assumptions; no hub edit expected.
-6. **Hub contract copy / hub PR #24:** care PR #44 is merged; hub PR #24's state was not checked here. This brief changes no hub doc.
+**Status (2026-10-18): approved by the owner; the owner told the assistant to take its recommendation on every open question below. Resolutions are inline as "Resolved"; the spec folds them in.**
+
+1. **Confirm the defaults RA-D6 to RA-D10.** *Resolved: accepted as written.*
+2. **Redaction key for `description`:** a bare `description` key may collide with non-clinical modules (consultation types, help articles). The spec decides between a scoped key such as `attachmentDescription` in `redact.ts` or relying on "bodies and metadata are never logged" plus a test. Needs a grep of `REDACTED_KEYS` and current log call sites. *Resolved: do not add a bare `description` key; add the scoped key `attachmentDescription` to `redact.ts` (with a test row) and prove the rest with a privacy test (marker string in `description`; logs, audit metadata, Redis and error bodies must not contain it). The spec still greps `REDACTED_KEYS` and log call sites to confirm no logged object carries a bare attachment `description`.*
+3. **Where the record lookup for the writer resolver lives** (`RecordLinksService.findAccessRow` returns ids only; the lock verdict needs `is_locked` from the row-locked read inside the transaction). Spec picks between extending `RecordLinksService` and a small `RecordsService` method; no repository import across modules either way. *Resolved: extend `RecordLinksService` (database only, no dependency on `records` or `record-attachments` services, so no constructor cycle): the resolver uses its existing `findAccessRow`; the in-transaction lock verdict uses one new method that takes the transaction and does the `FOR NO KEY UPDATE` read returning ids and `is_locked`.*
+4. **CLAUDE.md edit:** the `AttachmentLimitReached` row in "Error codes owned by Care" (and a "Domain rules" line for the cap) is an owner edit, the same route `RecordLocked` took. *Resolved: the owner delegated it; the edit is made with contract step 0 at `/develop` (same commit as C5), not in the spec phase.*
+5. **Capacity roll-up:** confirm 20 × 10 MB per record fits `capacity.md` storage assumptions; no hub edit expected. *Resolved: verified by the spec author against `capacity.md` and the local capacity shard; a hub edit only if the 200 MB-per-record bound breaks a stated assumption (then listed under Platform changes required).*
+6. **Hub contract copy / hub PR #24:** *Resolved: hub PR #24 is merged (`main` 23a0471) and the hub contract copy equals care's current contract; this brief changes no hub doc. The hub re-sync happens when contract C1-C6 lands.*
 
 ## Success criteria
 - A doctor uploads a PDF/JPEG/PNG up to 10 MB to their own record through intent → direct POST → `complete`; a `.pdf`-named file with other bytes, an oversize file, an expired/closed/foreign intent and a replayed `complete` behave as specified; the row exists only after verification.
