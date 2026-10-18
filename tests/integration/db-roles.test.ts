@@ -180,6 +180,31 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
         }
     });
 
+    it("should grant vcare_app SELECT, INSERT and UPDATE but no DELETE or TRUNCATE on medical_records, and USAGE on its sequence", async () => {
+        const result = await ownerDb.raw<{ rows: Array<Record<string, boolean>> }>(
+            `SELECT has_table_privilege('vcare_app', 'medical_records', 'SELECT') AS sel,
+                    has_table_privilege('vcare_app', 'medical_records', 'INSERT') AS ins,
+                    has_table_privilege('vcare_app', 'medical_records', 'UPDATE') AS upd,
+                    has_table_privilege('vcare_app', 'medical_records', 'DELETE') AS del,
+                    has_table_privilege('vcare_app', 'medical_records', 'TRUNCATE') AS trunc,
+                    has_sequence_privilege('vcare_app', 'medical_records_id_seq', 'USAGE') AS seq`,
+        );
+        expect(result.rows[0]).toEqual({ sel: true, ins: true, upd: true, del: false, trunc: false, seq: true });
+    });
+
+    it("should make medical_record_amendments append-only for vcare_app: SELECT and a nine-column INSERT, never UPDATE, DELETE, TRUNCATE, id or created_at", async () => {
+        const table = (privilege: string): string => `has_table_privilege('vcare_app', 'medical_record_amendments', '${privilege}')`;
+        const insertable = (column: string): string => `has_column_privilege('vcare_app', 'medical_record_amendments', '${column}', 'INSERT')`;
+        const columns = ["medical_record_id", "author_user_id", "chief_complaint", "examination_notes", "diagnosis_text", "diagnosis_code", "treatment_plan", "follow_up_in_days", "reason"];
+        const result = await ownerDb.raw<{ rows: Array<Record<string, boolean>> }>(
+            `SELECT ${table("SELECT")} AS sel, ${table("INSERT")} AS ins, ${table("UPDATE")} AS upd, ${table("DELETE")} AS del, ${table("TRUNCATE")} AS trunc,
+                    ${insertable("id")} AS id_ins, ${insertable("created_at")} AS at_ins, ${columns.map((column, index) => `${insertable(column)} AS c${index}`).join(", ")},
+                    has_sequence_privilege('vcare_app', 'medical_record_amendments_id_seq', 'USAGE') AS seq`,
+        );
+        expect(result.rows[0]).toEqual({ sel: true, ins: false, upd: false, del: false, trunc: false, id_ins: false, at_ins: false,
+            ...Object.fromEntries(columns.map((_column, index) => [`c${index}`, true])), seq: true });
+    });
+
     it("should reject care_app inserts that set created_at or id while AuditRecorder.record still inserts (L2)", async () => {
         const columns = "actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata";
         await expect(

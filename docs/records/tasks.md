@@ -32,7 +32,7 @@ Source: [spec.md](./spec.md) (v0.1.0, ready). Branch `feature/records`. Contract
 - [x] (controller) `RecordsController`
 - [x] (routes) `records/rate-limits.ts`, `records/routes.ts`
 - [x] (mount) `src/routes.ts` — after the consultations router
-- [ ] (tests) ← /write-tests
+- [x] (tests) ← /write-tests (unit + integration + RBAC + contract + concurrency + lock + privacy + EXPLAIN + schema; see "Test notes")
 - [ ] (manual-qa) ← /manual-qa
 - [ ] (docs) ← /update-docs (service-card, INDEX, architecture shards listed in spec section 11)
 
@@ -45,3 +45,12 @@ Source: [spec.md](./spec.md) (v0.1.0, ready). Branch `feature/records`. Contract
 - **Existing tests changed because behaviour changed (no new suites):** `tests/unit/app/consultations/consultations.service.test.ts` (the `FollowUpNotSupported` test became three follow-up tests; a `records` double is a new constructor argument), `consultation-queries.service.test.ts` and `session-queries.service.test.ts` (new `RecordLinksService` constructor argument), `tests/integration/consultations.test.ts` (`followUpOfRecordId` is now `404`, not `400`), `tests/integration/migrations.test.ts` (the records migrations are stepped down and up around `consultations`; `fk_consultations_follow_up_of_record_id` is in the expected constraint list), `tests/unit/lib/logger/redact.test.ts` (four keys), `tests/unit/lib/knex/pg-errors.test.ts` (`checkViolationConstraint`), `tests/integration/no-store.test.ts` (`/api/records` row).
 - **Environment note for the next phases:** the suite runs against Postgres 18 in this workspace; `migrations.test.ts` "named constraints" compares `pg_constraint` names, and PG 18 lists `*_not_null` constraints there, so that one test fails on PG 18 independent of this unit (docker-compose uses an older image). `db-roles.test.ts` password-rejection cases need a password-authenticating server.
 
+
+## Test notes (/write-tests, 2026-10-18)
+- **Unit** (`tests/unit/app/records/`): `rules`, `records.dto`, `records.response.dto`, `records.service`, `record-queries.service`, `records.policies` (incl. router composition and `assertRoutesAuthorized`), `record-links.service`, `records.repo` (SQL shape), `records.controller`, `records.rate-limits`, `records.logging` (redaction, no-store prefix); `tests/unit/app/consultations/consultation-has-record.test.ts` (view, DTO, list/get/calendar batch wiring); extra follow-up ordering/replay tests in `consultations.service.test.ts`; `tests/unit/contract/records-contract.test.ts`. Fixtures: `tests/unit/app/records/records.fixtures.ts`.
+- **Integration** (real Postgres + Redis; Identity/video faked only through the shared harness): `records` (creation gate, concurrency, atomicity, no Idempotency-Key, no Identity), `records-rules` (PATCH, lock boundary, trigger-only path, GET, timeline, rate limits, audit), `records-rbac` (matrix), `records-links` (hasRecord, follow-up), `records-privacy`, `records-explain` (plans + budgets), `records-contract`, `records-schema`; grant rows added to `db-roles.test.ts`; helpers in `tests/helpers/records-fixtures.ts`.
+- **Test-only change outside records:** `migrations.test.ts` constraint-name query now excludes `contype = 'n'` (PostgreSQL 18 lists NOT NULL constraints in `pg_constraint`); the expected lists are unchanged, so the assertion is not weakened and the PG 18 failure is gone.
+- **Findings (no src change made):**
+  - Contract text vs implemented check order: `createMedicalRecord`/`updateMedicalRecord` descriptions read "body -> 400" before "consultation/record missing or unrelated -> 404", but the resolver (spec 3.6 steps 2 and 4) answers `404` before the body is validated. Tests assert the spec 3.6 order; owner to align the contract sentence (or the order).
+  - Spec 2.5 says deleting a referenced record raises `23503`; with `ON DELETE RESTRICT` PostgreSQL raises `23001` (restrict_violation). Tests accept either and assert the constraint name `fk_consultations_follow_up_of_record_id`. Spec wording to refresh at `/update-docs`.
+- **Environment:** run against an isolated native PostgreSQL 18 cluster (:5499, trust auth) and Redis db 14. `db-roles.test.ts` password-rejection cases fail on a trust-auth server and `storage-adapter.test.ts` needs MinIO: both pre-existing and unrelated to records.

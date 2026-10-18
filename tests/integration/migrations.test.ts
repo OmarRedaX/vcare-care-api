@@ -369,10 +369,11 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
 
     it("should round-trip the consultations and outbox migrations with named constraints, indexes and grants", async () => {
         await truncateAll();
+        // contype 'n' (NOT NULL) rows appear in pg_constraint from PostgreSQL 18; the expected lists name the CHECK/PK/FK/UNIQUE/EXCLUDE constraints only.
         const names = async (table: string, kind: "indexes" | "constraints"): Promise<string[]> => {
             const result = kind === "indexes"
                 ? await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT indexname AS name FROM pg_indexes WHERE schemaname = 'public' AND tablename = ? ORDER BY indexname", [table])
-                : await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT conname AS name FROM pg_constraint WHERE conrelid = to_regclass(?) ORDER BY conname", [`public.${table}`]);
+                : await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT conname AS name FROM pg_constraint WHERE conrelid = to_regclass(?) AND contype <> 'n' ORDER BY conname", [`public.${table}`]);
             return result.rows.map((row) => row.name);
         };
         const expectedConsultationIndexes = [

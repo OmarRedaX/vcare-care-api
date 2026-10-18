@@ -103,6 +103,45 @@ describe("ConsultationsService.book", () => {
         expect(records.isFollowUpTarget).not.toHaveBeenCalled();
     });
 
+    it("should look up the follow-up target after the doctor, the bookable flag and the type, and before the time checks and the insert", async () => {
+        const order: string[] = [];
+        const { service, doctors, schedules, records, mocks } = setup();
+        doctors.lockBookingTarget.mockImplementation(() => { order.push("profile"); return Promise.resolve({ profileId: 9, userId: 202, timezone: "UTC", isBookable: true }); });
+        schedules.findBookableType.mockImplementation(() => { order.push("type"); return Promise.resolve(type()); });
+        records.isFollowUpTarget.mockImplementation(() => { order.push("followUp"); return Promise.resolve(true); });
+        schedules.resolveOpenDays.mockImplementation(() => { order.push("grid"); return Promise.resolve(WORKDAY); });
+        mocks.insert.mockImplementation(() => { order.push("insert"); return Promise.resolve(consultation()); });
+        await service.book(patient, bookInput({ followUpOfRecordId: 5 }), "k", "h");
+        expect(order).toEqual(["profile", "type", "followUp", "grid", "insert"]);
+    });
+
+    it("should not look up the follow-up target when the doctor is unknown, not bookable or the type is unknown", async () => {
+        const { service, doctors, schedules, records } = setup();
+        doctors.lockBookingTarget.mockResolvedValueOnce(undefined);
+        await expect(service.book(patient, bookInput({ followUpOfRecordId: 5 }), "k", "h")).rejects.toMatchObject({ code: "NotFound" });
+        doctors.lockBookingTarget.mockResolvedValueOnce({ profileId: 9, userId: 202, timezone: "UTC", isBookable: false });
+        await expect(service.book(patient, bookInput({ followUpOfRecordId: 5 }), "k", "h")).rejects.toMatchObject({ code: "DoctorNotBookable" });
+        schedules.findBookableType.mockResolvedValueOnce(undefined);
+        await expect(service.book(patient, bookInput({ followUpOfRecordId: 5 }), "k", "h")).rejects.toMatchObject({ code: "NotFound" });
+        expect(records.isFollowUpTarget).not.toHaveBeenCalled();
+    });
+
+    it("should answer NotFound for a rejected follow-up target before BookingInPast, and BookingInPast once the target is accepted", async () => {
+        const { service, records } = setup();
+        records.isFollowUpTarget.mockResolvedValue(false);
+        await expect(service.book(patient, bookInput({ followUpOfRecordId: 5, startsAtMs: NOW - DAY }), "k", "h")).rejects.toMatchObject({ code: "NotFound", status: 404 });
+        records.isFollowUpTarget.mockResolvedValue(true);
+        await expect(service.book(patient, bookInput({ followUpOfRecordId: 5, startsAtMs: NOW - DAY }), "k", "h")).rejects.toMatchObject({ code: "BookingInPast", status: 422 });
+    });
+
+    it("should not look up the follow-up target on an idempotent replay of a follow-up booking", async () => {
+        const { service, mocks, records } = setup();
+        mocks.findByKey.mockResolvedValue(consultation({ requestHash: "h1", followUpOfRecordId: 5 }));
+        const result = await service.book(patient, bookInput({ followUpOfRecordId: 5 }), "key", "h1");
+        expect(result.followUpOfRecordId).toBe(5);
+        expect(records.isFollowUpTarget).not.toHaveBeenCalled();
+    });
+
     it("should replay the stored consultation without any later check, write or listener call when the key and body match", async () => {
         const { service, mocks, doctors, enqueue, record, listener } = setup();
         mocks.findByKey.mockResolvedValue(consultation({ requestHash: "h1" }));

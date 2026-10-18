@@ -2411,9 +2411,9 @@ paths:
         (`403 NotAssignedDoctor`), one record per consultation (`409 Conflict`). `locked_at = created_at + 24 h`.
         Record insert and audit row are one transaction. No `Idempotency-Key`: a retried create after a lost response is
         `409 Conflict` (the record id is in the patient timeline).
-        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; body → `400 ValidationFailed`;
-        then in one transaction: consultation missing, or the doctor is neither assigned nor has a relationship with its
-        patient → `404 NotFound`; a related doctor who is not the assigned doctor → `403 NotAssignedDoctor`; status not
+        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; consultation missing, or the
+        doctor is neither assigned nor has a relationship with its patient → `404 NotFound`; body → `400 ValidationFailed`;
+        then in one transaction: a related doctor who is not the assigned doctor → `403 NotAssignedDoctor`; status not
         `completed` → `409 RecordRequiresCompleted`; a live record exists → `409 Conflict`.
         Rate limit 20 record writes/min per user (shared with `PATCH /api/records/{id}`).
       security:
@@ -2497,9 +2497,9 @@ paths:
         At least one record field is required (a `reason`-only or empty body is `400`); a field cannot be cleared to null.
         The lock is decided in the write transaction with database time; if the database trigger still refuses an
         in-place update, the response is `409 RecordLocked`.
-        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; body → `400 ValidationFailed`;
-        record missing, or the doctor is neither its author nor has a relationship with its patient → `404 NotFound`;
-        a related doctor who is not the author → `403 NotAssignedDoctor`.
+        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; record missing, or the doctor is
+        neither its author nor has a relationship with its patient → `404 NotFound`; body → `400 ValidationFailed`;
+        then in the write transaction: a related doctor who is not the author → `403 NotAssignedDoctor`.
         Rate limit 20 record writes/min per user (shared with `POST /api/consultations/{id}/record`).
       security:
         - bearerUser: []
