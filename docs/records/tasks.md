@@ -33,7 +33,7 @@ Source: [spec.md](./spec.md) (v0.1.0, ready). Branch `feature/records`. Contract
 - [x] (routes) `records/rate-limits.ts`, `records/routes.ts`
 - [x] (mount) `src/routes.ts` — after the consultations router
 - [x] (tests) ← /write-tests (unit + integration + RBAC + contract + concurrency + lock + privacy + EXPLAIN + schema; see "Test notes")
-- [ ] (manual-qa) ← /manual-qa
+- [x] (manual-qa) ← /manual-qa (`scripts/curl-test-records.sh`): 328 pass / 0 fail, 2026-10-18, see `docs/records/manual-qa.md`
 - [ ] (docs) ← /update-docs (service-card, INDEX, architecture shards listed in spec section 11)
 
 ## As-built notes (deviations from the spec, found while implementing)
