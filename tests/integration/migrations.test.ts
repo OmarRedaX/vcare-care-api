@@ -24,6 +24,8 @@ import * as reminderIndexMigration from "../../src/migrations/20261012120100_con
 import * as medicalRecordsMigration from "../../src/migrations/20261017120000_create_medical_records";
 import * as medicalRecordAmendmentsMigration from "../../src/migrations/20261017120100_create_medical_record_amendments";
 import * as followUpFkMigration from "../../src/migrations/20261017120200_add_consultations_follow_up_fk";
+import * as recordAttachmentsMigration from "../../src/migrations/20261018120000_create_record_attachments";
+import * as uploadIntentsCommentMigration from "../../src/migrations/20261018120100_comment_upload_intents_description";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -298,6 +300,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             // The schedules tables reference doctor_profiles (ON DELETE RESTRICT): they go first and come back last;
             // consultations reference consultation_types and the outbox references consultations, so those go before them.
             // The records tables reference consultations (and consultations reference medical_records back): they go first.
+            await uploadIntentsCommentMigration.down(migrator);
+            await recordAttachmentsMigration.down(migrator);
             await followUpFkMigration.down(migrator);
             await medicalRecordAmendmentsMigration.down(migrator);
             await medicalRecordsMigration.down(migrator);
@@ -339,6 +343,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await medicalRecordsMigration.up(migrator);
             await medicalRecordAmendmentsMigration.up(migrator);
             await followUpFkMigration.up(migrator);
+            await recordAttachmentsMigration.up(migrator);
+            await uploadIntentsCommentMigration.up(migrator);
         }
         const result = await migrator.raw<{ rows: Array<{ name: string }> }>(
             "SELECT indexname AS name FROM pg_indexes WHERE tablename = 'doctor_profiles' AND indexname = 'uq_doctor_profiles_user_id'",
@@ -398,6 +404,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
         expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);
 
+        await uploadIntentsCommentMigration.down(migrator);
+        await recordAttachmentsMigration.down(migrator);
         await followUpFkMigration.down(migrator);
         await medicalRecordAmendmentsMigration.down(migrator);
         await medicalRecordsMigration.down(migrator);
@@ -421,6 +429,8 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
         await medicalRecordsMigration.up(migrator);
         await medicalRecordAmendmentsMigration.up(migrator);
         await followUpFkMigration.up(migrator);
+        await recordAttachmentsMigration.up(migrator);
+        await uploadIntentsCommentMigration.up(migrator);
         expect(await names("consultations", "indexes")).toEqual(expectedConsultationIndexes);
         expect(await names("notification_outbox", "constraints")).toEqual(expectedOutboxConstraints);
         expect(await names("notification_outbox", "indexes")).toEqual(expectedOutboxIndexes);
@@ -566,6 +576,142 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
                 .rejects.toMatchObject({ code: "23514", constraint: "chk_consultations_time_order" });
             await expect(ownerDb("consultations").insert({ ...row(501, "2030-01-01T09:00:00Z", "2030-01-01T09:30:00Z", "cancelled"), cancelled_at: null, cancelled_by: null }))
                 .rejects.toMatchObject({ code: "23514", constraint: "chk_consultations_cancel_shape" });
+        });
+    });
+
+    describe("record_attachments (20261018120000) and the upload_intents comment (20261018120100)", () => {
+        let nextKey = 0;
+        let typeId = 0;
+        let nextSlot = 0;
+        const names = async (kind: "indexes" | "constraints"): Promise<string[]> => {
+            const result = kind === "indexes"
+                ? await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT indexname AS name FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'record_attachments' ORDER BY indexname")
+                : await migrator.raw<{ rows: Array<{ name: string }> }>("SELECT conname AS name FROM pg_constraint WHERE conrelid = to_regclass('public.record_attachments') AND contype <> 'n' ORDER BY conname");
+            return result.rows.map((row) => row.name);
+        };
+        const consultation = async (conn: Knex): Promise<number> => {
+            nextSlot += 1;
+            const start = new Date(Date.UTC(2030, 0, 1, 0, 0, 0) + nextSlot * 3_600_000);
+            const [created] = await conn("consultations").insert({
+                doctor_user_id: 501, patient_user_id: 901, consultation_type_id: typeId, starts_at: start, ends_at: new Date(start.getTime() + 1_800_000), status: "completed",
+                completed_at: new Date(start.getTime() + 1_500_000), complaint_text: "TEST-COMPLAINT", patient_timezone: "UTC", price: 100, currency: "EGP",
+                idempotency_key: `00000000-0000-4000-8000-${String(++nextKey).padStart(12, "0")}`, request_hash: "a".repeat(64),
+            }).returning("id");
+            return created.id;
+        };
+        /** A record whose locked_at is `NOW() + lockOffset` of the surrounding transaction (created_at = locked_at - 24 h, as chk_medical_records_lock requires). */
+        const recordLockingAt = async (conn: Knex, lockOffset: string): Promise<number> => {
+            const consultationId = await consultation(conn);
+            const result = await conn.raw<{ rows: Array<{ id: number }> }>(
+                `INSERT INTO medical_records (consultation_id, patient_user_id, doctor_user_id, chief_complaint, created_at, updated_at, locked_at)
+                 VALUES (?, 901, 501, 'TEST-CHIEF', NOW() + ?::interval - interval '24 hours', NOW() + ?::interval - interval '24 hours', NOW() + ?::interval) RETURNING id`,
+                [consultationId, lockOffset, lockOffset, lockOffset]);
+            return result.rows[0]?.id ?? 0;
+        };
+        const attachment = (recordId: number, changes: Record<string, unknown> = {}): Record<string, unknown> => ({
+            medical_record_id: recordId, uploaded_by_user_id: 501, object_key: `record-attachments/test-${++nextKey}`, file_type: "application/pdf", size_bytes: 1024, ...changes,
+        });
+
+        beforeEach(async () => {
+            await truncateAll();
+            const [profile] = await ownerDb("doctor_profiles").insert({
+                user_id: 501, headline: "TEST-HEADLINE", years_experience: 1, consultation_fee: 100, currency: "EGP", default_slot_minutes: 30, timezone: "UTC",
+                is_accepting_patients: true, verification_status: "approved", identity_sync_status: "synced", decided_at: new Date(),
+            }).returning("id");
+            const [type] = await ownerDb("consultation_types").insert({ doctor_profile_id: profile.id, name: "TEST", duration_minutes: 30, price: 100, currency: "EGP", is_active: true }).returning("id");
+            typeId = type.id;
+        });
+        afterAll(async () => { await truncateAll(); });
+
+        it("should create the table with its named constraints, the partial FK index and the trigger", async () => {
+            expect(await names("constraints")).toEqual([
+                "chk_record_attachments_description", "chk_record_attachments_file_type", "chk_record_attachments_size",
+                "fk_record_attachments_medical_record_id", "record_attachments_pkey", "uq_record_attachments_object_key",
+            ]);
+            expect(await names("indexes")).toEqual(["idx_record_attachments_medical_record_id", "record_attachments_pkey", "uq_record_attachments_object_key"]);
+            const index = await migrator.raw<{ rows: Array<{ indexdef: string }> }>("SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_record_attachments_medical_record_id'");
+            expect(index.rows[0]?.indexdef).toContain("(medical_record_id, id) WHERE (deleted_at IS NULL)");
+            const trigger = await migrator.raw<{ rows: Array<{ tgname: string; fn: string }> }>(
+                `SELECT t.tgname, p.proname AS fn FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+                 WHERE t.tgrelid = 'public.record_attachments'::regclass AND NOT t.tgisinternal`);
+            expect(trigger.rows).toEqual([{ tgname: "trg_record_attachments_forbid_delete_after_lock", fn: "forbid_attachment_delete_after_lock" }]);
+            const comment = await migrator.raw<{ rows: Array<{ description: string | null }> }>(
+                "SELECT col_description('public.upload_intents'::regclass, (SELECT attnum FROM pg_attribute WHERE attrelid = 'public.upload_intents'::regclass AND attname = 'description')) AS description");
+            expect(comment.rows[0]?.description).toContain("Clinical free text");
+        });
+
+        it("should reject a file type outside the allowlist, a size of 0 or 10485761, and a blank description", async () => {
+            const recordId = await recordLockingAt(ownerDb, "24 hours");
+            await expect(ownerDb("record_attachments").insert(attachment(recordId, { file_type: "image/gif" }))).rejects.toMatchObject({ code: "23514", constraint: "chk_record_attachments_file_type" });
+            await expect(ownerDb("record_attachments").insert(attachment(recordId, { size_bytes: 0 }))).rejects.toMatchObject({ code: "23514", constraint: "chk_record_attachments_size" });
+            await expect(ownerDb("record_attachments").insert(attachment(recordId, { size_bytes: 10_485_761 }))).rejects.toMatchObject({ code: "23514", constraint: "chk_record_attachments_size" });
+            await expect(ownerDb("record_attachments").insert(attachment(recordId, { description: "   " }))).rejects.toMatchObject({ code: "23514", constraint: "chk_record_attachments_description" });
+            await expect(ownerDb("record_attachments").insert(attachment(recordId, { size_bytes: 10_485_760, file_type: "image/png", description: "SYNTHETIC-ATTACH-DESC-0001" }))).resolves.toBeDefined();
+        });
+
+        it("should reject a duplicate object key with 23505, a dangling record with 23503 and a delete of a referenced record with 23001", async () => {
+            const recordId = await recordLockingAt(ownerDb, "24 hours");
+            await ownerDb("record_attachments").insert(attachment(recordId, { object_key: "record-attachments/dup" }));
+            await expect(ownerDb("record_attachments").insert(attachment(recordId, { object_key: "record-attachments/dup" }))).rejects.toMatchObject({ code: "23505", constraint: "uq_record_attachments_object_key" });
+            await expect(ownerDb("record_attachments").insert(attachment(999_999))).rejects.toMatchObject({ code: "23503", constraint: "fk_record_attachments_medical_record_id" });
+            await expect(ownerDb("medical_records").where({ id: recordId }).delete()).rejects.toMatchObject({ code: "23001", constraint: "fk_record_attachments_medical_record_id" });
+        });
+
+        it("should allow a soft delete exactly one microsecond before the lock and refuse it at the lock instant, in one transaction", async () => {
+            await ownerDb.transaction(async (trx) => {
+                const open = await recordLockingAt(trx, "1 microsecond");
+                const [row] = await trx("record_attachments").insert(attachment(open)).returning("id");
+                await expect(trx.raw("UPDATE record_attachments SET deleted_at = NOW() WHERE id = ?", [row.id])).resolves.toBeDefined();
+                const locked = await recordLockingAt(trx, "0 seconds");
+                const [other] = await trx("record_attachments").insert(attachment(locked)).returning("id");
+                await trx.raw("SAVEPOINT at_lock");
+                await expect(trx.raw("UPDATE record_attachments SET deleted_at = NOW() WHERE id = ?", [other.id]))
+                    .rejects.toMatchObject({ code: "23514", constraint: "trg_record_attachments_forbid_delete_after_lock" });
+                await trx.raw("ROLLBACK TO SAVEPOINT at_lock");
+                // An already-deleted row is not re-checked: only the NULL -> NOT NULL transition fires the refusal.
+                await trx.raw("UPDATE record_attachments SET deleted_at = NOW() WHERE id = ?", [row.id]);
+            });
+        });
+
+        it("should not block an owner-role update of another column after the lock (the guarantee for those columns is the grant)", async () => {
+            const recordId = await recordLockingAt(ownerDb, "-48 hours");
+            const [row] = await ownerDb("record_attachments").insert(attachment(recordId)).returning("id");
+            await expect(ownerDb("record_attachments").where({ id: row.id }).update({ description: "SYNTHETIC-ATTACH-DESC-0002" })).resolves.toBe(1);
+        });
+
+        it("should grant care_app select, a six-column insert, a deleted_at-only update, the sequence, and neither delete nor truncate", async () => {
+            const table = (privilege: string): string => `has_table_privilege('vcare_app', 'record_attachments', '${privilege}')`;
+            const column = (name: string, privilege: string): string => `has_column_privilege('vcare_app', 'record_attachments', '${name}', '${privilege}')`;
+            const columns = ["id", "medical_record_id", "uploaded_by_user_id", "object_key", "file_type", "size_bytes", "description", "created_at", "deleted_at"];
+            const result = await migrator.raw<{ rows: Array<Record<string, boolean>> }>(
+                `SELECT ${table("SELECT")} AS can_select, ${table("DELETE")} AS can_delete, ${table("TRUNCATE")} AS can_truncate,
+                        has_sequence_privilege('vcare_app', 'record_attachments_id_seq', 'USAGE') AS can_use_sequence,
+                        ${columns.map((name) => `${column(name, "INSERT")} AS ins_${name}, ${column(name, "UPDATE")} AS upd_${name}`).join(", ")}`);
+            const row = result.rows[0] ?? {};
+            expect(row).toMatchObject({ can_select: true, can_delete: false, can_truncate: false, can_use_sequence: true });
+            const insertable = ["medical_record_id", "uploaded_by_user_id", "object_key", "file_type", "size_bytes", "description"];
+            for (const name of columns) {
+                expect([name, row[`ins_${name}`]]).toEqual([name, insertable.includes(name)]);
+                expect([name, row[`upd_${name}`]]).toEqual([name, name === "deleted_at"]);
+            }
+        });
+
+        it("should step both migrations down and up, dropping the table, the trigger and the function and restoring them", async () => {
+            const present = async (): Promise<{ table: string | null; fn: string | null }> => {
+                const result = await migrator.raw<{ rows: Array<{ tbl: string | null; fn: string | null }> }>(
+                    "SELECT to_regclass('public.record_attachments')::text AS tbl, to_regprocedure('public.forbid_attachment_delete_after_lock()')::text AS fn");
+                return { table: result.rows[0]?.tbl ?? null, fn: result.rows[0]?.fn ?? null };
+            };
+            try {
+                await uploadIntentsCommentMigration.down(migrator);
+                await recordAttachmentsMigration.down(migrator);
+                expect(await present()).toEqual({ table: null, fn: null });
+            } finally {
+                await recordAttachmentsMigration.up(migrator);
+                await uploadIntentsCommentMigration.up(migrator);
+            }
+            expect(await present()).toEqual({ table: "record_attachments", fn: "forbid_attachment_delete_after_lock()" });
+            expect(await names("constraints")).toHaveLength(6);
         });
     });
 

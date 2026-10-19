@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import type { Knex } from "knex";
 import { ConsultationStatus } from "../../../../src/app/consultations/enums";
+import type { RecordAttachmentSummary } from "../../../../src/app/record-attachments/types";
 import * as amendmentsRepo from "../../../../src/app/records/repository/medical-record-amendments.repo";
 import * as recordsRepo from "../../../../src/app/records/repository/medical-records.repo";
 import { RecordsService } from "../../../../src/app/records/service/records.service";
@@ -22,7 +23,8 @@ function setup() {
     const db = { id: "db", transaction } as unknown as Knex;
     const record = jest.fn().mockImplementation(() => { events.push("audit"); return Promise.resolve(); });
     const rows = { findParties: jest.fn().mockResolvedValue(parties()) };
-    const service = new RecordsService(db, { record } as unknown as AuditRecorder, rows as never);
+    const attachmentLinks = { listByRecordIds: jest.fn().mockImplementation(() => { events.push("attachments"); return Promise.resolve(new Map<number, RecordAttachmentSummary[]>()); }) };
+    const service = new RecordsService(db, { record } as unknown as AuditRecorder, rows as never, attachmentLinks as never);
     const mocks = {
         findLive: jest.spyOn(recordsRepo, "findLiveIdByConsultationId").mockResolvedValue(undefined),
         insert: jest.spyOn(recordsRepo, "insertRecord").mockImplementation((input) => { events.push("insert"); return Promise.resolve(recordEntity({
@@ -31,7 +33,7 @@ function setup() {
         update: jest.spyOn(recordsRepo, "updateRecordFields").mockImplementation((id, columns) => { events.push("update"); return Promise.resolve(recordEntity({ id, chiefComplaint: columns.chief_complaint ?? CHIEF })); }),
         amend: jest.spyOn(amendmentsRepo, "insertAmendment").mockImplementation(() => { events.push("amend"); return Promise.resolve(amendmentEntity({ id: 31 })); }),
     };
-    return { service, transaction, events, record, rows, mocks };
+    return { service, transaction, events, record, rows, mocks, attachmentLinks };
 }
 
 afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); });
@@ -187,7 +189,7 @@ describe("RecordsService.update", () => {
             expect(result.kind).toBe("updated");
             expect(mocks.update).toHaveBeenCalledWith(9, { treatment_plan: PLAN, follow_up_in_days: 7 }, trx);
             expect(mocks.amend).not.toHaveBeenCalled();
-            expect(events).toEqual(["begin", "update", "audit", "commit"]);
+            expect(events).toEqual(["begin", "update", "attachments", "audit", "commit"]);
             expect(record).toHaveBeenCalledWith(trx, { actor: { kind: "user", userId: 202, role: "doctor" }, action: "record.updated", entityType: "medical_record", entityId: 9,
                 metadata: { consultationId: 7, patientUserId: 101, changedFields: "treatmentPlan,followUpInDays" } });
             expect(JSON.stringify(record.mock.calls)).not.toContain(PLAN);
@@ -200,12 +202,24 @@ describe("RecordsService.update", () => {
             expect(result.kind === "unchanged" && result.record.id).toBe(9);
             expect(mocks.update).not.toHaveBeenCalled();
             expect(mocks.amend).not.toHaveBeenCalled();
-            expect(events).toEqual(["begin", "audit", "commit"]);
+            expect(events).toEqual(["begin", "attachments", "audit", "commit"]);
             expect(record).toHaveBeenCalledTimes(1);
             expect(record).toHaveBeenCalledWith(trx, { actor: { kind: "user", userId: 202, role: "doctor" }, action: "record.read", entityType: "medical_record", entityId: 9,
                 metadata: { consultationId: 7, patientUserId: 101, viewerRole: "doctor", viaNoopPatch: true } });
             const logged = JSON.stringify(record.mock.calls);
             for (const marker of CLINICAL_MARKERS) expect(logged).not.toContain(marker);
+        });
+
+        it("should return the live attachment metadata of the record on the in-place and the no-op result, read once in the transaction", async () => {
+            const { service, attachmentLinks } = setup();
+            const attachment: RecordAttachmentSummary = { id: 4, recordId: 9, fileType: "image/png", sizeBytes: 3, attachmentDescription: null, createdAt: new Date(0) };
+            attachmentLinks.listByRecordIds.mockResolvedValue(new Map([[9, [attachment]]]));
+            const updated = await service.update(doctor, 9, { changes: { treatmentPlan: PLAN } });
+            const unchanged = await service.update(doctor, 9, { changes: { chiefComplaint: CHIEF } });
+            expect([updated.kind, updated.kind === "updated" && updated.attachments]).toEqual(["updated", [attachment]]);
+            expect([unchanged.kind, unchanged.kind === "unchanged" && unchanged.attachments]).toEqual(["unchanged", [attachment]]);
+            expect(attachmentLinks.listByRecordIds).toHaveBeenCalledTimes(2);
+            expect(attachmentLinks.listByRecordIds).toHaveBeenCalledWith([9], trx);
         });
 
         it("should write only the field that differs when one value is equal and one is different", async () => {
@@ -249,6 +263,13 @@ describe("RecordsService.update", () => {
                 metadata: { consultationId: 7, patientUserId: 101, amendmentId: 31, changedFields: "diagnosisText,followUpInDays", reasonLength: [...REASON].length } });
             const logged = JSON.stringify(record.mock.calls);
             for (const marker of CLINICAL_MARKERS) expect(logged).not.toContain(marker);
+        });
+
+        it("should not read the attachments on the amendment path (its 201 carries the amendment only)", async () => {
+            const { service, mocks, attachmentLinks } = setup();
+            mocks.findForUpdate.mockResolvedValue(locked());
+            await service.update(doctor, 9, { changes: { treatmentPlan: PLAN }, reason: REASON });
+            expect(attachmentLinks.listByRecordIds).not.toHaveBeenCalled();
         });
 
         it("should count the reason length in code points", async () => {

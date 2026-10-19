@@ -19,6 +19,7 @@ export type ErrorCode =
     | "RecordRequiresCompleted"
     | "NotAssignedDoctor"
     | "RecordLocked"
+    | "AttachmentLimitReached"
     | "ApplicationNotReviewable"
     | "ApplicationNotEditable"
     | "UploadIntentExpired"
@@ -52,6 +53,7 @@ export const ERROR_CODES = [
     "RecordRequiresCompleted",
     "NotAssignedDoctor",
     "RecordLocked",
+    "AttachmentLimitReached",
     "ApplicationNotReviewable",
     "ApplicationNotEditable",
     "UploadIntentExpired",

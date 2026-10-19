@@ -1762,6 +1762,7 @@ paths:
         call, written before the response; if it fails the read fails. The row is stored with `entityType:
         patient_records` and `entityId` = the patient's Identity user id (not `medical_record`). `data.patient` is `null` when the patient has no
         profile row yet. Rate limit 60 timeline reads/min per user.
+        Each record's `attachments` lists its live attachment metadata (no URL, no object key), loaded for the whole page with one query.
       x-account-state: 'status active; a locally suspended doctor receives 404'
       x-audit: clinical-read
       x-audit-actions: [patient_records.listed]
@@ -2418,6 +2419,7 @@ paths:
         caller is not its assigned doctor → `404 NotFound`; body → `400 ValidationFailed`; then in one transaction: status
         not `completed` → `409 RecordRequiresCompleted`; a live record exists → `409 Conflict`.
         Rate limit 20 record writes/min per user (shared with `PATCH /api/records/{id}`).
+        A new record has no attachments: `attachments` is `[]` on the `201`.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2462,6 +2464,7 @@ paths:
         (`403 Forbidden`); other callers get `404 NotFound` (a non-owner, a locally suspended doctor, a non-numeric id).
         The audit row is written before the response; if it fails the read fails. The query string takes no members.
         Rate limit 120 record reads/min per user.
+        `attachments` lists the live attachment metadata (no URL, no object key), oldest first.
       security:
         - bearerUser: []
       x-roles: [patient, doctor]
@@ -2507,6 +2510,7 @@ paths:
         neither its author nor has a relationship with its patient → `404 NotFound`; body → `400 ValidationFailed`;
         then in the write transaction: a related doctor who is not the author → `403 NotAssignedDoctor`.
         Rate limit 20 record writes/min per user (shared with `POST /api/consultations/{id}/record`).
+        On the `200` (in place or no-op) `attachments` lists the live attachment metadata; the `201` carries the amendment only.
       security:
         - bearerUser: []
       x-roles: [doctor]
@@ -2558,54 +2562,154 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /api/records/{id}/attachments:
+  /api/records/{id}/attachments/uploads:
     post:
-      operationId: addRecordAttachment
+      operationId: createRecordAttachmentUploadIntent
       tags: [records]
-      summary: Attach a file to a record (authoring doctor)
+      summary: Create a presigned attachment upload intent (authoring doctor)
       description: |
-        `multipart/form-data`; MIME allowlist `application/pdf`, `image/jpeg`, `image/png` (content-sniffed), 10 MB cap,
-        random object key. Allowed before and after the lock (adding is append-only). Rate limit 20 uploads/hour per user.
+        Step 1 of 2. Returns a presigned POST policy for the private bucket (5 min, exact quarantine key, 1 B to 10 MB);
+        upload the file there directly, then call `completeRecordAttachmentUpload`. The intent lasts 15 minutes, is single
+        use and is bound to the caller and this record. Only the record's author: every other doctor gets `404 NotFound`
+        (this route never answers `403 NotAssignedDoctor`). Admins are not in `x-roles`: `403 Forbidden` at the role step.
+        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; record missing or the caller is
+        not its author, or a non-numeric id → `404 NotFound`; rate limit → `429`; body → `400 ValidationFailed`; then the
+        record already holds 20 live attachments → `409 AttachmentLimitReached`.
+        The optional body `description` is clinical free text shown with the record. Rate limit 20 attachment
+        uploads/hour per user. `Idempotency-Key` is not honoured.
       security:
         - bearerUser: []
       x-roles: [doctor]
-      x-ownership: assigned-doctor
+      x-ownership: record-author
+      x-account-state: 'status active; not locally suspended'
+      x-audit-actions: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordAttachmentIntentCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/UploadIntentCreated'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AttachmentLimitReached'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/records/{id}/attachments/uploads/{uploadId}/complete:
+    post:
+      operationId: completeRecordAttachmentUpload
+      tags: [records]
+      summary: Verify the uploaded object and add the attachment (authoring doctor)
+      description: |
+        Step 2 of 2. Re-authorizes the caller as the record's author, then verifies the stored object itself: size 1 B to
+        10 MB and the leading bytes are PDF, JPEG or PNG (the filename and any declared `Content-Type` are never read);
+        `fileType` is the detected type. An invalid object is deleted, the intent is closed and the response is
+        `400 ValidationFailed` (`details[].field = file`); no attachment row is created. Adding is allowed before and
+        after the 24 h lock (append-only; the audit row carries `afterLock`). A replay of a completed intent returns the
+        same attachment with `200` and writes no second audit row.
+        Admins are not in `x-roles`: `403 Forbidden` at the role step.
+        Check order: wrong role, inactive or locally suspended doctor → `403 Forbidden`; record missing or the caller is
+        not its author, or a non-numeric id → `404 NotFound`; rate limit → `429`; then under the per-intent lock: intent
+        absent, foreign, of another record or of another kind → `404`; replay → `200`; consumed without a result →
+        `409 Conflict`; expired → `410 UploadIntentExpired`; the record already holds 20 live attachments →
+        `409 AttachmentLimitReached`; stored object invalid → `400`. `409 Conflict` with `Retry-After: 1` when another
+        request holds the intent lock. A storage failure is `500` and the intent stays open for a retry.
+        Rate limit 20 attachment writes/min per user (shared with delete). `Idempotency-Key` is not honoured.
+      security:
+        - bearerUser: []
+      x-roles: [doctor]
+      x-ownership: record-author
       x-account-state: 'status active; not locally suspended'
       x-audit: clinical-write
       x-audit-actions: [attachment.added]
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdPath'
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/RecordAttachmentUpload'
+        - name: uploadId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
       responses:
+        '200':
+          $ref: '#/components/responses/RecordAttachmentOk'
         '201':
-          description: Attachment stored.
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/XRequestId'
-            Cache-Control:
-              $ref: '#/components/headers/CacheControlNoStore'
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, data]
-                properties:
-                  success:
-                    const: true
-                  data:
-                    $ref: '#/components/schemas/RecordAttachment'
+          $ref: '#/components/responses/RecordAttachmentOk'
         '400':
           $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/RecordWriteForbidden'
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RecordAttachmentCompleteConflict'
+        '410':
+          $ref: '#/components/responses/UploadIntentExpired'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/records/{id}/attachments/{attachmentId}/download-url:
+    post:
+      operationId: getRecordAttachmentDownloadUrl
+      tags: [records]
+      summary: Issue a 60-second private attachment download URL
+      description: |
+        The record's patient, its author, or a doctor who has consulted the patient. Admins are not in `x-roles`:
+        `403 Forbidden` at the role step; other callers get `404 NotFound` (a non-owner, a locally suspended doctor, a
+        non-numeric id, an absent, deleted or other-record attachment).
+        Check order: wrong role or inactive account → `403 Forbidden`; record not visible to the caller → `404`; rate limit
+        → `429`; then one `attachment.url_issued` audit row is committed **before** the URL is signed; if the audit fails
+        the request fails (`500`) and no URL is issued. Every issued URL writes exactly one audit row.
+        The URL is a presigned GET valid 60 seconds with an `attachment` disposition and the stored verified content
+        type. Rate limit 120 attachment reads/min per user (a signed URL is never stored for replay).
+        `Idempotency-Key` is not honoured.
+      security:
+        - bearerUser: []
+      x-roles: [patient, doctor]
+      x-ownership: consulted-patient-or-self
+      x-account-state: 'status active; a locally suspended doctor receives 404'
+      x-audit: clinical-read
+      x-audit-actions: [attachment.url_issued]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdPath'
+        - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          $ref: '#/components/responses/DownloadUrlOk'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '429':
@@ -2618,11 +2722,17 @@ paths:
       operationId: deleteRecordAttachment
       tags: [records]
       summary: Remove an attachment before the record lock (soft delete)
-      description: After `locked_at` → `409 RecordLocked`.
+      description: |
+        Soft delete (the stored object is kept). Check order: wrong role, inactive or locally suspended doctor →
+        `403 Forbidden`; record missing or the caller is not its author → `404`; then in the write transaction:
+        attachment absent, belonging to another record or already deleted → `404`; then the record is locked
+        (`locked_at <= now`, database time) → `409 RecordLocked`. Admins are not in `x-roles`: `403 Forbidden` at the
+        role step. Rate limit 20 attachment writes/min per user (shared with `completeRecordAttachmentUpload`).
+        `Idempotency-Key` is not honoured.
       security:
         - bearerUser: []
       x-roles: [doctor]
-      x-ownership: assigned-doctor
+      x-ownership: record-author
       x-account-state: 'status active; not locally suspended'
       x-audit: clinical-write
       x-audit-actions: [attachment.removed]
@@ -2639,10 +2749,12 @@ paths:
       responses:
         '204':
           $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/RecordWriteForbidden'
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -3326,7 +3438,7 @@ components:
               data:
                 $ref: '#/components/schemas/VerificationApplication'
     UploadIntentCreated:
-      description: Presigned POST upload intent; rate limited to 20/hour per doctor.
+      description: Presigned POST upload intent; rate limited to 20/hour per user.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -3451,7 +3563,7 @@ components:
               data:
                 $ref: '#/components/schemas/SessionJoin'
     MedicalRecordOk:
-      description: The medical record with its amendments.
+      description: The medical record with its amendments and attachment metadata.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -3622,6 +3734,70 @@ components:
               message: Verify your email before booking
               details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    RecordAttachmentOk:
+      description: Attachment metadata only.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success: { const: true }
+              data:
+                $ref: '#/components/schemas/RecordAttachment'
+    AttachmentLimitReached:
+      description: '`AttachmentLimitReached` — the record already holds 20 live attachments.'
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error:
+              code: AttachmentLimitReached
+              message: A record can hold at most 20 attachments
+              details: []
+              requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+    RecordAttachmentCompleteConflict:
+      description: '`AttachmentLimitReached` (the record already holds 20 live attachments), or `Conflict` (the intent was consumed without a result, the replayed attachment is no longer live, or `Retry-After: 1` while another request holds the intent lock).'
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            limitReached:
+              value:
+                success: false
+                error:
+                  code: AttachmentLimitReached
+                  message: A record can hold at most 20 attachments
+                  details: []
+                  requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
+            conflict:
+              value:
+                success: false
+                error:
+                  code: Conflict
+                  message: Conflict
+                  details: []
+                  requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordWriteForbidden:
       description: '`NotAssignedDoctor` (`PATCH /api/records/{id}` only: a doctor with a consultation relationship to the patient who is not the record''s author) or `Forbidden` (wrong role, suspended doctor). `POST /api/consultations/{id}/record` never returns `NotAssignedDoctor`: a non-assigned doctor gets `404`.'
       headers:
@@ -4064,6 +4240,7 @@ components:
         - RecordRequiresCompleted
         - NotAssignedDoctor
         - RecordLocked
+        - AttachmentLimitReached
         - ApplicationNotReviewable
         - ApplicationNotEditable
         - UploadIntentExpired
@@ -5336,7 +5513,7 @@ components:
             $ref: '#/components/schemas/MedicalRecordAmendment'
         attachments:
           type: array
-          description: Always `[]` until the `record-attachments` module ships.
+          description: Live attachments of the record, metadata only (no URL, no object key), oldest first (`id` order), `[]` when none; loaded with one batched query per page.
           items:
             $ref: '#/components/schemas/RecordAttachment'
         createdAt:
@@ -5443,7 +5620,8 @@ components:
           format: date-time
     RecordAttachment:
       type: object
-      required: [id, recordId, fileType, sizeBytes, description, createdAt, downloadUrl, downloadUrlExpiresAt]
+      description: Metadata only. Open a file with `getRecordAttachmentDownloadUrl`; no response carries a URL or an object key.
+      required: [id, recordId, fileType, sizeBytes, description, createdAt]
       properties:
         id:
           type: integer
@@ -5464,24 +5642,16 @@ components:
         createdAt:
           type: string
           format: date-time
-        downloadUrl:
-          type: [string, 'null']
-          format: uri
-          description: HMAC-signed, viewer-bound, TTL ≤ 10 minutes; issuance is an audited clinical read. Never logged.
-        downloadUrlExpiresAt:
-          type: [string, 'null']
-          format: date-time
-    RecordAttachmentUpload:
+    RecordAttachmentIntentCreate:
       type: object
-      required: [file]
+      additionalProperties: false
+      description: The body is optional (absent = `{}`). A value is set or absent (JSON `null` is rejected).
       properties:
-        file:
-          type: string
-          contentMediaType: application/octet-stream
-          description: PDF, JPEG, or PNG; at most 10 MB.
         description:
           type: string
+          minLength: 1
           maxLength: 500
+          description: 'Clinical free text: not blank, no NUL; shown with the record; never logged.'
 
     # ── help articles ──
     HelpArticleCategory:

@@ -11,7 +11,7 @@ related: [record-attachments-spec, record-attachments-brainstorm, verification-s
 
 # record-attachments — Tasks
 
-Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/record-attachments`. **Slice 1 (E0 + E1, the behaviour-preserving extraction of `upload-intents` out of `verification`) is worked first and lands before any attachment migration, route or contract edit** (spec section 2, step 5). The remaining tasks stay open until slice 2.
+Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/record-attachments`. **Slice 1 (E0 + E1, the behaviour-preserving extraction of `upload-intents` out of `verification`) is worked first and lands before any attachment migration, route or contract edit** (spec section 2, step 5). Slice 2 steps 0-7 are built (dispatch 2); steps 8-9 (dedicated test suites, manual QA, final docs) remain.
 
 ## Legend
 - [ ] todo · [~] in progress · [x] done
@@ -27,21 +27,21 @@ Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/re
 - [x] (test) E1: new unit and integration tests for the shared module (kind `verification_document` and `record_attachment` at the service boundary)
 - [x] (docs) E1: as-built notes (verification spec section 16, file-handling, architecture overview module map, INDEX)
 
-## Slice 2 — record-attachments proper (NOT started in this dispatch)
-- [ ] (contract) 0: contract edits C1-C6 in `contracts/openapi.yaml` + the CLAUDE.md owner edit of C5 (`AttachmentLimitReached` row and Domain-rules sentence)
-- [ ] (lib) 1: `attachmentDescription` redaction key + test row; `AttachmentLimitReached` in `lib/error/types.ts`; the no-store row
-- [ ] (migration) 2: `20261018120000_create_record_attachments` (table, constraints, partial index, `forbid_attachment_delete_after_lock` trigger, column-level grants)
-- [ ] (migration) 2: `20261018120100_comment_upload_intents_description` + migration and `db-roles` tests
-- [ ] (enums-errors-types) 3: `record-attachments` `constants.ts` / `enums.ts` / `errors.ts` / `types.ts`; `records` `RecordLockRow` and `RecordWithAmendments` / `RecordUpdateResult` additions
-- [ ] (entity) 4: `RecordAttachment` entity
-- [ ] (request-dto) 4: `RecordAttachmentIntentDto`
-- [ ] (response-dto) 4: `RecordAttachmentResponseDto` (viewer-aware, admin throws)
-- [ ] (repository) 5: `record-attachments.repo.ts`, `findLockRowForNoKeyUpdate`
-- [ ] (service) 6: `RecordLinksService.lockForNoKeyUpdate`, `RecordAttachmentLinksService`, `RecordAttachmentsService`; DI tokens and `bootstrap.ts` (links services before the records services); the `records` plug-ins (queries, update, DTO, controller) and their test updates
-- [ ] (policies) 7: `policies.ts` (`record_attachment_writer`; export `recordReaderRule` from `records/policies.ts`)
-- [ ] (controller) 7: `RecordAttachmentsController`
-- [ ] (routes) 7: `routes.ts` + `rate-limits.ts`
-- [ ] (mount) 7: mount after the records router in `src/routes.ts`
+## Slice 2 — record-attachments proper (steps 0-7 worked in dispatch 2; steps 8-9 remain)
+- [x] (contract) 0: contract edits C1-C6 in `contracts/openapi.yaml` + the CLAUDE.md owner edit of C5 (`AttachmentLimitReached` row and Domain-rules sentence)
+- [x] (lib) 1: `attachmentDescription` redaction key + test row; `AttachmentLimitReached` in `lib/error/types.ts`; the no-store row (`tests/integration/no-store.test.ts`; `/api/records` already in `NO_STORE_PREFIXES`)
+- [x] (migration) 2: `20261018120000_create_record_attachments` (table, constraints, partial index, `forbid_attachment_delete_after_lock` trigger, column-level grants)
+- [x] (migration) 2: `20261018120100_comment_upload_intents_description` + migration and `db-roles` tests
+- [x] (enums-errors-types) 3: `record-attachments` `constants.ts` / `enums.ts` / `errors.ts` / `types.ts`; `records` `RecordLockRow` and `RecordWithAmendments` / `RecordUpdateResult` additions
+- [x] (entity) 4: `RecordAttachment` entity
+- [x] (request-dto) 4: `RecordAttachmentIntentDto`
+- [x] (response-dto) 4: `RecordAttachmentResponseDto` (viewer-aware, admin throws)
+- [x] (repository) 5: `record-attachments.repo.ts`, `findLockRowForNoKeyUpdate`
+- [x] (service) 6: `RecordLinksService.lockForNoKeyUpdate`, `RecordAttachmentLinksService`, `RecordAttachmentsService`; DI tokens and `bootstrap.ts` (links services before the records services); the `records` plug-ins (queries, update, DTO, controller) and their test updates
+- [x] (policies) 7: `policies.ts` (`record_attachment_writer`; export `recordReaderRule` from `records/policies.ts`)
+- [x] (controller) 7: `RecordAttachmentsController`
+- [x] (routes) 7: `routes.ts` + `rate-limits.ts`
+- [x] (mount) 7: mount after the records router in `src/routes.ts`
 - [ ] (tests) 8: unit, integration, RBAC, contract, concurrency, lock boundary, privacy, EXPLAIN, migrations (spec section 10) ← /write-tests
 - [ ] (manual-qa) 9: `scripts/curl-test-record-attachments.sh`, re-run `scripts/curl-test-verification.sh` ← /manual-qa
 - [ ] (docs) 9: service card, INDEX, architecture shards, runbook, records/verification spec pointers, as-built notes (spec section 14) ← /update-docs
@@ -59,3 +59,16 @@ Environment: isolated native PostgreSQL 18 on `127.0.0.1:5499` (trust auth, data
 | `scripts/curl-test-verification.sh` | not run (needs MinIO, a real Identity database and an internal-users shim; none available here) | not run: **must be run where that stack exists before slice 2 merges** |
 
 Review gate (spec section 2, step 3): `git diff -U0 tests/` shows no removed or changed `expect(...)` line in the repointed files; the only new assertions are additive tests.
+
+## Verification record (slice 2, steps 0-7)
+Same isolated environment as slice 1. Pre-existing environment failures unchanged: 4 password-rejection cases of `db-roles.test.ts` and the 3 MinIO tests of `storage-adapter.test.ts`.
+
+| Gate | Before (389de6f) | After steps 0-7 |
+|---|---|---|
+| `npm run typecheck` | clean | clean |
+| `npx eslint src tests` | clean | clean |
+| `npm test` (unit) | 158 suites, 3057 tests | 158 suites, 3069 tests |
+| `npm run test:integration` | 47 of 49 suites passed; 1554 passed, 7 failed, 2 skipped | 46 of 49 passed in the full run (the 2 environment suites plus `sessions.test.ts`, whose 2 failures were a TRUNCATE/pool timeout in one full run and passed solo: 60/60); 1562 passed, 9 failed (7 environment + the 2 flaky), 2 skipped |
+| contract file | n/a | parses, every `$ref` resolves, no duplicate `operationId` |
+
+Existing integration tests edited because the schema or the record views changed (no assertion weakened): `migrations.test.ts` and `records-schema.test.ts` step the two new migrations down before `medical_records` and up after it; `records-explain.test.ts` statement order gains `attachments`.

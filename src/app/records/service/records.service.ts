@@ -7,6 +7,7 @@ import { checkViolationConstraint, uniqueViolationConstraint } from "../../../li
 import type { AuthContext } from "../../../lib/types/types";
 import { ConsultationStatus } from "../../consultations/enums";
 import { ConsultationRowsService } from "../../consultations/service/consultation-rows.service";
+import type { RecordAttachmentLinksService } from "../../record-attachments/service/record-attachment-links.service";
 import { MEDICAL_RECORD_ENTITY_TYPE, TRG_MEDICAL_RECORDS_FORBID_UPDATE_AFTER_LOCK, UQ_MEDICAL_RECORDS_CONSULTATION_ID } from "../constants";
 import type { MedicalRecord } from "../entity/medical-record.entity";
 import { RecordAuditAction } from "../enums";
@@ -28,6 +29,7 @@ export class RecordsService {
         @inject(TOKENS.Db) private readonly db: Knex,
         @inject(TOKENS.AuditRecorder) private readonly audit: AuditRecorder,
         @inject(TOKENS.ConsultationRowsService) private readonly rows: ConsultationRowsService,
+        @inject(TOKENS.RecordAttachmentLinksService) private readonly attachmentLinks: RecordAttachmentLinksService,
     ) {}
 
     /**
@@ -71,16 +73,19 @@ export class RecordsService {
                 if (!record.isLocked) {
                     const diff = diffRecord(record, input.changes);
                     if (diff.fields.length === 0) {
+                        // The 200 body lists the live attachment metadata (SD5); read before the audit row, like every other statement of the response.
+                        const attachments = (await this.attachmentLinks.listByRecordIds([record.id], trx)).get(record.id) ?? [];
                         // The 200 body discloses the clinical text, so the no-op is audited as a read (owner decision M3); nothing else is written.
                         await this.audit.record(trx, { actor: actorFromAuth(actor), action: RecordAuditAction.Read, entityType: MEDICAL_RECORD_ENTITY_TYPE,
                             entityId: record.id, metadata: { consultationId: record.consultationId, patientUserId: record.patientUserId,
                                 viewerRole: actor.role, viaNoopPatch: true } });
-                        return { kind: "unchanged", record };
+                        return { kind: "unchanged", record, attachments };
                     }
                     const updated = await updateRecordFields(record.id, diff.columns, trx);
+                    const attachments = (await this.attachmentLinks.listByRecordIds([record.id], trx)).get(record.id) ?? [];
                     await this.audit.record(trx, { actor: actorFromAuth(actor), action: RecordAuditAction.Updated, entityType: MEDICAL_RECORD_ENTITY_TYPE,
                         entityId: record.id, metadata: { consultationId: record.consultationId, patientUserId: record.patientUserId, changedFields: diff.fields.join(",") } });
-                    return { kind: "updated", record: updated };
+                    return { kind: "updated", record: updated, attachments };
                 }
                 if (input.reason === undefined) throw ReasonRequiredAfterLock;
                 const amendment = await insertAmendment({ recordId: record.id, authorUserId: actor.userId, changes: input.changes, reason: input.reason }, trx);

@@ -217,6 +217,59 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
             ...Object.fromEntries(columns.map((_column, index) => [`c${index}`, true])), seq: true });
     });
 
+    it("should give vcare_app on record_attachments SELECT, a six-column INSERT and an UPDATE of deleted_at only, never DELETE, TRUNCATE or table-level UPDATE", async () => {
+        const table = (privilege: string): string => `has_table_privilege('vcare_app', 'record_attachments', '${privilege}')`;
+        const column = (name: string, privilege: string): string => `has_column_privilege('vcare_app', 'record_attachments', '${name}', '${privilege}')`;
+        const all = ["id", "medical_record_id", "uploaded_by_user_id", "object_key", "file_type", "size_bytes", "description", "created_at", "deleted_at"];
+        const insertable = ["medical_record_id", "uploaded_by_user_id", "object_key", "file_type", "size_bytes", "description"];
+        const result = await ownerDb.raw<{ rows: Array<Record<string, boolean>> }>(
+            `SELECT ${table("SELECT")} AS sel, ${table("INSERT")} AS ins, ${table("UPDATE")} AS upd, ${table("DELETE")} AS del, ${table("TRUNCATE")} AS trunc,
+                    ${all.map((name) => `${column(name, "INSERT")} AS i_${name}, ${column(name, "UPDATE")} AS u_${name}`).join(", ")},
+                    has_sequence_privilege('vcare_app', 'record_attachments_id_seq', 'USAGE') AS seq`,
+        );
+        expect(result.rows[0]).toEqual({
+            sel: true, ins: false, upd: false, del: false, trunc: false, seq: true,
+            ...Object.fromEntries(all.flatMap((name) => [[`i_${name}`, insertable.includes(name)], [`u_${name}`, name === "deleted_at"]])),
+        });
+    });
+
+    it("should let the care_app login insert and soft-delete an attachment, refuse the removal after the lock with the trigger's constraint name, and refuse DELETE and other UPDATEs", async () => {
+        const [profile] = await ownerDb("doctor_profiles").insert({
+            user_id: 601, headline: "TEST-HEADLINE", years_experience: 1, consultation_fee: 100, currency: "EGP", default_slot_minutes: 30, timezone: "UTC",
+            is_accepting_patients: true, verification_status: "approved", identity_sync_status: "synced", decided_at: new Date(),
+        }).returning("id");
+        const [type] = await ownerDb("consultation_types").insert({ doctor_profile_id: profile.id, name: "TEST", duration_minutes: 30, price: 100, currency: "EGP", is_active: true }).returning("id");
+        const recordFor = async (slot: number, lockedInPast: boolean): Promise<number> => {
+            const start = new Date(Date.UTC(2030, 0, 1) + slot * 3_600_000);
+            const [consultation] = await ownerDb("consultations").insert({
+                doctor_user_id: 601, patient_user_id: 701, consultation_type_id: type.id, starts_at: start, ends_at: new Date(start.getTime() + 1_800_000), status: "completed",
+                completed_at: new Date(start.getTime() + 1_500_000), complaint_text: "TEST-COMPLAINT", patient_timezone: "UTC", price: 100, currency: "EGP",
+                idempotency_key: `00000000-0000-4000-8000-${String(slot).padStart(12, "0")}`, request_hash: "a".repeat(64),
+            }).returning("id");
+            const offset = lockedInPast ? "-1 hour" : "1 hour";
+            const result = await ownerDb.raw<{ rows: Array<{ id: number }> }>(
+                `INSERT INTO medical_records (consultation_id, patient_user_id, doctor_user_id, chief_complaint, created_at, updated_at, locked_at)
+                 VALUES (?, 701, 601, 'TEST-CHIEF', NOW() + ?::interval - interval '24 hours', NOW() + ?::interval - interval '24 hours', NOW() + ?::interval) RETURNING id`,
+                [consultation.id, offset, offset, offset]);
+            return result.rows[0]?.id ?? 0;
+        };
+        const open = await recordFor(1, false);
+        const locked = await recordFor(2, true);
+        const add = (recordId: number, key: string): Promise<Array<{ id: number }>> => db("record_attachments").insert({
+            medical_record_id: recordId, uploaded_by_user_id: 601, object_key: `record-attachments/${key}`, file_type: "image/png", size_bytes: 10,
+        }).returning("id");
+        const [openRow] = await add(open, "open");
+        const [lockedRow] = await add(locked, "locked");
+        await expect(db("record_attachments").where({ id: openRow?.id ?? 0 }).update({ deleted_at: db.fn.now() })).resolves.toBe(1);
+        await expect(db("record_attachments").where({ id: lockedRow?.id ?? 0 }).update({ deleted_at: db.fn.now() }))
+            .rejects.toMatchObject({ code: "23514", constraint: "trg_record_attachments_forbid_delete_after_lock" });
+        await expect(db("record_attachments").where({ id: lockedRow?.id ?? 0 }).update({ description: "x" })).rejects.toMatchObject({ code: "42501" });
+        await expect(db("record_attachments").where({ id: lockedRow?.id ?? 0 }).update({ object_key: "record-attachments/moved" })).rejects.toMatchObject({ code: "42501" });
+        await expect(db("record_attachments").where({ id: lockedRow?.id ?? 0 }).delete()).rejects.toMatchObject({ code: "42501" });
+        await expect(db.raw("TRUNCATE record_attachments")).rejects.toMatchObject({ code: "42501" });
+        await truncateAll();
+    });
+
     it("should reject care_app inserts that set created_at or id while AuditRecorder.record still inserts (L2)", async () => {
         const columns = "actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata";
         await expect(

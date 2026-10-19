@@ -238,6 +238,7 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 | `RecordRequiresCompleted` | 409 | record on a non-`completed` consultation |
 | `NotAssignedDoctor` | 403 | `PATCH /records/:id` by a doctor who has a consultation relationship with the patient but is not the record's author (creating a record on a consultation that is not yours is `404`) |
 | `RecordLocked` | 409 | an in-place record edit refused because the record is locked, or deleting an attachment after the 24 h lock |
+| `AttachmentLimitReached` | 409 | a record already holds 20 live attachments (intent creation or complete) |
 | `ApplicationNotReviewable` | 409 | approve/reject on an application not in `submitted` |
 | `ScheduleConflictsUnconfirmed` | 409 | blocking time that holds bookings without `confirmConflicts=true` |
 | `IdentityUnavailable` | 503 | a **must-succeed** Identity call is still failing (suspension reported as pending) |
@@ -398,6 +399,8 @@ Every rule here has a named unit test. "Enforced by" says where the guarantee li
 14. Only the consultation's assigned doctor can write that record.
 15. Records are **append-only after 24 h**: before `locked_at` the assigned doctor may update in place (each update audited); after `locked_at` a `PATCH /records/:id` creates a `medical_record_amendments` row and the original is untouched — never a silent overwrite. Attachments cannot be deleted after the lock (`RecordLocked`).
 16. Patients read their own records and never write clinical fields.
+
+A record holds at most 20 live attachments (`AttachmentLimitReached`); adding is allowed before and after the 24 h lock, removing only before it.
 
 **Access**
 17. Patients access only their own consultations, records, and profile.

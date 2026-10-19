@@ -151,15 +151,15 @@ describe("records query plans and budgets (integration: real Postgres)", () => {
             expect(p95(await measure(() => service.get(patient, row.id as number)))).toBeLessThan(150);
         });
 
-        it("should issue exactly the documented statements for a timeline page: page, amendments, profile, audit", async () => {
+        it("should issue exactly the documented statements for a timeline page: page, amendments, attachments, profile, audit", async () => {
             const service = container.resolve<RecordQueriesService>(TOKENS.RecordQueriesService);
             const statements: string[] = [];
             const listener = (data: { sql: string }): void => { statements.push(data.sql); };
             db.on("query", listener);
             try { await service.timeline(patient, PATIENT_USER, { cursor: undefined, limit: 20 }); } finally { db.removeListener("query", listener); }
             const relevant = statements.filter((sql) => !/^(begin|commit|rollback)/i.test(sql));
-            expect(relevant.map((sql) => /medical_record_amendments/.test(sql) ? "amendments" : /patient_profiles/.test(sql) ? "profile" : /audit_logs/.test(sql) ? "audit" : /medical_records/.test(sql) ? "page" : "other"))
-                .toEqual(["page", "amendments", "profile", "audit"]);
+            expect(relevant.map((sql) => /medical_record_amendments/.test(sql) ? "amendments" : /record_attachments/.test(sql) ? "attachments" : /patient_profiles/.test(sql) ? "profile" : /audit_logs/.test(sql) ? "audit" : /medical_records/.test(sql) ? "page" : "other"))
+                .toEqual(["page", "amendments", "attachments", "profile", "audit"]);
         });
     });
 });

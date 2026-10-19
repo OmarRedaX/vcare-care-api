@@ -7,6 +7,7 @@ import { decodeTimestampCursor } from "../../../lib/http/pagination/cursor";
 import { buildPage, resolveLimit } from "../../../lib/http/pagination/page";
 import type { AuthContext } from "../../../lib/types/types";
 import { PatientsService } from "../../patients/service/patients.service";
+import type { RecordAttachmentLinksService } from "../../record-attachments/service/record-attachment-links.service";
 import { MEDICAL_RECORD_ENTITY_TYPE, PATIENT_RECORDS_ENTITY_TYPE } from "../constants";
 import { RecordAuditAction } from "../enums";
 import { listByRecordIds } from "../repository/medical-record-amendments.repo";
@@ -24,6 +25,7 @@ export class RecordQueriesService {
         @inject(TOKENS.Db) private readonly db: Knex,
         @inject(TOKENS.AuditRecorder) private readonly audit: AuditRecorder,
         @inject(TOKENS.PatientsService) private readonly patients: PatientsService,
+        @inject(TOKENS.RecordAttachmentLinksService) private readonly attachmentLinks: RecordAttachmentLinksService,
     ) {}
 
     async get(actor: AuthContext, recordId: number): Promise<RecordWithAmendments> {
@@ -34,14 +36,16 @@ export class RecordQueriesService {
             // The doctor relationship was decided once by the resolver; a patient is held to their own record again here.
             if (actor.role === "patient" && record.patientUserId !== actor.userId) throw NotFound;
             const amendments = (await listByRecordIds([record.id], trx)).get(record.id) ?? [];
+            // Live attachment metadata only (no URL, no key); part of this read, so no extra audit row (SD9).
+            const attachments = (await this.attachmentLinks.listByRecordIds([record.id], trx)).get(record.id) ?? [];
             await this.audit.record(trx, { actor: actorFromAuth(actor), action: RecordAuditAction.Read, entityType: MEDICAL_RECORD_ENTITY_TYPE,
                 entityId: record.id, metadata: { consultationId: record.consultationId, patientUserId: record.patientUserId, viewerRole: actor.role,
                     viewerIsAuthor: record.doctorUserId === actor.userId, amendmentCount: amendments.length } });
-            return { record, amendments };
+            return { record, amendments, attachments };
         });
     }
 
-    /** Four statements in one transaction (three on an empty page); the amendments of the whole page are ONE query. */
+    /** Five statements in one transaction (three on an empty page); the amendments and the attachments of the whole page are ONE query each. */
     async timeline(actor: AuthContext, patientUserId: number, query: TimelineQuery): Promise<PatientTimelineResult> {
         if (actor.role === "admin") throw Forbidden;
         if (actor.role === "patient" && actor.userId !== patientUserId) throw NotFound;
@@ -51,7 +55,9 @@ export class RecordQueriesService {
         return this.db.transaction(async (trx) => {
             const entries = await listTimeline({ patientUserId, after, fetch: limit + 1 }, trx);
             const page = buildPage(entries, limit, (entry) => [entry.cursorTimestamp, entry.record.id]);
-            const amendments = await listByRecordIds(page.items.map((entry) => entry.record.id), trx);
+            const pageIds = page.items.map((entry) => entry.record.id);
+            const amendments = await listByRecordIds(pageIds, trx);
+            const attachments = await this.attachmentLinks.listByRecordIds(pageIds, trx);
             // Repeated on every page (R-D10); `null` when the patient has no profile row yet (booking needs none). No `patient_profile.read` row.
             const profile = await this.patients.findProfile(patientUserId, trx);
             await this.audit.record(trx, { actor: actorFromAuth(actor), action: RecordAuditAction.TimelineListed, entityType: PATIENT_RECORDS_ENTITY_TYPE,
@@ -59,7 +65,7 @@ export class RecordQueriesService {
                     firstPage: query.cursor === undefined } });
             return {
                 patient: profile ?? null,
-                items: page.items.map((entry) => ({ record: entry.record, amendments: amendments.get(entry.record.id) ?? [] })),
+                items: page.items.map((entry) => ({ record: entry.record, amendments: amendments.get(entry.record.id) ?? [], attachments: attachments.get(entry.record.id) ?? [] })),
                 meta: page.meta,
             };
         });

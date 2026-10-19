@@ -71,4 +71,8 @@ export const TOKENS = {
     RecordsService: Symbol.for("RecordsService"),
     RecordQueriesService: Symbol.for("RecordQueriesService"),
     RecordsController: Symbol.for("RecordsController"),
+    /** `record_attachments` metadata for the record views; depends only on the database, so it precedes the records services. */
+    RecordAttachmentLinksService: Symbol.for("RecordAttachmentLinksService"),
+    RecordAttachmentsService: Symbol.for("RecordAttachmentsService"),
+    RecordAttachmentsController: Symbol.for("RecordAttachmentsController"),
 } as const;

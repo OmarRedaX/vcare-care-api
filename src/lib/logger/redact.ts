@@ -21,6 +21,8 @@ export const REDACTED_KEYS: readonly string[] = [
     "dateOfBirth",
     "gender",
     "objectKey",
+    // record-attachments: clinical free text of an attachment; a bare `description` is NOT redacted (specialties.description is non-clinical).
+    "attachmentDescription",
     "downloadUrl",
     "uploadUrl",
     "joinToken",
