@@ -2,15 +2,15 @@ import type { Knex } from "knex";
 import type { Logger } from "../../../lib/logger/logger";
 import { withSessionAdvisoryLock } from "../../../lib/knex/session-advisory-lock";
 import type { TickOutcome, WorkerLoop } from "../../../lib/worker/types";
-import type { VerificationService } from "../service/verification.service";
+import type { UploadIntentsService } from "../service/upload-intents.service";
 import { INTENT_PURGE_BATCH, INTENT_PURGE_LOCK_NAMESPACE, INTENT_PURGE_LOOP_NAME, INTENT_RETENTION_MS } from "../constants";
 
 /**
- * care-worker loop `upload-intent-purge` (spec §7): singleton under an advisory lock. Expired open intents lose their
- * quarantine object (outside any DB transaction) and are then closed; a storage error leaves the intent open for the
- * next tick. Consumed intents older than seven days are deleted. Orphaned final objects rely on the bucket lifecycle.
+ * care-worker loop `upload-intent-purge` (spec §7): singleton under an advisory lock. Expired open intents of every kind
+ * lose their quarantine object (outside any DB transaction) and are then closed; a storage error leaves the intent open
+ * for the next tick. Consumed intents older than seven days are deleted. Orphaned final objects rely on the bucket lifecycle.
  */
-export function buildUploadIntentPurgeLoop(deps: { service: VerificationService; db: Knex; logger: Logger; intervalSeconds: number; now?: () => Date }): WorkerLoop {
+export function buildUploadIntentPurgeLoop(deps: { service: UploadIntentsService; db: Knex; logger: Logger; intervalSeconds: number; now?: () => Date }): WorkerLoop {
     const now = deps.now ?? (() => new Date());
     return {
         name: INTENT_PURGE_LOOP_NAME,

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-18
+last_verified: 2026-10-19
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, records-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -566,7 +566,7 @@ CREATE INDEX idx_record_attachments_medical_record_id ON record_attachments (med
 Temporary, single-use upload intents ([ADR 0013](../adr/0013-verified-direct-upload-lifecycle.md),
 [file-handling.md](./file-handling.md)). Operational, never exposed: a row is **not** a document or attachment; the
 real row is inserted only after `complete` verifies the stored object. `file_type` of the real row is the detected
-type. `care-worker` (`upload-intent-purge`, every 5 min) closes expired intents and purges rows older than 7 days. **Built** by verification (migration `20261007120000`); `complete` serializes on a session advisory lock per intent, so concurrent completes and the purge never act on one intent together.
+type. `care-worker` (`upload-intent-purge`, every 5 min) closes expired intents of every kind and purges consumed rows older than 7 days. **Built** by verification (migration `20261007120000`); owned by the `upload-intents` module since the ADR 0022 extraction; `complete` serializes on a session advisory lock per intent, so concurrent completes and the purge never act on one intent together.
 ```sql
 CREATE TABLE upload_intents (
     id              BIGSERIAL PRIMARY KEY,

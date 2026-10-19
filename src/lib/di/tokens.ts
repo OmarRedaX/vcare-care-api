@@ -26,6 +26,8 @@ export const TOKENS = {
     IdentitySyncService: Symbol.for("IdentitySyncService"),
     /** Clock and randomness of the sync engine; tests bind a fake. */
     SyncTiming: Symbol.for("SyncTiming"),
+    /** Shared upload-intent lifecycle (verification documents, record attachments); registered before its callers (ADR 0022). */
+    UploadIntentsService: Symbol.for("UploadIntentsService"),
     VerificationService: Symbol.for("VerificationService"),
     VerificationController: Symbol.for("VerificationController"),
     AuditService: Symbol.for("AuditService"),

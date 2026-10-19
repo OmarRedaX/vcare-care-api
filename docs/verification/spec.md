@@ -6,9 +6,9 @@ module: verification
 status: implemented
 version: 1.1.0
 diataxis: reference
-last_verified: 2026-10-09
+last_verified: 2026-10-19
 tags: [spec, verification, documents, identity-client, storage, worker, case-1, case-2]
-related: [verification-brainstorm, doctors-spec, file-handling, data-model, integration, resilience, adr-0004-cross-service-failure-policies, adr-0008-care-worker-component, adr-0013-verified-direct-upload-lifecycle, adr-0014-on-demand-download-urls, adr-0015-aws-sdk-storage-adapter, adr-0017-generic-helpers-and-transaction-scoping]
+related: [verification-brainstorm, doctors-spec, file-handling, data-model, integration, resilience, adr-0004-cross-service-failure-policies, adr-0008-care-worker-component, adr-0013-verified-direct-upload-lifecycle, adr-0022-upload-intents-module, adr-0014-on-demand-download-urls, adr-0015-aws-sdk-storage-adapter, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -307,6 +307,8 @@ At `/update-docs verification`, update this service's `architecture/data-model.m
 | 7 `[qa/docs]` | CURL manual QA, tasks status, as-built notes, service architecture/card changes and hub delta hand-off. | QA/docs after behavior is verified. |
 
 ## 16. As-built notes
+
+> **Extraction (2026-10-19, [ADR 0022](../adr/0022-upload-intents-module.md)).** The upload-intent lifecycle described in sections 4, 6 and 7 below (intent insert/find/close, the per-intent advisory lock 1101, the verify-and-promote `complete`, the purge primitives and the `upload-intent-purge` loop) now lives in `src/app/upload-intents/` (`UploadIntentsService`); `VerificationService` calls it with callbacks for target authorization, the editable-application precheck and the document insert + audit row. Routes, responses, audit rows, error codes, rate limits, lock namespaces (1101 / 1102 / 1103) and the loop name are unchanged. Four observable differences: the orphan-cleanup log event is `upload_orphan_cleanup_failed` with a `kind` field (was `verification_orphan_cleanup_failed`), `upload_verification_failed` carries the label `kind` besides `reason`, the purge closes expired intents of every kind, and on the rare "intent no longer open" conflict inside the short transaction the profile row is no longer read before the throw. Where the text below names `VerificationService` methods or `verification.repo` functions for the intent, read `UploadIntentsService` / `upload-intents.repo`.
 
 As built and verified 2026-10-08 on `feature/verification` (HEAD 85c9a4d): unit 1154, integration 489 green; CURL manual QA 274 pass / 0 fail ([manual-qa.md](./manual-qa.md)). Where this section differs from §1–§15, this section is the as-built behavior. `contracts/openapi.yaml` already matches the routes and was not changed by `/update-docs`.
 

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-18
+last_verified: 2026-10-19
 tags: [architecture, overview, modules, layering]
 related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
@@ -81,8 +81,9 @@ flowchart LR
 |---|---|---|---|
 | `specialties` | specialty catalog | `specialties` | — |
 | `doctors` | **Built:** own-profile onboarding, languages and specialty links, accepting toggle, local suspension check. **Planned:** search | `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built) | `SpecialtiesService` for linked specialty validation; identity-client (Case 2/3) and availability later |
-| `verification` | documents, application states, decisions | `verification_documents`, `upload_intents` (**built**, 2026-10-08; `identity_sync_jobs` is written through `identity-sync`) | identity-client (Cases 1, 2), storage (uploads, download URLs) |
+| `verification` | documents, application states, decisions | `verification_documents` (**built**, 2026-10-08; `upload_intents` is owned by `upload-intents` since 2026-10-19 and `identity_sync_jobs` by `identity-sync`) | identity-client (Cases 1, 2), `upload-intents` service, storage (download URLs) |
 | `admin-doctors` (built 2026-10-09) | admin suspend (Case 3) and reinstate (Case 4) of an approved doctor; writes `doctor_profiles.suspended_*` and the sync status they imply; consultation flag behind the `SuspensionImpactProvider` port (no-op until `consultations`) | none of its own (reuses `doctor_profiles`, `identity_sync_jobs`) | `identity-sync` service, `access` (`AuditRecorder`), `doctors` (profile mapper) |
+| `upload-intents` (built 2026-10-19, extracted from `verification`; ADR 0022) | the shared upload-intent lifecycle: intent creation, per-intent advisory lock (1101), the callback-based verify-and-promote `complete` flow, purge primitives and the `upload-intent-purge` worker loop (singleton lock 1103, every kind); no routes | `upload_intents` | storage; called by `verification` (and by `record-attachments` when it lands) and the worker |
 | `identity-sync` (built 2026-10-09, extracted from `verification`; ADR 0021) | the Identity status-sync engine: durable jobs, per-doctor advisory lock, kind policies, the `identity-sync` worker loop; no routes | `identity_sync_jobs` | identity-client (Cases 1, 3, 4); called by `verification`, `admin-doctors` and the worker |
 | `schedules` (built 2026-10-09) | working hours, exceptions, consultation types, conflict detection (behind the `ScheduleImpactProvider` port; no-op until `consultations`) | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |

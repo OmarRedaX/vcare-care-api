@@ -8,13 +8,14 @@ import { idempotency } from "../../lib/idempotency/idempotency";
 import { rateLimit } from "../../lib/rate-limit/rate-limit";
 import { byUser } from "../../lib/rate-limit/subjects";
 import { authorize } from "../../lib/rbac/authorize";
+import type { UploadIntentsService } from "../upload-intents/service/upload-intents.service";
 import type { VerificationController } from "./controller/verification.controller";
 import { buildVerificationPolicies } from "./policies";
 
 export function buildVerificationRouter(): Router {
     const router = Router();
     const ctrl = container.resolve<VerificationController>(TOKENS.VerificationController);
-    const p = buildVerificationPolicies();
+    const p = buildVerificationPolicies(container.resolve<UploadIntentsService>(TOKENS.UploadIntentsService));
     const adminLimit = () => rateLimit({ name: "verification-admin", limit: 120, windowMs: 60_000, subject: byUser });
     const readLimit = () => rateLimit({ name: "verification-doctor-read", limit: 120, windowMs: 60_000, subject: byUser });
     const writeLimit = () => rateLimit({ name: "verification-doctor-write", limit: 20, windowMs: 60_000, subject: byUser });
