@@ -13,6 +13,8 @@ const PREFIX_PATHS: ReadonlyArray<readonly [string, string]> = [
     ["/api/consultations", "/api/consultations"],
     ["/api/records", "/api/records/1"],
     ["/api/records", "/api/records/1/attachments/uploads"],
+    ["/api/records", "/api/records/1/attachments/uploads/1/complete"],
+    ["/api/records", "/api/records/1/attachments/1/download-url"],
     ["/api/admin", "/api/admin/doctors/1/suspend"],
     ["/api/audit-logs", "/api/audit-logs"],
 ];

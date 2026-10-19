@@ -1,9 +1,13 @@
 import "reflect-metadata";
 import type { Knex } from "knex";
+import {
+    countLiveByRecord, findLive, findLiveById, listByRecordIds as listAttachmentsByRecordIds, listByRecordIdsQuery as listAttachmentsQuery,
+} from "../../src/app/record-attachments/repository/record-attachments.repo";
 import { listByRecordIds, listByRecordIdsQuery } from "../../src/app/records/repository/medical-record-amendments.repo";
 import {
-    findAccessRow, findById, findByIdForNoKeyUpdate, findLiveIdByConsultationId, isFollowUpTarget, listConsultationIdsWithRecord, listTimelineQuery,
+    findAccessRow, findById, findByIdForNoKeyUpdate, findLiveIdByConsultationId, findLockRowForNoKeyUpdate, isFollowUpTarget, listConsultationIdsWithRecord, listTimelineQuery,
 } from "../../src/app/records/repository/medical-records.repo";
+import { listExpiredOpenIntents } from "../../src/app/upload-intents/repository/upload-intents.repo";
 import type { RecordQueriesService } from "../../src/app/records/service/record-queries.service";
 import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
@@ -17,6 +21,10 @@ jest.setTimeout(180_000);
 const PATIENT_USER = 105;
 const TIMELINE_INDEX = "idx_medical_records_patient_user_id_created_at_id";
 const AMENDMENTS_INDEX = "idx_medical_record_amendments_medical_record_id_id";
+const ATTACHMENTS_INDEX = "idx_record_attachments_medical_record_id";
+const INTENTS_OPEN_INDEX = "idx_upload_intents_expires_at_open";
+/** Every hundredth record carries 15 live attachments (the cap-count seed); every even record carries one; every tenth also a soft-deleted one. */
+const BUSY_RECORD = 400;
 const UNIQUE_INDEX = "uq_medical_records_consultation_id";
 const DAY_MS = 86_400_000;
 /** The seeded rows start 60 days before now and run one hour per 200 consultations. */
@@ -43,9 +51,26 @@ describe("records query plans and budgets (integration: real Postgres)", () => {
         }
         await ownerDb.raw(`INSERT INTO medical_record_amendments (medical_record_id, author_user_id, diagnosis_text, reason, created_at)
             SELECT id, doctor_user_id, 'SYNTHETIC', 'SYNTHETIC', locked_at + interval '1 hour' FROM medical_records WHERE id % 3 = 0`);
+        // Attachments (record-attachments): one live row per even record, a soft-deleted row per tenth record, 14 more live rows on every hundredth record.
+        await ownerDb.raw(`INSERT INTO record_attachments (medical_record_id, uploaded_by_user_id, object_key, file_type, size_bytes, description, created_at)
+            SELECT id, doctor_user_id, 'record-attachments/explain-live-' || id, 'application/pdf', 1000, NULL, locked_at FROM medical_records WHERE id % 2 = 0`);
+        await ownerDb.raw(`INSERT INTO record_attachments (medical_record_id, uploaded_by_user_id, object_key, file_type, size_bytes, description, created_at, deleted_at)
+            SELECT id, doctor_user_id, 'record-attachments/explain-deleted-' || id, 'image/png', 1000, NULL, locked_at, locked_at + interval '1 hour' FROM medical_records WHERE id % 10 = 0`);
+        await ownerDb.raw(`INSERT INTO record_attachments (medical_record_id, uploaded_by_user_id, object_key, file_type, size_bytes, description, created_at)
+            SELECT m.id, m.doctor_user_id, 'record-attachments/explain-busy-' || m.id || '-' || n, 'image/jpeg', 1000, NULL, m.locked_at
+            FROM medical_records m CROSS JOIN generate_series(1, 14) AS n WHERE m.id % 100 = 0`);
+        // Upload intents of both kinds: mostly consumed three days ago; i % 250 in (0, 125) is open and expired (80 rows of both kinds: the purge listing), i % 250 = 1 open and fresh.
+        await ownerDb.raw(`INSERT INTO upload_intents (kind, target_id, owner_user_id, document_type, description, quarantine_key, max_bytes, expires_at, consumed_at, result_id, created_at)
+            SELECT CASE WHEN i % 2 = 0 THEN 'record_attachment' ELSE 'verification_document' END, 1 + i % 50, 1000 + i % 200,
+                   CASE WHEN i % 2 = 0 THEN NULL ELSE 'license' END, NULL, 'quarantine/explain-' || i, 10485760,
+                   NOW() + CASE WHEN i % 250 IN (0, 125) THEN interval '-1 hour' WHEN i % 250 = 1 THEN interval '1 hour' ELSE interval '-3 days' END,
+                   CASE WHEN i % 250 IN (0, 125, 1) THEN NULL ELSE NOW() - interval '3 days' END, CASE WHEN i % 250 IN (0, 125, 1) THEN NULL ELSE i END, NOW() - interval '3 days'
+            FROM generate_series(1, 10000) AS i`);
         await ownerDb.raw("ANALYZE consultations");
         await ownerDb.raw("ANALYZE medical_records");
         await ownerDb.raw("ANALYZE medical_record_amendments");
+        await ownerDb.raw("ANALYZE record_attachments");
+        await ownerDb.raw("ANALYZE upload_intents");
     });
     afterAll(async () => {
         await truncateAll();
@@ -120,6 +145,63 @@ describe("records query plans and budgets (integration: real Postgres)", () => {
         noSeqScan(text, "medical_record_amendments");
     });
 
+    describe("record attachments (about 6 000 live rows, soft-deleted rows, 15-row records; ANALYZEd)", () => {
+        it("should plan the attachments of a whole page on the partial record index with no sequential scan", async () => {
+            const ids = (await ownerDb("medical_records").where({ patient_user_id: PATIENT_USER }).orderBy("id").limit(20).pluck("id")) as number[];
+            const text = await plan(listAttachmentsQuery(ids, db).toQuery());
+            expect(text).toContain(ATTACHMENTS_INDEX);
+            noSeqScan(text, "record_attachments");
+            const rows = await db.transaction((trx) => listAttachmentsByRecordIds(ids, trx));
+            expect([...rows.values()].flat().length).toBeGreaterThan(0);
+        });
+
+        it("should plan the cap count of one record, and the three-record read, on the partial record index", async () => {
+            const count = await planOf((trx) => countLiveByRecord(BUSY_RECORD, trx));
+            expect(count).toContain(ATTACHMENTS_INDEX);
+            noSeqScan(count, "record_attachments");
+            await expect(db.transaction((trx) => countLiveByRecord(BUSY_RECORD, trx))).resolves.toBe(15);
+            const few = await planOf((trx) => listAttachmentsByRecordIds([4, 8, BUSY_RECORD], trx));
+            expect(few).toContain(ATTACHMENTS_INDEX);
+            noSeqScan(few, "record_attachments");
+        });
+
+        it("should plan findLive on an index with both equality columns and findLiveById on the primary key, with no sequential scan", async () => {
+            const target = await ownerDb("record_attachments").where({ medical_record_id: 8 }).whereNull("deleted_at").first("id");
+            // (id, medical_record_id) are both equalities: the planner may use the primary key or the narrower partial record index; either is a one-row index access.
+            const byRecord = await planOf((trx) => findLive(target.id as number, 8, trx));
+            expect(byRecord).toMatch(/Index (Only )?Scan using (record_attachments_pkey|idx_record_attachments_medical_record_id)/);
+            noSeqScan(byRecord, "record_attachments");
+            const byId = await planOf((trx) => findLiveById(target.id as number, trx));
+            expect(byId).toMatch(/Index (Only )?Scan using record_attachments_pkey/);
+            noSeqScan(byId, "record_attachments");
+        });
+
+        it("should plan the lock read of the write path as a primary-key access on medical_records", async () => {
+            const text = await planOf((trx) => findLockRowForNoKeyUpdate(777, trx));
+            expect(text).toMatch(/Index (Only )?Scan using medical_records_pkey/);
+            noSeqScan(text, "medical_records");
+        });
+
+        it("should plan the purge listing of every kind on the open-intent index with no sequential scan", async () => {
+            const text = await planOf((trx) => listExpiredOpenIntents(500, trx));
+            expect(text).toContain(INTENTS_OPEN_INDEX);
+            noSeqScan(text, "upload_intents");
+            const listed = await db.transaction((trx) => listExpiredOpenIntents(500, trx));
+            expect(listed.length).toBe(80);
+            expect(new Set(listed.map((row) => row.kind))).toEqual(new Set(["record_attachment", "verification_document"]));
+        });
+
+        it("should return live rows only, oldest first, for a page that mixes live, deleted and busy records", async () => {
+            const rows = await db.transaction((trx) => listAttachmentsByRecordIds([10, 20, BUSY_RECORD, 7], trx));
+            expect(rows.get(7)).toBeUndefined();
+            expect(rows.get(10)?.length).toBe(1);
+            expect(rows.get(BUSY_RECORD)?.length).toBe(15);
+            const ids = rows.get(BUSY_RECORD)?.map((item) => item.id) ?? [];
+            expect(ids).toEqual([...ids].sort((a, b) => a - b));
+            expect(rows.get(10)?.every((item) => item.fileType === "application/pdf")).toBe(true);
+        });
+    });
+
     describe("budgets (the real services on the seeded tables; the timeline page carries amendments)", () => {
         const patient: AuthContext = { userId: PATIENT_USER, role: "patient", status: "active", emailVerified: true };
         const p95 = (samples: number[]): number => [...samples].sort((a, b) => a - b)[Math.ceil(samples.length * 0.95) - 1] ?? Infinity;
@@ -160,6 +242,29 @@ describe("records query plans and budgets (integration: real Postgres)", () => {
             const relevant = statements.filter((sql) => !/^(begin|commit|rollback)/i.test(sql));
             expect(relevant.map((sql) => /medical_record_amendments/.test(sql) ? "amendments" : /record_attachments/.test(sql) ? "attachments" : /patient_profiles/.test(sql) ? "profile" : /audit_logs/.test(sql) ? "audit" : /medical_records/.test(sql) ? "page" : "other"))
                 .toEqual(["page", "amendments", "attachments", "profile", "audit"]);
+        });
+
+        it("should serve a timeline page whose records carry attachments within 200 ms at p95", async () => {
+            const service = container.resolve<RecordQueriesService>(TOKENS.RecordQueriesService);
+            const page = await service.timeline(patient, PATIENT_USER, { cursor: undefined, limit: 20 });
+            expect(page.items.some((item) => item.attachments.length > 0)).toBe(true);
+            expect(p95(await measure(() => service.timeline(patient, PATIENT_USER, { cursor: undefined, limit: 20 })))).toBeLessThan(200);
+        });
+
+        it("should serve the read of one record that carries attachments within 150 ms at p95, issuing record, amendments, attachments, audit", async () => {
+            const service = container.resolve<RecordQueriesService>(TOKENS.RecordQueriesService);
+            const row = await ownerDb("medical_records").where({ id: BUSY_RECORD }).first("id", "patient_user_id");
+            const owner: AuthContext = { userId: row.patient_user_id as number, role: "patient", status: "active", emailVerified: true };
+            const result = await service.get(owner, row.id as number);
+            expect(result.attachments.length).toBe(15);
+            const statements: string[] = [];
+            const listener = (data: { sql: string }): void => { statements.push(data.sql); };
+            db.on("query", listener);
+            try { await service.get(owner, row.id as number); } finally { db.removeListener("query", listener); }
+            const relevant = statements.filter((sql) => !/^(begin|commit|rollback)/i.test(sql));
+            expect(relevant.map((sql) => /medical_record_amendments/.test(sql) ? "amendments" : /record_attachments/.test(sql) ? "attachments" : /audit_logs/.test(sql) ? "audit" : /medical_records/.test(sql) ? "record" : "other"))
+                .toEqual(["record", "amendments", "attachments", "audit"]);
+            expect(p95(await measure(() => service.get(owner, row.id as number)))).toBeLessThan(150);
         });
     });
 });

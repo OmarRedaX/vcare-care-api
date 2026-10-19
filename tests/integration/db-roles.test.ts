@@ -217,15 +217,15 @@ describe("database roles (integration: owner care vs app login care_app, ADR 001
             ...Object.fromEntries(columns.map((_column, index) => [`c${index}`, true])), seq: true });
     });
 
-    it("should give vcare_app on record_attachments SELECT, a six-column INSERT and an UPDATE of deleted_at only, never DELETE, TRUNCATE or table-level UPDATE", async () => {
-        const table = (privilege: string): string => `has_table_privilege('vcare_app', 'record_attachments', '${privilege}')`;
-        const column = (name: string, privilege: string): string => `has_column_privilege('vcare_app', 'record_attachments', '${name}', '${privilege}')`;
+    it.each(["vcare_app", "care_app"])("should give %s on record_attachments SELECT, a six-column INSERT and an UPDATE of deleted_at only, never DELETE, TRUNCATE or table-level UPDATE", async (role) => {
+        const table = (privilege: string): string => `has_table_privilege('${role}', 'record_attachments', '${privilege}')`;
+        const column = (name: string, privilege: string): string => `has_column_privilege('${role}', 'record_attachments', '${name}', '${privilege}')`;
         const all = ["id", "medical_record_id", "uploaded_by_user_id", "object_key", "file_type", "size_bytes", "description", "created_at", "deleted_at"];
         const insertable = ["medical_record_id", "uploaded_by_user_id", "object_key", "file_type", "size_bytes", "description"];
         const result = await ownerDb.raw<{ rows: Array<Record<string, boolean>> }>(
             `SELECT ${table("SELECT")} AS sel, ${table("INSERT")} AS ins, ${table("UPDATE")} AS upd, ${table("DELETE")} AS del, ${table("TRUNCATE")} AS trunc,
                     ${all.map((name) => `${column(name, "INSERT")} AS i_${name}, ${column(name, "UPDATE")} AS u_${name}`).join(", ")},
-                    has_sequence_privilege('vcare_app', 'record_attachments_id_seq', 'USAGE') AS seq`,
+                    has_sequence_privilege('${role}', 'record_attachments_id_seq', 'USAGE') AS seq`,
         );
         expect(result.rows[0]).toEqual({
             sel: true, ins: false, upd: false, del: false, trunc: false, seq: true,

@@ -42,7 +42,7 @@ Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/re
 - [x] (controller) 7: `RecordAttachmentsController`
 - [x] (routes) 7: `routes.ts` + `rate-limits.ts`
 - [x] (mount) 7: mount after the records router in `src/routes.ts`
-- [ ] (tests) 8: unit, integration, RBAC, contract, concurrency, lock boundary, privacy, EXPLAIN, migrations (spec section 10) ← /write-tests
+- [x] (tests) 8: unit, integration, RBAC, contract, concurrency, lock boundary, privacy, EXPLAIN, migrations (spec section 10)
 - [ ] (manual-qa) 9: `scripts/curl-test-record-attachments.sh`, re-run `scripts/curl-test-verification.sh` ← /manual-qa
 - [ ] (docs) 9: service card, INDEX, architecture shards, runbook, records/verification spec pointers, as-built notes (spec section 14) ← /update-docs
 
@@ -72,3 +72,15 @@ Same isolated environment as slice 1. Pre-existing environment failures unchange
 | contract file | n/a | parses, every `$ref` resolves, no duplicate `operationId` |
 
 Existing integration tests edited because the schema or the record views changed (no assertion weakened): `migrations.test.ts` and `records-schema.test.ts` step the two new migrations down before `medical_records` and up after it; `records-explain.test.ts` statement order gains `attachments`.
+
+## Verification record (step 8, tests)
+Same isolated environment. Pre-existing environment failures unchanged: 4 password-rejection cases of `db-roles.test.ts` and the 3 MinIO tests of `storage-adapter.test.ts`.
+
+| Gate | Result |
+|---|---|
+| `npm run typecheck` / `npx eslint src tests` | clean / clean |
+| `npm test` (unit) | 167 suites, 3296 tests, all pass (was 158 / 3069) |
+| `npm run test:integration` | 55 suites: 53 passed, 2 failed (the environment suites); 1745 tests: 1736 passed, 7 failed (the known 7), 2 skipped |
+
+New suites: unit `tests/unit/app/record-attachments/*` (service, policies, links service, repo, DTO, controller, rate limits, logging) and `tests/unit/contract/record-attachments-contract.test.ts`; integration `record-attachments{,-rbac,-rules,-audit,-privacy,-links}.test.ts`, helper `tests/helpers/record-attachments-fixtures.ts`; extended `records-explain`, `db-roles`, `no-store`.
+Note for `/update-docs`: `findLive(id, recordId)` is planned on `idx_record_attachments_medical_record_id` (both columns are equality predicates), not the primary key as spec 3.3 says; still a one-row index access, no Seq Scan.
