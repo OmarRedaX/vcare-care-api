@@ -43,7 +43,7 @@ Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/re
 - [x] (routes) 7: `routes.ts` + `rate-limits.ts`
 - [x] (mount) 7: mount after the records router in `src/routes.ts`
 - [x] (tests) 8: unit, integration, RBAC, contract, concurrency, lock boundary, privacy, EXPLAIN, migrations (spec section 10)
-- [ ] (manual-qa) 9: `scripts/curl-test-record-attachments.sh`, re-run `scripts/curl-test-verification.sh` ← /manual-qa
+- [x] (manual-qa) 9: `scripts/curl-test-record-attachments.sh` (331 pass / 0 fail, 2026-10-19) and the re-run of `scripts/curl-test-verification.sh` (274 pass / 0 fail); both against the DEV-ONLY storage stand-in `scripts/storage-qa-fake-s3.mjs`, not MinIO / S3 — repeat against real MinIO before calling the module verified end to end (see [manual-qa.md](./manual-qa.md))
 - [ ] (docs) 9: service card, INDEX, architecture shards, runbook, records/verification spec pointers, as-built notes (spec section 14) ← /update-docs
 
 ## Verification record (slice 1)
@@ -56,7 +56,7 @@ Environment: isolated native PostgreSQL 18 on `127.0.0.1:5499` (trust auth, data
 | `npm test` (unit) | 157 suites, 2988 tests | 158 suites, 3057 tests (+69: shared-module service, constants, purge loop, two verification narrowing cases) |
 | `npm run test:integration` (49 suites after, 48 before) | 46 suites passed, 2 failed (the environment suites above); 1532 passed, 7 failed, 2 skipped | 47 suites passed, 2 failed (same two); 1554 passed, 7 failed (same seven), 2 skipped |
 | golden statement test (`goldenIntentStatements`, `tests/integration/golden/verification-intent-statements.json`) | recorded and passing on the unchanged code | passes unchanged after the move |
-| `scripts/curl-test-verification.sh` | not run (needs MinIO, a real Identity database and an internal-users shim; none available here) | not run: **must be run where that stack exists before slice 2 merges** |
+| `scripts/curl-test-verification.sh` | not run (needs MinIO, a real Identity database and an internal-users shim; none available here) | 2026-10-19: 274 pass / 0 fail / 0 skipped against the real Identity (`main`, internal users built, own throwaway database), a running care-worker and the in-memory storage stand-in (no MinIO); a first run was 273 / 1 because of a stand-in gap (anonymous read answered 200), fixed in the stand-in. Detail in [manual-qa.md](./manual-qa.md) |
 
 Review gate (spec section 2, step 3): `git diff -U0 tests/` shows no removed or changed `expect(...)` line in the repointed files; the only new assertions are additive tests.
 
