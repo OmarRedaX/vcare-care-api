@@ -5,7 +5,7 @@ service: care-service
 module: record-attachments
 status: passed
 diataxis: how-to
-last_verified: 2026-10-19
+last_verified: 2026-10-20
 tags: [manual-qa, record-attachments, records, attachments, uploads, upload-intents, presigned-post, download-url, lock-trigger, cap, audit, rbac, no-store, rate-limit, clinical-privacy, storage-stand-in]
 related: [record-attachments-spec, record-attachments-tasks, record-attachments-brainstorm, records-manual-qa, verification-manual-qa, adr-0022-upload-intents-module, file-handling, clinical-records, rbac]
 ---
@@ -387,3 +387,9 @@ The spec (section 2) makes this script the gate for the `upload-intents` extract
 - **First run: 273 pass / 1 fail.** Case 95 ("unsigned object URL is private", expected 403, got 200) failed because the stand-in answered anonymous reads with 200. Diagnosis: a stand-in gap (a private bucket refuses anonymous reads), not a Care defect; the stand-in was fixed.
 - **Second run, fixed stand-in, clean databases: 274 pass / 0 fail / 0 skipped, equal to the recorded baseline (274 / 0).** All sections ran, including the Identity outage, the `202` pending answer and the worker convergence to `approved/synced` (case 244), the `upload-intent-purge` tick (case 264), the expired intent `410` (case 71), the presigned URL expiry after 60 s (case 271) and the log hygiene grep (case 274).
 - Caveat: storage was the stand-in, not MinIO, so this proves the extraction preserved verification's behaviour against an S3-shaped peer; the golden statement test and the MinIO adapter suite remain the other oracles.
+
+## Real MinIO run (2026-10-20)
+Re-run of `scripts/curl-test-record-attachments.sh` against **real MinIO** (`bitnamilegacy/minio` from `docker compose up -d minio minio-setup`, ADR 0020, `http://127.0.0.1:9002`, bucket `care-private`), after the review fixes and the K1 change ([ADR 0023](../adr/0023-complete-deletes-quarantine-after-commit.md)). Same real Care API (`src/server.ts`), fake Identity on 3023, throwaway database `care_qa_ra_test` on `:5499` migrated with the repo CLI (31 migrations) and `ensure-app-login`, Redis db 12, `care-worker --once upload-intent-purge` for the purge case.
+- **Result: 308 pass / 0 fail / 5 skipped.** The 5 skipped checks need the stand-in's control surface (`FAKE_S3_URL`: stored-object counts, the policy and presigned-URL expiry probes via a moved clock, storage fault injection), which real MinIO does not have; they stay covered by the stand-in run above (331 / 0) and by the unit and integration tests. The 'no `127.0.0.1:9013` in the log' check is trivially true here (the endpoint was 9002); the key, `X-Amz-` and marker leak checks ran as before.
+- `tests/integration/storage-adapter.test.ts` against the same MinIO: 3 / 3 pass (it was the 3 environment failures before).
+- Not re-run on MinIO: `scripts/curl-test-verification.sh` (needs the real Identity stack with its own database and worker). The shared `complete` flow it drives ran on MinIO through this suite, and `verification.test.ts` passes after the K1 change.

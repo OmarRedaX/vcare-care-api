@@ -24,7 +24,7 @@ UPLOAD
  client ── POST form (file) ─────────────▶ S3 private bucket (policy: exact key, 1 B–10 MB, SSE)
  client ── POST …/uploads/{id}/complete ─▶ care-api
             lock intent → re-authorize → HEAD size → GET bytes 0-15 → magic number
-            → COPY to final key, DELETE quarantine
+            → COPY to final key → commit row + audit + intent → DELETE quarantine best-effort
             → BEGIN insert document|attachment (file_type = detected) + audit + consume intent; COMMIT
         ◀─ 201 VerificationDocument | RecordAttachment        (400 ValidationFailed on bad bytes)
 
@@ -75,8 +75,8 @@ New table (full DDL in [data-model.md](./data-model.md)): `upload_intents` — `
 | 5 | re-authorize: application `draft`/`rejected` · assigned doctor, `status=active`, not suspended | 409 `Conflict` / 403 |
 | 6 | `HEAD`: object exists, `1 ≤ size ≤ max_bytes` | 400 `ValidationFailed` (`field: file`) |
 | 7 | `GET Range: bytes=0-15`: `25 50 44 46 2D` (`%PDF-`) → `application/pdf`; `FF D8 FF` → `image/jpeg`; `89 50 4E 47 0D 0A 1A 0A` → `image/png` | 400 `ValidationFailed` |
-| 8 | `COPY` to the final random key, `DELETE` the quarantine key | storage error → intent stays open, `500`, retry allowed |
-| 9 | one transaction: insert row (`file_type` = detected, `size_bytes` = HEAD size), audit row, `consumed_at = now()`, `result_id` | rollback; final object deleted by the purge of orphaned keys |
+| 8 | `COPY` to the final random key | storage error → intent stays open, `500`, retry allowed |
+| 9 | one transaction: insert row (`file_type` = detected, `size_bytes` = HEAD size), audit row, `consumed_at = now()`, `result_id`; after commit, delete quarantine best-effort | rollback → final object deleted best-effort and quarantine retained for retry; post-commit delete failure logs and succeeds, with 24 h lifecycle as backstop |
 
 Steps 6–7 failing delete the quarantine object and close the intent (`consumed_at`, `result_id` null) and emit
 `upload_verification_failed{reason=missing|size|type}`. The filename, the form's `Content-Type` field, and S3
@@ -93,15 +93,15 @@ The steps above are the design; the shipped `complete` differs in these points (
 - **Step 8 is bound to the inspected object:** `HEAD` returns the S3 `ETag`; `promote` copies with `CopySourceIfMatch` and the detected content type, so a re-POST to the quarantine key after the checks makes the copy fail (`500`, intent stays open). The adapter does not re-read or re-sniff.
 - **No idempotency middleware** on intent creation and both `download-url` routes; each issued URL writes one audit row first and fails closed on an audit error.
 - **Metrics:** `upload_verification_failed` carries `reason=invalid_file` and, since the ADR 0022 extraction, the label `kind` (`verification_document` or `record_attachment`); `upload_intent_expired` is emitted by the purge; `upload_intent_created` and `download_url_issued` are not emitted yet.
-- **Orphans:** no prefix-scan reconciliation; a rolled-back step 9 deletes its copied final object best-effort (`upload_orphan_cleanup_failed{kind}` log on failure; renamed from `verification_orphan_cleanup_failed` by ADR 0022) and the bucket lifecycle is the backstop. The expired `quarantine/*` lifecycle (24 h) is configured in local MinIO by `minio-setup`.
+- **Orphans:** no prefix-scan reconciliation; a rolled-back step 9 deletes its copied final object best-effort (`upload_orphan_cleanup_failed{kind}` log on failure; renamed from `verification_orphan_cleanup_failed` by ADR 0022) while retaining quarantine for retry. A failed post-commit quarantine delete logs the same event but cannot fail the successful response. The expired `quarantine/*` lifecycle (24 h) is the backstop, configured in local MinIO by `minio-setup` (ADR 0023).
 - **Local storage:** dev and test Compose run a digest-pinned MinIO ([ADR 0020](../adr/0020-local-s3-emulator-image.md)); route-level integration tests inject an in-memory storage port, and a separate adapter suite runs against real MinIO.
 
 ## 4b. As built for record attachments (2026-10-20)
 The `record-attachments` module ([spec](../record-attachments/spec.md), section 14 wins) supplies the callbacks of the shared flow; the steps above hold with these specifics:
 - **Authorization** is the record's author only: `authorizeTarget` requires `intent.target_id` = the path record and the record's `doctor_user_id` = the caller (else `404`); the route re-runs `authorize` (role, `status=active`, local suspension) before the flow. Adding is allowed after the 24 h lock and never updates `medical_records`.
 - **Cap of 20 live attachments** per record: a courtesy count before any storage call (a full record answers `409 AttachmentLimitReached` with the quarantine object intact) and the guaranteeing count under `FOR NO KEY UPDATE` on the record row inside the short transaction.
-- **Suspension is re-checked inside the short transaction** (after the record lock): a doctor suspended while the object was being verified gets `403 Forbidden`, no row and no audit row, the promoted object is deleted and the intent stays open.
-- **Trade-off inherited from verification:** the quarantine object is deleted right after `promote`, before the short transaction. If that transaction fails for a reason other than the cap, the intent stays open but the quarantine bytes are gone; a retry answers `400 ValidationFailed` and the doctor uploads again (spec 14.2, K1; moving the delete after commit is a deliberate follow-up for both modules).
+- **Suspension is re-checked inside the short transaction** (after the record lock): a doctor suspended while the object was being verified gets `403 Forbidden`, no row and no audit row; the promoted object is deleted and the intent stays open with its quarantine bytes.
+- **K1 resolved (ADR 0023):** quarantine remains through the short transaction. If it fails, the intent and quarantine bytes remain for a retry of the same upload id; after a successful commit, quarantine cleanup is best-effort.
 - **Download:** `attachment.url_issued` is committed in its own transaction before `presignDownload`; read DTOs and the record views carry metadata only. Deleting is a soft delete that keeps the stored object.
 - **Purge:** the loop now closes expired open intents of every kind, so a `record_attachment` intent is purged like a document intent. The purge listing reads the intent row including the clinical `description` into worker memory only (spec 14.2, K6), and holds its singleton lock connection while it deletes serially (K5).
 - **Dev-only QA caveat:** the record-attachments CURL run used an in-memory S3 stand-in, not MinIO; repeat it against MinIO before treating the module as verified end to end.
@@ -114,10 +114,12 @@ The `record-attachments` module ([spec](../record-attachments/spec.md), section 
   `ResponseContentType` = verified type; issued only after `authorize(policy)` and a successful audit insert.
 - **Bucket:** private, Block Public Access on, TLS-only bucket policy, SSE; CORS `AllowedOrigins=[web origin]`,
   `AllowedMethods=[POST]`, no credentials, `MaxAge=600`; lifecycle `quarantine/*` → expire after 24 h;
-  `record-attachments/*` → infrequent access after 90 days ([capacity.md](./capacity.md)).
-- **IAM (task roles):** `care-api` — `s3:PutObject` (presign), `GetObject`, `CopyObject` source/target,
-  `DeleteObject` on `quarantine/*`; `GetObject` on final prefixes. `care-worker` — `ListBucket`/`DeleteObject` on
-  `quarantine/*` (and later `GetObject` for scanning).
+  `verification-documents/*` **and** `record-attachments/*` → infrequent access after 90 days ([capacity.md](./capacity.md)).
+- **IAM (task roles):** `care-api` — `s3:PutObject` (presigned POST) on `quarantine/*` only; `GetObject` and `CopyObject`
+  (source and target) on `quarantine/*` and both final prefixes, `verification-documents/*` and `record-attachments/*`;
+  `DeleteObject` on `quarantine/*` and on the final prefixes (best-effort cleanup of a promoted object when the short
+  `complete` transaction rolls back; stored objects are otherwise kept after a soft delete). `care-worker` —
+  `ListBucket`/`DeleteObject` on `quarantine/*` (and later `GetObject` for scanning). Hub `TODO.md` carries the IaC item.
 - **Never logged or stored:** object keys, presigned URLs, POST fields. Audit metadata holds ids only.
 - **Admins** never receive record attachment URLs (403 by role); they can open verification documents (audited).
 

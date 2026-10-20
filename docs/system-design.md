@@ -6,7 +6,7 @@ status: draft
 diataxis: explanation
 last_verified: 2026-10-20
 tags: [system-design, architecture, router, care]
-related: [overview, data-model, adr-0021-identity-sync-engine-module, adr-0022-upload-intents-module, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
+related: [overview, data-model, adr-0021-identity-sync-engine-module, adr-0022-upload-intents-module, adr-0023-complete-deletes-quarantine-after-commit, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
 
 # System Design — care-service
@@ -56,6 +56,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0020](./adr/0020-local-s3-emulator-image.md) | Local/test S3 emulator: digest-pinned frozen community MinIO build |
 | [0021](./adr/0021-identity-sync-engine-module.md) | Identity-sync engine as its own module shared by verification, suspension and reinstatement (kind policies, injected clock, reason clamp, permanent Identity rejections) |
 | [0022](./adr/0022-upload-intents-module.md) | Upload-intent lifecycle as its own `upload-intents` module shared by verification and record attachments (callback-based `complete`, unchanged lock namespaces and loop name, purge covers every kind) |
+| [0023](./adr/0023-complete-deletes-quarantine-after-commit.md) | `complete` deletes quarantine after commit, retaining bytes for retry when its short transaction rolls back (K1) |
 
 `/system-design` 2026-09-15 (Care runtime, capacity, notifications, reinstatement) also produced hub ADR 0009
 (doctor reinstatement via Care) and hub ADR 0010 (notification contact lookup). The file-handling session
