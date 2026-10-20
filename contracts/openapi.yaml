@@ -2631,7 +2631,7 @@ paths:
         request holds the intent lock. A storage failure is `500` and the intent stays open for a retry.
         The local suspension is checked again inside the write transaction, after the storage verification: a doctor
         suspended while the object was being verified receives `403 Forbidden`, no attachment or audit row is
-        created, the promoted object is deleted and the intent stays open.
+        created, the promoted object is deleted and the intent stays open with its quarantine bytes for a later retry.
         `400 ValidationFailed` is also the answer to a request body: a request body is not accepted. A non-numeric,
         zero or negative `{uploadId}` is `404 NotFound`, not `400`, and is answered after the rate limit.
         Rate limit 20 attachment writes/min per user (shared with delete). `Idempotency-Key` is not honoured.

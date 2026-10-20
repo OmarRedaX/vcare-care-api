@@ -11,7 +11,7 @@ import { detectFileType } from "../../../pkg/utils/detect-file-type";
 import { DETECT_HEAD_BYTES, MAX_UPLOAD_BYTES, QUARANTINE_KEY_PREFIX, UPLOAD_INTENT_LOCK_NAMESPACE } from "../constants";
 import { UploadIntentExpired } from "../errors";
 import { closeIntent, deleteIntentsOlderThan, findIntent, findIntentForUpdate, insertIntent, listExpiredOpenIntents } from "../repository/upload-intents.repo";
-import type { CompletedUpload, CompleteRequest, ExpiredIntentRef, NewIntent, UploadIntentResult, UploadIntentRow } from "../types";
+import type { CompletedUpload, CompleteRequest, ExpiredIntentRef, InsertedUpload, NewIntent, UploadIntentResult, UploadIntentRow } from "../types";
 
 /**
  * The upload-intent lifecycle shared by every module that takes direct uploads (ADR 0022): intent creation, the
@@ -56,17 +56,18 @@ export class UploadIntentsService {
             const finalKey = `${request.finalKeyPrefix}${randomUUID()}`;
             // Bound to the inspected object: if the quarantine key was re-POSTed after the checks above, the ETag no longer matches and the copy fails.
             await this.storage.promote(intent.quarantine_key, finalKey, { etag: head.etag, contentType: fileType });
-            await this.storage.delete(intent.quarantine_key);
+            let inserted: InsertedUpload<TRow>;
             try {
-                const inserted = await this.db.transaction(async (trx) => {
+                inserted = await this.db.transaction(async (trx) => {
                     const locked = await findIntentForUpdate(intent.id, trx);
                     if (!locked || locked.owner_user_id !== request.ownerUserId || locked.consumed_at !== null || locked.expires_at.getTime() <= Date.now()) throw Conflict;
                     const created = await request.insertResult({ intent: locked, finalKey, fileType, sizeBytes: head.sizeBytes }, trx);
                     await closeIntent(intent.id, created.id, trx);
                     return created;
                 });
-                return { row: inserted.row, replay: false };
             } catch (error) { try { await this.storage.delete(finalKey); } catch { logger.error("upload_orphan_cleanup_failed", { kind: request.kind }); } throw error; }
+            try { await this.storage.delete(intent.quarantine_key); } catch { logger.error("upload_orphan_cleanup_failed", { kind: request.kind }); }
+            return { row: inserted.row, replay: false };
         });
         if (!result) throw Conflict.withExtra({ retryAfter: 1 });
         return result;

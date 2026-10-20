@@ -184,9 +184,14 @@ describe("record attachments rules (integration: real routes, Postgres, Redis; s
             const [intent] = await intentRows();
             expect(intent?.consumed_at).toBeNull();
             expect(intent?.result_id).toBeNull();
-            // The quarantine object was deleted by the promote step, so the retry finds it gone: 400 and the intent closes (SD3).
+            expect(storage.has(uploaded.quarantineKey)).toBe(true);
             const retry = await complete(recordId, uploaded.uploadId);
-            expect(retry.status).toBe(400);
+            expect(retry.status).toBe(201);
+            const rows = await attachmentRows();
+            expect(rows).toHaveLength(1);
+            expect(storage.has(uploaded.quarantineKey)).toBe(false);
+            expect(storage.has(String(rows[0]?.object_key))).toBe(true);
+            expect(finalObjects()).toEqual([String(rows[0]?.object_key)]);
             expect((await intentRows())[0]?.consumed_at).not.toBeNull();
         });
     });
@@ -401,15 +406,19 @@ describe("record attachments rules (integration: real routes, Postgres, Redis; s
             expect(finalObjects()).toEqual([winnerRow?.object_key]);
             const intents = await intentRows();
             expect(intents.find((row) => String(row.id) === String(winner.uploadId))?.consumed_at).not.toBeNull();
-            // SD3: the loser's intent stays open with its quarantine object gone; a retry at the cap answers 409 again.
+            // SD3: the loser's intent and quarantine bytes remain; a retry at the cap answers 409 again.
             expect(intents.find((row) => String(row.id) === String(loser.uploadId))?.consumed_at).toBeNull();
-            expect(storage.has(loser.quarantineKey)).toBe(false);
+            expect(storage.has(loser.quarantineKey)).toBe(true);
             expect((await complete(recordId, loser.uploadId)).status).toBe(409);
-            // After a slot is freed, the retry finds the object gone: 400 and the intent closes.
+            // After a slot is freed, the same upload succeeds and closes the intent.
             const [firstLive] = await attachmentRows();
             expect((await remove(recordId, firstLive?.id as number)).status).toBe(204);
             const late = await complete(recordId, loser.uploadId);
-            expect(late.status).toBe(400);
+            expect(late.status).toBe(201);
+            expect(storage.has(loser.quarantineKey)).toBe(false);
+            const lateRow = (await attachmentRows()).find((row) => row.id === late.body.data.id);
+            expect(lateRow).toBeDefined();
+            expect(storage.has(String(lateRow?.object_key))).toBe(true);
             expect((await intentRows()).find((row) => String(row.id) === String(loser.uploadId))?.consumed_at).not.toBeNull();
         });
     });

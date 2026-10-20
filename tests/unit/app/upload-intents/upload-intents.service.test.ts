@@ -45,6 +45,7 @@ describe.each([UploadIntentKind.VerificationDocument, UploadIntentKind.RecordAtt
 
     beforeEach(() => {
         jest.restoreAllMocks(); jest.clearAllMocks();
+        (db.transaction as jest.Mock).mockImplementation(async (work: (t: Knex.Transaction) => Promise<unknown>) => work(trx));
         jest.spyOn(locks, "withSessionAdvisoryLock").mockImplementation(async (_db, _namespace, _id, work) => work());
         authorizeTarget.mockResolvedValue("target"); precheck.mockResolvedValue(undefined); findResult.mockResolvedValue(created);
         insertResult.mockResolvedValue({ row: created, id: created.id });
@@ -144,7 +145,16 @@ describe.each([UploadIntentKind.VerificationDocument, UploadIntentKind.RecordAtt
     });
 
     it("should pass the inspected ETag and detected type to promote and insert inside the transaction", async () => {
+        const order: string[] = [];
+        storage.promote.mockImplementation(() => { order.push("promote"); return Promise.resolve(); });
+        (db.transaction as jest.Mock).mockImplementation(async (work: (t: Knex.Transaction) => Promise<unknown>) => {
+            const result = await work(trx);
+            order.push("transaction committed");
+            return result;
+        });
+        storage.delete.mockImplementation(() => { order.push("delete quarantine"); return Promise.resolve(); });
         await expect(service.complete(request())).resolves.toEqual({ row: created, replay: false });
+        expect(order).toEqual(["promote", "transaction committed", "delete quarantine"]);
         const finalKey = storage.promote.mock.calls[0]?.[1] ?? "";
         expect(finalKey).toMatch(/^final-prefix\/[0-9a-f-]{36}$/);
         expect(storage.promote).toHaveBeenCalledWith("quarantine/synthetic", finalKey, { etag: "\"etag-1\"", contentType: "application/pdf" });
@@ -176,15 +186,25 @@ describe.each([UploadIntentKind.VerificationDocument, UploadIntentKind.RecordAtt
     it("should delete the promoted object and rethrow when the module insert fails", async () => {
         insertResult.mockRejectedValue(new Error("synthetic insert failure"));
         await expect(service.complete(request())).rejects.toThrow("synthetic insert failure");
-        expect(storage.delete).toHaveBeenLastCalledWith(storage.promote.mock.calls[0]?.[1]);
+        expect(storage.delete).toHaveBeenCalledTimes(1);
+        expect(storage.delete).toHaveBeenCalledWith(storage.promote.mock.calls[0]?.[1]);
+        expect(storage.delete).not.toHaveBeenCalledWith("quarantine/synthetic");
         expect(close).not.toHaveBeenCalled();
         expect(errorLog).not.toHaveBeenCalled();
     });
 
     it("should log upload_orphan_cleanup_failed with the kind when deleting the promoted object also fails", async () => {
         insertResult.mockRejectedValue(new Error("synthetic insert failure"));
-        storage.delete.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("synthetic delete failure"));
+        storage.delete.mockRejectedValueOnce(new Error("synthetic delete failure"));
         await expect(service.complete(request())).rejects.toThrow("synthetic insert failure");
+        expect(errorLog).toHaveBeenCalledWith("upload_orphan_cleanup_failed", { kind });
+    });
+
+    it("should succeed and log when post-commit quarantine cleanup fails", async () => {
+        storage.delete.mockRejectedValueOnce(new Error("synthetic delete failure"));
+        await expect(service.complete(request())).resolves.toEqual({ row: created, replay: false });
+        expect(storage.delete).toHaveBeenCalledTimes(1);
+        expect(storage.delete).toHaveBeenCalledWith("quarantine/synthetic");
         expect(errorLog).toHaveBeenCalledWith("upload_orphan_cleanup_failed", { kind });
     });
 

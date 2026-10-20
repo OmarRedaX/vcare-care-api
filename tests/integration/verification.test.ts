@@ -185,7 +185,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         expect((await call("post", path(`uploads/${upload.id}/complete`), "doctor", {})).status).toBe(201);
     });
 
-    it("auditFailureRollsBackVerificationWrite: should roll back completion and delete its promoted object", async () => {
+    it("auditFailureRollsBackVerificationWrite: should retain quarantine for a successful retry after the audit rollback", async () => {
         await profile(); const upload = await intent(); storage.seed(upload.key, PDF);
         await ownerDb.raw("ALTER TABLE audit_logs ADD CONSTRAINT chk_audit_verification_upload_test CHECK (action <> 'verification.document_uploaded')");
         try {
@@ -194,8 +194,18 @@ describe("verification routes (real Postgres, Redis and app)", () => {
             expect(await ownerDb("verification_documents")).toHaveLength(0);
             expect((await ownerDb("upload_intents").where("id", upload.id).first()).consumed_at).toBeNull();
             expect(storage.calls.filter((c) => c.operation === "promote")).toHaveLength(1);
-            expect(storage.calls.filter((c) => c.operation === "delete")).toHaveLength(2);
+            expect(storage.has(upload.key)).toBe(true);
+            const failedFinalKey = String(storage.calls.find((c) => c.operation === "promote")?.args[1]);
+            expect(storage.has(failedFinalKey)).toBe(false);
+            expect(storage.calls.filter((c) => c.operation === "delete").map((c) => c.args[0])).toEqual([failedFinalKey]);
         } finally { await ownerDb.raw("ALTER TABLE audit_logs DROP CONSTRAINT IF EXISTS chk_audit_verification_upload_test"); }
+        const retry = await call("post", path(`uploads/${upload.id}/complete`), "doctor", {});
+        expect(retry.status).toBe(201);
+        const documents = await ownerDb("verification_documents");
+        expect(documents).toHaveLength(1);
+        expect(storage.has(upload.key)).toBe(false);
+        expect(storage.has(String(documents[0]?.object_key))).toBe(true);
+        expect(storage.calls.filter((c) => c.operation === "promote")).toHaveLength(2);
     });
 
     it("should make one concurrent complete win and the other replay or report a conflict", async () => {

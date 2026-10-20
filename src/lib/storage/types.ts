@@ -30,7 +30,7 @@ export interface ObjectStorage {
     createUploadPolicy(key: string, maxBytes: number, ttlSeconds: number): Promise<UploadPolicy>;
     headObject(key: string): Promise<ObjectHead | null>;
     readHead(key: string, byteCount: number): Promise<Uint8Array | null>;
-    /** Copy only, bound to the verified object via its ETag. The caller deletes the quarantine key after a successful copy. */
+    /** Copy only, bound to the verified object via its ETag. The caller deletes quarantine after its result transaction commits. */
     promote(fromKey: string, toKey: string, expected: PromoteExpectation): Promise<void>;
     delete(key: string): Promise<void>;
     presignDownload(key: string, contentType: string, ttlSeconds: number): Promise<DownloadUrl>;
