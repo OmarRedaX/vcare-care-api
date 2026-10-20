@@ -17,7 +17,7 @@ import { ownerDb } from "../helpers/db";
 import {
     attachmentAudits, attachmentRows, FALSE_PDF, intentRows, JPEG, liveCount, PDF, PNG, recordSnapshot, storageCalls, useAttachmentsHarness,
 } from "../helpers/record-attachments-fixtures";
-import { amendmentRows, createRecord, getRecord, lockIn, lockNow, patchRecord, recordBody, seedCompleted, withFailingAudit } from "../helpers/records-fixtures";
+import { amendmentRows, createRecord, getRecord, lockIn, lockNow, patchRecord, recordBody, seedCompleted, suspendLocally, withFailingAudit } from "../helpers/records-fixtures";
 
 jest.setTimeout(120_000);
 
@@ -191,6 +191,27 @@ describe("record attachments rules (integration: real routes, Postgres, Redis; s
         });
     });
 
+    // ───────────────────────────────────────────── Case 3: a suspension committed during the storage round trip blocks the write
+    describe("local suspension during complete", () => {
+        it("should answer 403, create no row and no attachment.added audit row, delete the promoted object and keep the intent open when the doctor is suspended mid-complete", async () => {
+            const recordId = await newRecord();
+            const uploaded = await upload(recordId, { description: "SYNTHETIC-ATTACH-DESC-0001" });
+            storage.beforeNextPromote(async () => { await suspendLocally(); });
+            const res = await complete(recordId, uploaded.uploadId);
+            expect(res.status).toBe(403);
+            expectErrorEnvelope(res.body, "Forbidden");
+            expect(await attachmentRows()).toEqual([]);
+            expect(await attachmentAudits()).toEqual([]);
+            const [promote] = storageCalls(storage, "promote");
+            expect(promote).toBeDefined();
+            expect(storage.has(promote?.[1] as string)).toBe(false);
+            expect(storageCalls(storage, "delete").map((args) => args[0])).toContain(promote?.[1]);
+            const [intent] = await intentRows();
+            expect(intent?.consumed_at).toBeNull();
+            expect(intent?.result_id).toBeNull();
+        });
+    });
+
     // ───────────────────────────────────────────── RA-R4: intents are owner, record, kind bound and single use
     describe("intent binding and replay", () => {
         it("should answer 404 and touch no storage when another doctor owns the intent", async () => {
@@ -307,6 +328,7 @@ describe("record attachments rules (integration: real routes, Postgres, Redis; s
             const refused = await complete(recordId, twentyFirstUpload.uploadId);
             expect(refused.status).toBe(409);
             expectErrorEnvelope(refused.body, "AttachmentLimitReached");
+            expect(refused.headers["retry-after"]).toBeUndefined();
             expect(storage.calls).toEqual([]);
             expect(storage.has(twentyFirstUpload.quarantineKey)).toBe(true);
             expect((await intentRows()).find((row) => String(row.id) === String(twentyFirstUpload.uploadId))?.consumed_at).toBeNull();
@@ -344,6 +366,7 @@ describe("record attachments rules (integration: real routes, Postgres, Redis; s
                 expect(results.map((res) => res.status).sort()).toEqual([201, 409]);
                 const loser = results.find((res) => res.status === 409) as Response;
                 expectErrorEnvelope(loser.body, "AttachmentLimitReached");
+                expect(loser.headers["retry-after"]).toBeUndefined();
                 expect(await liveCount(recordId)).toBe(20);
                 expect((await attachmentAudits()).filter((row) => row.entity_type === "record_attachment" && row.metadata.recordId === recordId)).toHaveLength(1);
             }
@@ -620,7 +643,7 @@ describe("record attachments rules (integration: real routes, Postgres, Redis; s
         let small: RecordAttachmentsService;
         beforeEach(() => {
             pool = createKnex({ url: getEnv().DATABASE_URL, poolMax, statementTimeoutMs: 10_000, applicationName: "care-test" });
-            small = new RecordAttachmentsService(pool, container.resolve(TOKENS.AuditRecorder), new RecordLinksService(pool), new UploadIntentsService(pool, storage, getEnv()), storage, getEnv());
+            small = new RecordAttachmentsService(pool, container.resolve(TOKENS.AuditRecorder), new RecordLinksService(pool), new UploadIntentsService(pool, storage, getEnv()), container.resolve(TOKENS.DoctorsService), storage, getEnv());
         });
         afterEach(async () => { await pool.destroy(); });
 

@@ -22,9 +22,17 @@ Gotcha: tests/integration/records-schema.test.ts and migrations.test.ts drop/rec
 New integration suites that rebind STORAGE must also re-register RecordAttachmentsService (as verification/admin-doctors tests do for UploadIntentsService).
 Never use git worktree with a node_modules junction (it deleted real node_modules once; fixed with npm ci).
 
-## ▶ NEXT STEP (new session)
-1. /write-tests record-attachments (spec section 10: unit, integration, RBAC matrix incl. admin 403 on all 4 routes, contract, concurrency at cap, lock boundary add/delete, privacy marker tests incl. attachmentDescription, EXPLAIN for the attachments batch, upload scenarios from CLAUDE.md Testing policy).
-2. /manual-qa record-attachments (scripts/curl-test-record-attachments.sh; needs storage: MinIO or the in-memory fake server path used by earlier QA; re-run scripts/curl-test-verification.sh for the extraction).
-3. /review-code record-attachments -> /develop record-attachments --fix-review until clean (review file deleted when clean).
-4. /update-docs record-attachments (spec section 14 as-built, section 12 docs list, service-card, INDEX, file-handling/clinical-records/data-model/api/rbac shards, records spec note, runbook), then re-run ../vcare-hub/scripts/sync-from-spoke.sh care-service ../vcare-care-api on the hub branch, commit + push both.
-5. Open care PR (feature/record-attachments -> main) then hub PR; merge care first, then hub. Hub TODO wording: IAM + 90-day IA lifecycle should name `record-attachments/*` (list for /system-design; do not hand-edit hub docs outside sync).
+## Progress (2026-10-19, session 2)
+- Phase 1 /write-tests DONE: commit 8199aa8 (unit 167 suites/3296; integration 53/55 suites, 1736 pass, only the known 7 env failures).
+- Phase 2 /manual-qa DONE: commit 2c0f339 (record-attachments 331/0, verification script re-run 274/0 against scripts/storage-qa-fake-s3.mjs stand-in, NOT real MinIO/S3).
+  Real MinIO/S3 + tests/integration/storage-adapter.test.ts still unrun -> must be reported before merge.
+- Env restart: pg_ctl -D "C:/Users/power tech/AppData/Local/Temp/care-pg/data" -o "-p 5499" start (run in background; it holds stdout).
+
+## Progress (2026-10-20, session 3)
+- /review-code ran (review-20261019-1104.md, no Critical/High) and /develop --fix-review fixed K3, K8, K9, K10 (all RESOLVED, UNCOMMITTED in working tree; gates in tasks.md "Verification record (review fixes)": typecheck/eslint clean, unit 3304 pass, integration only known failures + 1 clock-flaky consultations.test.ts).
+- Hub contract + card re-synced on chore/sync-care-record-attachments (uncommitted); re-sync again after /update-docs.
+
+## ▶ NEXT STEP
+3. Commit the review fixes, then re-run /review-code record-attachments to verify each fix (review file deleted when clean; /develop --fix-review again only if it finds more).
+4. /update-docs record-attachments (spec 14 as-built, 12 docs list, service-card, INDEX, shards, runbook; note findLive plans on idx_record_attachments_medical_record_id not PK), then hub: cd ../vcare-hub && git checkout chore/sync-care-record-attachments && scripts/sync-from-spoke.sh care-service ../vcare-care-api, commit+push both.
+5. STOP and report. Do not open/merge PRs without asking (care first, then hub).

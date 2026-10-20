@@ -7,6 +7,7 @@ import { Forbidden, NotFound } from "../../../lib/error/errors";
 import { checkViolationConstraint } from "../../../lib/knex/pg-errors";
 import type { DownloadUrl, ObjectStorage } from "../../../lib/storage/types";
 import type { AuthContext } from "../../../lib/types/types";
+import type { DoctorsService } from "../../doctors/service/doctors.service";
 import { RecordLocked } from "../../records/errors";
 import type { RecordLinksService } from "../../records/service/record-links.service";
 import type { RecordAccessRow } from "../../records/types";
@@ -36,6 +37,7 @@ export class RecordAttachmentsService {
         @inject(TOKENS.AuditRecorder) private readonly audit: AuditRecorder,
         @inject(TOKENS.RecordLinksService) private readonly links: RecordLinksService,
         @inject(TOKENS.UploadIntentsService) private readonly intents: UploadIntentsService,
+        @inject(TOKENS.DoctorsService) private readonly doctors: Pick<DoctorsService, "isLocallySuspended">,
         @inject(TOKENS.STORAGE) private readonly storage: ObjectStorage,
         @inject(TOKENS.Env) private readonly env: Env,
     ) {}
@@ -70,6 +72,9 @@ export class RecordAttachmentsService {
             insertResult: async ({ intent, finalKey, fileType, sizeBytes }, trx) => {
                 const lock = await this.links.lockForNoKeyUpdate(recordId, trx);
                 if (lock === undefined || lock.doctorUserId !== actor.userId) throw NotFound;
+                // Case 3 step 1: the policy checked suspension before the storage round trip (seconds); re-check it here so a suspension committed
+                // meanwhile blocks the write. The throw rolls back; the shared flow deletes the promoted object and the intent stays open.
+                if (await this.doctors.isLocallySuspended(actor.userId, trx)) throw Forbidden;
                 if (await countLiveByRecord(recordId, trx) >= RECORD_ATTACHMENT_MAX_PER_RECORD) throw AttachmentLimitReached;
                 const attachment = await insertAttachment({ recordId, uploadedByUserId: actor.userId, objectKey: finalKey, fileType, sizeBytes, attachmentDescription: intent.description }, trx);
                 await this.audit.record(trx, { actor: actorFromAuth(actor), action: RecordAttachmentAuditAction.Added, entityType: RECORD_ATTACHMENT_ENTITY_TYPE,

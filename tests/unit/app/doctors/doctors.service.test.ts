@@ -208,6 +208,12 @@ describe("DoctorsService", () => {
         expect(calls).toEqual(["delete", "clear", "insert", "mark"]);
     });
 
+    it("should read local suspension on the connection it is given", async () => {
+        const { service, trx, mocks } = setup();
+        await service.isLocallySuspended(202, trx);
+        expect(mocks.suspended).toHaveBeenCalledWith(202, trx);
+    });
+
     it.each([false, true])("should report local suspension as %s", async (value) => {
         const { service, mocks } = setup(); mocks.suspended.mockResolvedValue(value);
         expect(await service.isLocallySuspended(202)).toBe(value);

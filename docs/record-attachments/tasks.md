@@ -84,3 +84,26 @@ Same isolated environment. Pre-existing environment failures unchanged: 4 passwo
 
 New suites: unit `tests/unit/app/record-attachments/*` (service, policies, links service, repo, DTO, controller, rate limits, logging) and `tests/unit/contract/record-attachments-contract.test.ts`; integration `record-attachments{,-rbac,-rules,-audit,-privacy,-links}.test.ts`, helper `tests/helpers/record-attachments-fixtures.ts`; extended `records-explain`, `db-roles`, `no-store`.
 Note for `/update-docs`: `findLive(id, recordId)` is planned on `idx_record_attachments_medical_record_id` (both columns are equality predicates), not the primary key as spec 3.3 says; still a one-row index access, no Seq Scan.
+
+## Review fixes (review-20261019-1104: K3, K8, K9, K10)
+- [x] (service) K3: `RecordAttachmentsService.insertResult` re-checks local suspension (`DoctorsService.isLocallySuspended(userId, trx)`, new optional `conn`) after `lockForNoKeyUpdate`; `Forbidden` rolls back, the shared flow deletes the promoted object, the intent stays open. `DoctorsService` is a new constructor dependency (`TOKENS.DoctorsService`, registered before `RecordAttachmentsService` in `bootstrap.ts`; the harness resolves it from the container; the small-pool test in `record-attachments-rules.test.ts` passes `container.resolve(TOKENS.DoctorsService)`). The pool-sized read was avoided on purpose: inside the transaction a second pool connection would be a third one next to the session advisory lock.
+- [x] (contract) K9/K10: `contracts/openapi.yaml` sentences for the three operations, `RecordAttachmentCompleteConflict` causes and example, `RetryAfter` header wording, one sentence for the suspension re-check; `tests/unit/contract/record-attachments-contract.test.ts` pins them. The hub contract copy must be re-synced at `/update-docs`.
+- [x] (tests) K3/K10: unit (`insertResult` Forbidden, order, `isLocallySuspended` on a given connection), integration `local suspension during complete` (new `InMemoryObjectStorage.beforeNextPromote` hook), `retry-after` absent on both `AttachmentLimitReached` 409s of `complete`.
+- [x] (evidence) K8, see below.
+
+### K8 evidence (2026-10-19)
+Correction of the earlier claim: commit `389de6f` ("Golden statement test committed on the old code first") did NOT commit the golden test before the move; the golden JSON, the test and the extraction landed together in `389de6f`. The golden JSON was therefore re-proved against the pre-extraction code in an isolated run:
+- `git archive 389de6f^` (`96278e8`, a docs-only commit on top of `main`'s code) extracted into a new empty directory in the session scratchpad, `npm ci --ignore-scripts` there (no junction, no shared `node_modules`), its own throwaway database `care_k8_test` on the `:5499` server (the shared `care_test` could not be used: the old code's `migrate.latest` rejects the two newer migrations already applied there as missing files) and Redis db 13.
+- The `goldenIntentStatements` test body from `389de6f` was added to the old `verification.test.ts` with only the old names substituted (`service` instead of `uploadIntents`, the old purge-loop import) and the final `toEqual` replaced by writing the recorded object to a file; it passed (create 3 statements / 1 storage call, complete 14/4, replay 8/0, expired 10/1, falseBytes 10/3, purge 10/1).
+- Result: with the purge normalization as committed, the recorded object is deeply identical to `tests/integration/golden/verification-intent-statements.json`. With the normalization removed, the only difference is the purge listing statement: the old code has `where "kind" = ? and "consumed_at" is null ...`, the new code `where "consumed_at" is null ...` (the intended ADR 0022 difference 3). No other statement, advisory-lock binding or storage call differs.
+- Cleanup: the temporary directory, the recorded files and the database `care_k8_test` were deleted and Redis db 13 flushed; the shared `care_test` database and this branch were not touched.
+
+## Verification record (review fixes)
+Same isolated environment (PostgreSQL 18 on `:5499` `care_test`, Redis db 14). Pre-existing environment failures unchanged: 4 `db-roles.test.ts` password cases and the 3 MinIO tests of `storage-adapter.test.ts` (plus its suite that fails to run).
+
+| Gate | Result |
+|---|---|
+| `npm run typecheck` / `npx eslint .` | clean / clean |
+| `npm test` (unit) | 167 suites, 3304 tests, all pass (was 3296) |
+| `npm run test:integration -- record-attachments verification.test upload-intents admin-doctors records` | 17 suites, 560 tests, all pass |
+| `npm run test:integration` (full) | 55 suites: 52 passed, 3 failed; 1746 tests: 1736 passed, 8 failed, 2 skipped. The failures: the known 7 (db-roles 4, storage-adapter 3) and `consultations.test.ts` "should allow exactly 120 minutes before the start and refuse closer, for patients only" (`422` where `200` expected at `consultations.test.ts:288`, a wall-clock dependent test unrelated to this module); it passes solo (49/49) and was not touched |

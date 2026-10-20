@@ -8,7 +8,7 @@ import { RecordLocked } from "../../../src/app/records/errors";
 import { MAX_UPLOAD_BYTES } from "../../../src/app/upload-intents/constants";
 import { ERROR_CODES } from "../../../src/lib/error/types";
 import { attachmentEntity } from "../app/record-attachments/record-attachments.fixtures";
-import { contractErrorCodes, contractOperationBlock, contractResponseCodes, inlineLists, responseBlock, schemaBlock } from "../../helpers/contract";
+import { contractErrorCodes, contractOperationBlock, contractResponseCodes, headerBlock, inlineLists, responseBlock, schemaBlock } from "../../helpers/contract";
 import { validateBody } from "../../../src/lib/validation/validate";
 
 type Method = "post" | "delete";
@@ -104,6 +104,37 @@ describe("record-attachments contract: operations", () => {
         const create = flat("/api/records/{id}/attachments/uploads", "post");
         for (const text of ["this route never answers `403 NotAssignedDoctor`", "`409 AttachmentLimitReached`", "`400 ValidationFailed`"]) expect(create).toContain(text);
         for (const [, apiPath, method] of OPERATIONS) expect(flat(apiPath, method)).toContain("`Idempotency-Key` is not honoured");
+    });
+
+    it.each([
+        ["/api/records/{id}/attachments/uploads/{uploadId}/complete", "post", "{uploadId}"],
+        ["/api/records/{id}/attachments/{attachmentId}/download-url", "post", "{attachmentId}"],
+        ["/api/records/{id}/attachments/{attachmentId}", "delete", "{attachmentId}"],
+    ] as Array<[string, Method, string]>)("should say why %s answers 400 (a request body) and that a bad %s is 404 after the rate limit", (apiPath, method, param) => {
+        const text = contractOperationBlock(apiPath, method).replace(/\s+/g, " ");
+        expect(text).toContain("a request body is not accepted");
+        expect(text).toContain(`A non-numeric, zero or negative \`${param}\` is \`404 NotFound\`, not \`400\`, and is answered after the rate limit`);
+    });
+
+    it("should document the suspension re-check inside the complete write transaction", () => {
+        const text = contractOperationBlock("/api/records/{id}/attachments/uploads/{uploadId}/complete", "post").replace(/\s+/g, " ");
+        expect(text).toContain("The local suspension is checked again inside the write transaction");
+        expect(text).toContain("`403 Forbidden`, no attachment or audit row is created, the promoted object is deleted and the intent stays open");
+    });
+
+    it("should list every Conflict cause of complete, give Retry-After only to the lock-held Conflict and carry the real Conflict message", () => {
+        const block = responseBlock("RecordAttachmentCompleteConflict").replace(/\s+/g, " ");
+        for (const text of ["the intent was closed or expired by the purge or a concurrent request between the lock read and the short transaction", "another request holds the intent lock",
+            "`Retry-After: 1` is present only on the lock-held `Conflict`", "absent on `AttachmentLimitReached`"]) expect(block).toContain(text);
+        expect(block).toContain("message: The resource already exists");
+        expect(block).not.toContain("message: Conflict details");
+        expect(errors.AttachmentLimitReached.extra).toBeUndefined();
+    });
+
+    it("should describe Retry-After on the lock-held complete Conflict and its absence on AttachmentLimitReached", () => {
+        const header = headerBlock("RetryAfter").replace(/\s+/g, " ");
+        expect(header).toContain("`409 Conflict` from an upload-intent `complete` while another request holds that intent's lock: always `1`, `Conflict` only");
+        expect(header).toContain("Absent on every other 409 (for example `AttachmentLimitReached`");
     });
 
     it("should name the four paths under /api/records/{id}/attachments and none of the old upload-schema names", () => {

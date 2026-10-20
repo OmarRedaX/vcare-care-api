@@ -35,10 +35,11 @@ function setup() {
         findAccessRow: jest.fn().mockResolvedValue({ ...TARGET }),
         lockForNoKeyUpdate: jest.fn().mockImplementation(() => { events.push("lock"); return Promise.resolve({ ...TARGET, isLocked: false }); }),
     };
+    const doctors = { isLocallySuspended: jest.fn().mockImplementation(() => { events.push("suspended-check"); return Promise.resolve(false); }) };
     const intents = { create: jest.fn().mockResolvedValue({ uploadId: 5, url: "https://storage.test/u", fields: {}, expiresAt: "2030-01-01T10:15:00.000Z", maxBytes: 10_485_760 }), complete: jest.fn() };
     const storage = { createUploadPolicy: jest.fn(), delete: jest.fn(), headObject: jest.fn(), readHead: jest.fn(), promote: jest.fn(),
         presignDownload: jest.fn().mockImplementation(() => { events.push("presign"); return Promise.resolve({ url: "https://storage.test/d", expiresAt: "2030-01-01T10:01:00.000Z" }); }) } as unknown as jest.Mocked<ObjectStorage>;
-    const service = new RecordAttachmentsService(conn, { record } as unknown as AuditRecorder, links as never, intents as never, storage, { DOWNLOAD_URL_TTL_SECONDS: EXPECTED_TTL } as never);
+    const service = new RecordAttachmentsService(conn, { record } as unknown as AuditRecorder, links as never, intents as never, doctors, storage, { DOWNLOAD_URL_TTL_SECONDS: EXPECTED_TTL } as never);
     const spies = {
         count: jest.spyOn(repo, "countLiveByRecord").mockImplementation(() => { events.push("count"); return Promise.resolve(0); }),
         insert: jest.spyOn(repo, "insertAttachment").mockImplementation((input) => { events.push("insert"); return Promise.resolve(attachmentEntity({ id: 41, recordId: input.recordId, objectKey: input.objectKey, fileType: input.fileType,
@@ -47,7 +48,7 @@ function setup() {
         findLiveById: jest.spyOn(repo, "findLiveById").mockResolvedValue(attachmentEntity()),
         softDelete: jest.spyOn(repo, "softDelete").mockImplementation(() => { events.push("softDelete"); return Promise.resolve(1); }),
     };
-    return { service, events, record, links, intents, storage, spies, transaction };
+    return { service, events, record, links, intents, doctors, storage, spies, transaction };
 }
 
 type Ctx = ReturnType<typeof setup>;
@@ -209,12 +210,13 @@ describe("RecordAttachmentsService.complete", () => {
     });
 
     describe("insertResult", () => {
-        it("should lock the record, count, insert and audit in that order inside the given transaction", async () => {
+        it("should lock the record, re-check suspension, count, insert and audit in that order inside the given transaction", async () => {
             const ctx = setup();
             const request = await captureCompletion(ctx);
             ctx.events.length = 0;
             const inserted = await request.insertResult(verified, trx);
-            expect(ctx.events).toEqual(["lock", "count", "insert", "audit"]);
+            expect(ctx.events).toEqual(["lock", "suspended-check", "count", "insert", "audit"]);
+            expect(ctx.doctors.isLocallySuspended).toHaveBeenCalledWith(202, trx);
             expect(ctx.links.lockForNoKeyUpdate).toHaveBeenCalledWith(9, trx);
             expect(ctx.spies.count).toHaveBeenCalledWith(9, trx);
             expect(inserted).toEqual({ row: expect.objectContaining({ id: 41 }), id: 41 });
@@ -275,6 +277,17 @@ describe("RecordAttachmentsService.complete", () => {
             const request = await captureCompletion(ctx);
             ctx.links.lockForNoKeyUpdate.mockResolvedValue({ ...TARGET, doctorUserId: 999, isLocked: false });
             expect((await rejection(() => request.insertResult(verified, trx))).code).toBe("NotFound");
+            expect(ctx.spies.insert).not.toHaveBeenCalled();
+            expect(ctx.record).not.toHaveBeenCalled();
+        });
+
+        it("should answer Forbidden and write nothing when the author was suspended after the policy check", async () => {
+            const ctx = setup();
+            const request = await captureCompletion(ctx);
+            ctx.doctors.isLocallySuspended.mockResolvedValue(true);
+            const err = await rejection(() => request.insertResult(verified, trx));
+            expect([err.code, err.status]).toEqual(["Forbidden", 403]);
+            expect(ctx.spies.count).not.toHaveBeenCalled();
             expect(ctx.spies.insert).not.toHaveBeenCalled();
             expect(ctx.record).not.toHaveBeenCalled();
         });

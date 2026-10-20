@@ -2629,6 +2629,11 @@ paths:
         `409 Conflict`; expired → `410 UploadIntentExpired`; the record already holds 20 live attachments →
         `409 AttachmentLimitReached`; stored object invalid → `400`. `409 Conflict` with `Retry-After: 1` when another
         request holds the intent lock. A storage failure is `500` and the intent stays open for a retry.
+        The local suspension is checked again inside the write transaction, after the storage verification: a doctor
+        suspended while the object was being verified receives `403 Forbidden`, no attachment or audit row is
+        created, the promoted object is deleted and the intent stays open.
+        `400 ValidationFailed` is also the answer to a request body: a request body is not accepted. A non-numeric,
+        zero or negative `{uploadId}` is `404 NotFound`, not `400`, and is answered after the rate limit.
         Rate limit 20 attachment writes/min per user (shared with delete). `Idempotency-Key` is not honoured.
       security:
         - bearerUser: []
@@ -2683,6 +2688,8 @@ paths:
         the request fails (`500`) and no URL is issued. Every issued URL writes exactly one audit row.
         The URL is a presigned GET valid 60 seconds with an `attachment` disposition and the stored verified content
         type. Rate limit 120 attachment reads/min per user (a signed URL is never stored for replay).
+        `400 ValidationFailed`: a request body is not accepted. A non-numeric, zero or negative `{attachmentId}` is
+        `404 NotFound`, not `400`, and is answered after the rate limit.
         `Idempotency-Key` is not honoured.
       security:
         - bearerUser: []
@@ -2728,6 +2735,8 @@ paths:
         attachment absent, belonging to another record or already deleted → `404`; then the record is locked
         (`locked_at <= now`, database time) → `409 RecordLocked`. Admins are not in `x-roles`: `403 Forbidden` at the
         role step. Rate limit 20 attachment writes/min per user (shared with `completeRecordAttachmentUpload`).
+        `400 ValidationFailed`: a request body is not accepted. A non-numeric, zero or negative `{attachmentId}` is
+        `404 NotFound`, not `400`, and is answered after the rate limit.
         `Idempotency-Key` is not honoured.
       security:
         - bearerUser: []
@@ -3157,7 +3166,9 @@ components:
         Seconds to wait before retrying. On `429 RateLimited`: until the limiter allows another request. On
         `409 Conflict` from an operation that takes `Idempotency-Key`: always `1` — a request with the same key is still
         being processed (or has just failed and released its key), so the same request should be retried after the
-        delay; it is not a final conflict. Absent on every other 409.
+        delay; it is not a final conflict. Also `409 Conflict` from an upload-intent `complete` while another request
+        holds that intent's lock: always `1`, `Conflict` only. Absent on every other 409 (for example
+        `AttachmentLimitReached`, `RecordLocked`, and a `Conflict` for a closed intent).
       schema:
         type: integer
         minimum: 1
@@ -3769,7 +3780,7 @@ components:
               details: []
               requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordAttachmentCompleteConflict:
-      description: '`AttachmentLimitReached` (the record already holds 20 live attachments), or `Conflict` (the intent was consumed without a result, the replayed attachment is no longer live, or `Retry-After: 1` while another request holds the intent lock).'
+      description: '`AttachmentLimitReached` (the record already holds 20 live attachments; no `Retry-After`), or `Conflict` (the intent was consumed without a result, the replayed attachment is no longer live, the intent was closed or expired by the purge or a concurrent request between the lock read and the short transaction, or another request holds the intent lock). `Retry-After: 1` is present only on the lock-held `Conflict`; it is absent on `AttachmentLimitReached` and on every other `Conflict` cause.'
       headers:
         Cache-Control:
           $ref: '#/components/headers/CacheControlNoStore'
@@ -3795,7 +3806,7 @@ components:
                 success: false
                 error:
                   code: Conflict
-                  message: Conflict
+                  message: The resource already exists
                   details: []
                   requestId: 3f0e4c1a-7b5d-4e2a-9c61-0d2b8a6f5e11
     RecordWriteForbidden:
