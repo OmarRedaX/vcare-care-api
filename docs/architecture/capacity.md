@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-14
+last_verified: 2026-10-20
 tags: [architecture, capacity, sizing, load, storage, redis]
 related: [deployment, infrastructure, data-model, scheduling-slots, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, hub-capacity]
 ---
@@ -93,7 +93,7 @@ Case 2 hydration reaching Identity and JWKS/service-token load are platform numb
 |---|---|
 | Record attachments | ≈ 5.6 GB/day → **≈ 2 TB/year**; lifecycle to infrequent-access after 90 days |
 | Verification documents | ≈ 20 GB total |
-Soft-deleted objects are not purged in MVP.
+Soft-deleted objects are not purged in MVP (a removed record attachment keeps its stored object). Checked 2026-10-20 against the built `record-attachments` module: the assumptions above are averages and hold; the 20 attachments × 10 MB per record cap is a per-record abuse ceiling (200 MB), not an assumption, so no number here changes.
 
 ## 7. 10× check (75 k consultations/day, ≈ 1 000 rps)
 | Resource | At 10× | Verdict |

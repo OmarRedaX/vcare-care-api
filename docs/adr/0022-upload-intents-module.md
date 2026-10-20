@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-19
+last_verified: 2026-10-20
 tags: [adr, upload-intents, verification, record-attachments, object-storage, worker, extraction]
 related: [adr-0013-verified-direct-upload-lifecycle, adr-0014-on-demand-download-urls, adr-0015-aws-sdk-storage-adapter, adr-0017-generic-helpers-and-transaction-scoping, adr-0021-identity-sync-engine-module, record-attachments-spec, verification-spec, file-handling]
 ---
@@ -44,3 +44,8 @@ Routes, responses, audit rows, error codes, rate limits and worker behaviour of 
 - **Keep the lifecycle in `verification` and import it from `record-attachments`.** Rejected: cross-module private coupling and an inverted dependency; verification would own record-attachment semantics.
 - **Copy it into `record-attachments`.** Rejected: two copies of the verify-and-promote step diverge; a fix in one (for example the ETag binding) would silently miss the other.
 - **Move the verify-and-promote step into `lib/storage`.** Rejected: the step also closes intents and emits the failure metric, i.e. it is intent lifecycle (Care rules and `upload_intents` rows), not storage; `lib/` must not know Care's tables.
+
+## Addendum (2026-10-20)
+Append-only factual corrections; the decision is unchanged.
+- The golden statement test was **not** committed before the move: commit `389de6f` carried the golden JSON, the test and the extraction together. The invariant (decision consequence 4 above and the Consequences bullet "proved by the golden statement test, committed before the move") was re-proved on 2026-10-19 by running the test body against the pre-extraction code in an isolated checkout: identical recorded statements and storage calls, the only difference being the dropped `kind` predicate of the purge listing. Evidence: [record-attachments tasks](../record-attachments/tasks.md) "K8 evidence".
+- `record-attachments` is built (2026-10-20) and is the second consumer. Behaviour inherited unchanged from `verification` and accepted by the owner as documented trade-offs: the quarantine object is deleted before the short `complete` transaction (a non-conflict failure there loses the bytes; a retry answers `400`), the purge loop holds its singleton lock connection during serial deletes, and its listing reads the intent's clinical `description` (worker memory only, never logged). See [record-attachments spec](../record-attachments/spec.md) 14.2 (K1, K5, K6).

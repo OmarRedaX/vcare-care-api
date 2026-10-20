@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [records, clinical, privacy, audit, attachments, amendments]
-related: [consultation-lifecycle, rbac, data-model, future, file-handling, records-spec]
+related: [consultation-lifecycle, rbac, data-model, future, file-handling, records-spec, record-attachments-spec]
 ---
 
 # Clinical Records
@@ -15,9 +15,9 @@ Medical records carry the strictest privacy rules on the platform. The rules bel
 19 plus CLAUDE.md → Privacy and logging.
 
 **Built (2026-10-18, `records` module, [spec](../records/spec.md)):** create, read, update-or-amend, the patient timeline,
-`Consultation.hasRecord` and the follow-up link. **Designed, not built:** attachments (the next module,
-`record-attachments`): until then `MedicalRecord.attachments` is always `[]` and the sections marked "Attachments" below
-are the target design.
+`Consultation.hasRecord` and the follow-up link. **Built (2026-10-20, `record-attachments` module,
+[spec](../record-attachments/spec.md)):** file attachments on a record (upload, audited download, soft delete before the
+lock); `MedicalRecord.attachments` is the live metadata list.
 
 ## Creation gate
 `POST /api/consultations/{id}/record` succeeds only when **all** hold. The order is fixed and the first failure wins; the
@@ -63,20 +63,33 @@ doctor finds the record id in the patient timeline.
 - Reads return the original plus amendments **in append (id) order**; clients show the amended view with history.
   Nothing is ever silently overwritten.
 
-## Attachments (designed; not built — the `record-attachments` module)
+## Attachments (built 2026-10-20 — the `record-attachments` module)
 Full design: [file-handling.md](./file-handling.md) ([ADR 0013](../adr/0013-verified-direct-upload-lifecycle.md),
-[ADR 0014](../adr/0014-on-demand-download-urls.md)).
-- Upload: the assigned doctor creates an intent (`POST /api/records/{id}/attachments/uploads`, 20/hour per user),
-  uploads directly to the private bucket with the presigned POST, then calls `…/uploads/{uploadId}/complete`. The
-  `record_attachments` row and `attachment.added` are written **only after** Care verifies the stored object's size
-  (≤ 10 MB) and leading bytes (PDF, JPEG, PNG) — never the filename or a declared content type.
-- Adding is allowed before and after the lock (it appends); **deleting** (soft) is allowed only before the lock,
-  else `409 RecordLocked`.
-- Download: record reads list attachment metadata only. Opening a file calls
-  `POST /api/records/{id}/attachments/{attachmentId}/download-url`, which runs the record's read policy (admins
-  never) and returns a presigned GET valid 60 s. **Issuing a URL is an audited clinical read**
-  (`attachment.url_issued`); if the audit insert fails, no URL is issued.
-- Object keys and presigned URLs are never logged and never stored beyond the key.
+[ADR 0014](../adr/0014-on-demand-download-urls.md), [ADR 0022](../adr/0022-upload-intents-module.md)); rules and as-built
+deviations: [record-attachments/spec.md](../record-attachments/spec.md) (section 14 wins).
+- **Only the record's author** creates an intent, completes it and removes an attachment. Every other doctor (a consulting
+  one included), an absent record and a non-numeric id are `404`; patients and admins are `403` at the role step; a locally
+  suspended author is `403` (re-checked inside the `complete` transaction, after the storage round trip).
+  `NotAssignedDoctor` is never returned on an attachment route.
+- Upload: the author creates an intent (`POST /api/records/{id}/attachments/uploads`, 20/hour per user, optional clinical
+  `description` of at most 500 code points), uploads directly to the private bucket with the presigned POST, then calls
+  `…/uploads/{uploadId}/complete` (20/min per user, shared with delete). The `record_attachments` row and `attachment.added`
+  are written **only after** Care verifies the stored object's size (1 B to 10 MB) and leading bytes (PDF, JPEG, PNG) — never
+  the filename or a declared content type.
+- **Cap:** a record holds at most 20 live attachments (`409 AttachmentLimitReached` on intent creation and `complete`); the
+  guarantee is the count under the record row lock inside the `complete` transaction. A removed attachment frees a slot.
+- Adding is allowed before **and after** the lock (it appends, with no reason; the audit row carries `afterLock`; it never
+  updates `medical_records`). **Deleting** (soft; the stored object is kept) is allowed only before the lock, else
+  `409 RecordLocked`, decided with database time under `FOR NO KEY UPDATE` and repeated by the trigger
+  `trg_record_attachments_forbid_delete_after_lock`. A mistaken attachment added after the lock cannot be removed through the
+  API; the remedy is an amendment that explains it.
+- Download: record reads list attachment metadata only (`id, recordId, fileType, sizeBytes, description, createdAt`; one
+  `= ANY` query per page, no extra audit row). Opening a file calls
+  `POST /api/records/{id}/attachments/{attachmentId}/download-url` (120/min per user), which runs the record's read policy
+  (admins never) and returns a presigned GET valid 60 s. **Issuing a URL is an audited clinical read**
+  (`attachment.url_issued`, committed before the URL is signed); if the audit insert fails, no URL is issued.
+- Object keys, descriptions and presigned URLs are never logged; no attachment route takes an `Idempotency-Key` (a response
+  may hold a POST policy or URL, which must not sit in Redis).
 
 ## Who can read
 | Viewer | Records | Patient profile clinical fields |
@@ -98,7 +111,7 @@ ownership). The patient and the other consulted doctors still read those records
 ## Patient timeline
 `GET /api/patients/{patientUserId}/records` returns, per page, the patient profile (allergies, chronic
 conditions, blood type, date of birth) and records newest first (`created_at DESC, id DESC` keyset) with their amendments;
-`attachments` is `[]` until `record-attachments` ships. `data.patient` repeats on every page and is **`null`** when the patient
+each record carries its live `attachments` metadata (one extra `= ANY` query per page, none for an empty page). `data.patient` repeats on every page and is **`null`** when the patient
 has no profile row yet (booking needs none). The amendments of a page are loaded by one `= ANY($1)` query. It is the
 doctor's pre-consultation view (PRD 7.8) and the patient's own history (PRD 7.9). Every call writes exactly one
 `patient_records.listed` audit row (entity type `patient_records`, entity id = the patient's Identity user id, also for an
@@ -124,8 +137,8 @@ construction, except a booking replayed from the database idempotency key, which
 | Action | When | Transaction |
 |---|---|---|
 | `record.created`, `record.updated`, `record.amended` | writes | same transaction as the write |
-| `attachment.added`, `attachment.removed` | attachment writes (planned) | same transaction |
-| `record.read` (also written by a pre-lock no-op `PATCH`), `patient_records.listed`, `patient_profile.read`, `consultation.read`; `attachment.url_issued` (planned) | reads | written before the response; **if the audit insert fails, the read fails (500)** |
+| `attachment.added`, `attachment.removed` | attachment writes (`complete`, `DELETE`) | same transaction |
+| `record.read` (also written by a pre-lock no-op `PATCH`), `patient_records.listed`, `patient_profile.read`, `consultation.read`; `attachment.url_issued` | reads | written before the response; **if the audit insert fails, the read fails (500)** |
 
 Audit `metadata` holds ids, statuses, and reasons only — never clinical text, codes, or names. Logs never contain
 record contents, complaint text, allergies, conditions, diagnosis text or code, object keys, or presigned URLs.

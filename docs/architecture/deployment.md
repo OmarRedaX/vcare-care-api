@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-15
+last_verified: 2026-10-20
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
 ---
@@ -81,7 +81,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 | `jwks_refresh_failed` | `reason` | JWKS fetch health (`IdentityJwksStale` context) |
 | `jwks_cache_age_s` | — | `IdentityJwksStale` |
 | `redis_breaker_open` | — | Redis stall detection ([resilience.md](./resilience.md) → Timeouts) |
-| `upload_verification_failed`, `upload_intent_expired`, `download_url_issued` | `reason` / `kind` | `UploadVerificationFailureSpike` |
+| `upload_verification_failed` (`reason`, `kind`), `upload_intent_expired`; `download_url_issued` designed, not emitted yet | `reason` / `kind` | `UploadVerificationFailureSpike` |
 
 **Alerts added by this design** (actions in [runbook.md](../runbook.md); existing ones in [resilience.md](./resilience.md)):
 `OutboxLagHigh` (`notification_outbox_lag_seconds` > 300 for 5 min, ticket) · `OutboxPendingStale` (`notification_outbox_oldest_pending_age_seconds` > 7200 for 5 min, ticket) · `NotificationContactsForbidden` (any `notification_contacts_forbidden`, ticket) · `OutboxDeadJobs` (any `notification_dead`, ticket) · `DbReplicaLagHigh`
@@ -100,10 +100,9 @@ authenticated Care request is 401; the platform alert row lives in hub `architec
   implemented by the admin-doctors module (built 2026-10-09).
 - ~~`GET /api/audit-logs` requires/defaults a time range (ADR 0009).~~ Contract landed 2026-10-08 (`to` defaults to now,
   `from` to 30 days before `to`); implemented by the audit module (built 2026-10-09).
-- File handling (ADRs 0013, 0014): replace the two multipart upload operations with `…/uploads` + `…/complete`, add
-  the three `download-url` operations, drop `downloadUrl` from DTOs, add `UploadIntentExpired` — full list in
-  [file-handling.md](./file-handling.md) §2. IaC: bucket CORS, Block Public Access, TLS policy, `quarantine/*`
-  lifecycle (hub ADR 0011).
+- File handling (ADRs 0013, 0014): the contract changes are applied for verification documents and record attachments (full list in
+  [file-handling.md](./file-handling.md) §2). IaC still open: bucket CORS, Block Public Access, TLS policy, `quarantine/*`
+  lifecycle (hub ADR 0011); the bucket and IAM work also names the `record-attachments/*` prefix (care-api `GetObject` / `CopyObject` target; the 90-day infrequent-access lifecycle) now that the module is built.
 - **Consumer of new Identity provider changes (Identity ships first):** internal status transition
   `suspended → active`; `GET /internal/users/contacts?ids=` with scope `users:contact:read` (hub ADRs 0009, 0010).
 

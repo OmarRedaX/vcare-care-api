@@ -4,11 +4,11 @@ owner: care-team
 service: care-service
 module: records
 status: implemented
-version: 0.2.0
+version: 0.2.1
 diataxis: reference
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [spec, records, clinical, medical-records, amendments, lock-trigger, timeline, follow-up, has-record, audit, clinical-privacy]
-related: [records-brainstorm, sessions-spec, consultations-spec, patients-spec, clinical-records, data-model, consultation-lifecycle, rbac, file-handling, adr-0013-verified-direct-upload-lifecycle, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [records-brainstorm, record-attachments-spec, sessions-spec, consultations-spec, patients-spec, clinical-records, data-model, consultation-lifecycle, rbac, file-handling, adr-0013-verified-direct-upload-lifecycle, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function]
 contracts: [contracts/openapi.yaml]
 ---
 
@@ -17,8 +17,8 @@ contracts: [contracts/openapi.yaml]
 The clinical record of a **completed** consultation: **create** (assigned doctor), **read** (patient, author, consulted doctors), **update in place for
 24 hours then amend** (`PATCH`), and the **patient timeline**. The unit also makes `Consultation.hasRecord` true and lets a patient book a follow-up that
 carries `followUpOfRecordId` (lifts consultations C6 and C9). Scope follows [brainstorm.md](./brainstorm.md) (decisions R-D1..R-D10, binding, folded in
-section 1.5). **Attachments are the next module (`record-attachments`)**: here `attachments` is always `[]` and the `RecordAttachment` schema and the
-attachment operations are not touched.
+section 1.5). **Attachments were the next module and are now built (`record-attachments`, 2026-10-20; see section 13 note 18)**: at v0.2.0 `attachments` was always `[]` and the `RecordAttachment` schema and the
+attachment operations were not touched; the text below keeps that design.
 
 > **Status (2026-10-18, v0.2.0): implemented.** The four routes, three migrations and the `consultations` / `sessions` / `patients` additions are built, tested
 > and manually QA'd (359 CURL checks pass, 0 fail); the code review is closed clean. Contract edits R1-R10 and M11-M16 are **applied** in
@@ -452,7 +452,7 @@ export const RECORDS_TIMELINE_USER_LIMIT = 60;   export const RECORDS_TIMELINE_R
 | RC-R20 | Rate limits per user: record `POST`/`PATCH` 20/min (one bucket), `GET /records/{id}` 120/min, timeline 60/min → `429 RateLimited` | `rateLimit` (Redis sliding window) |
 | RC-R21 | Input: `chiefComplaint` 3..2000 and required on create; optional text non-blank (`examinationNotes`, `treatmentPlan` ≤ 10000; `diagnosisText` ≤ 2000); `diagnosisCode` matches `^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$`; `followUpInDays` 1..365; `reason` 3..1000; NUL rejected; unknown properties and JSON `null` members rejected; a body with no record field is `400` | request DTOs + controller; `CHECK`s as backstop |
 | RC-R22 | Every record response carries `Cache-Control: no-store` | `NO_STORE_PREFIXES` (`/api/records` added) |
-| RC-R23 | `attachments` is `[]` on every record DTO; no response contains a URL, object key or file field | response DTO |
+| RC-R23 | `attachments` is `[]` on every record DTO; no response contains a URL, object key or file field | response DTO (**superseded 2026-10-20**: `attachments` is the live metadata list on `GET /records/{id}`, the timeline and the `PATCH` `200`; the no-URL/no-key rule stands; see 13 note 18) |
 | RC-R24 | Record routes make no Identity call and hydrate no names (DTOs carry user ids) | design |
 | RC-R25 | Every read filters `deleted_at IS NULL`; no route sets `deleted_at` or deletes | repository |
 | RC-R26 | Lock-order safety: record writes hold only the record row (`FOR NO KEY UPDATE`) and the create takes no lock before its insert; a follow-up booking's `FOR KEY SHARE` on the record never blocks or deadlocks a `PATCH` | `FOR NO KEY UPDATE`; section 3.7 |
@@ -536,7 +536,7 @@ No CLAUDE.md budget covers records; targets (p95): create and `PATCH` < 150 ms, 
 - **Migrations:** section 2.5. **No-store:** malformed-JSON `PATCH /api/records/1` → `400` + `Cache-Control: no-store`.
 
 ## 10. Out of scope
-- **Attachments** (`record-attachments`, the next module): upload intents, `complete`, `download-url`, `DELETE`, `attachment.*` audit actions, the `RecordAttachment` schema rewrite and the removal of the legacy multipart operation. `attachments` is `[]` here.
+- **Attachments** (`record-attachments`, built 2026-10-20 after this unit): upload intents, `complete`, `download-url`, `DELETE`, `attachment.*` audit actions, the `RecordAttachment` schema rewrite and the removal of the legacy multipart operation. `attachments` was `[]` here (see 13 note 18).
 - Record deletion or erasure endpoints (soft delete exists in the schema; no route; blocked by the trigger after the lock); clearing a field through an amendment (R-D6); a per-record amendment cap; a record-by-consultation lookup route.
 - Phase-2 AI drafts (complaint parse, summary, ICD-10 suggestions) and any `/internal/*` record endpoint; an ICD-10 catalog or validation against real codes (R-D2).
 - Doctor-initiated follow-up booking on a patient's behalf (a `/system-design` topic); a timing or `followUpInDays` check on the follow-up link (R-D3).
@@ -597,3 +597,4 @@ Built, tested and manually QA'd as specified (four routes, three migrations, `ha
 15. **Test environment.** The suite ran against PostgreSQL 18 (an isolated native cluster, trust auth) and Redis db 14/12; `db-roles.test.ts` password-rejection cases need a password-authenticating server and `storage-adapter.test.ts` needs MinIO (both pre-existing and unrelated to records). Docker was not available during the QA run.
 16. **FK error codes (2.5):** a `DELETE` of a record referenced by a follow-up consultation raises `23001` (`restrict_violation`), not `23503`; a dangling id on insert is `23503`.
 17. **Stale comment, not a behaviour defect:** the doc comment above `RecordUpdateResult` in `src/app/records/types.ts` still says the `unchanged` result is "nothing written, nothing audited"; the code (and the contract) audit the no-op as `record.read` (decision 2). Source comments are outside the docs updater's remit; fix at the next code touch.
+18. **Attachments are now real (2026-10-20, `record-attachments` module, [spec](../record-attachments/spec.md) sections 4.9 and 14).** RC-R23 is superseded: `MedicalRecord.attachments` lists the live attachment metadata (`id, recordId, fileType, sizeBytes, description, createdAt`, oldest first, no URL, no key) on `GET /records/{id}`, each timeline item and the `PATCH` `200` (in place and no-op); the create `201` and the amendment `201` are unchanged. The records code plugged in through `RecordAttachmentLinksService.listByRecordIds` (one `= ANY` query per page, none for an empty page): `RecordQueriesService` and `RecordsService` gained that dependency, so the statement counts are now `GET` 4 (record, amendments, attachments, audit), timeline 5 (3 on an empty page), `PATCH` in place 4 and no-op 3 (amendment still 3). `record.read` and `patient_records.listed` audit metadata are unchanged. `recordReaderRule` is exported from `policies.ts` for the `download-url` route, and `RecordLinksService.lockForNoKeyUpdate` serves the attachment writes. The `RecordLocked` response also covers a `DELETE` of an attachment after the lock.

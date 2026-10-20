@@ -3,15 +3,15 @@ title: record-attachments — Tasks
 owner: care-team
 service: care-service
 module: record-attachments
-status: in-progress
-last_verified: 2026-10-19
+status: done
+last_verified: 2026-10-20
 tags: [tasks, record-attachments, records, upload-intents, extraction, clinical]
 related: [record-attachments-spec, record-attachments-brainstorm, verification-spec, records-spec, adr-0021-identity-sync-engine-module, adr-0022-upload-intents-module]
 ---
 
 # record-attachments — Tasks
 
-Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/record-attachments`. **Slice 1 (E0 + E1, the behaviour-preserving extraction of `upload-intents` out of `verification`) is worked first and lands before any attachment migration, route or contract edit** (spec section 2, step 5). Slice 2 steps 0-7 are built (dispatch 2); steps 8-9 (dedicated test suites, manual QA, final docs) remain.
+Source: [spec.md](./spec.md) (v0.2.0, section 13 task order; section 14 as-built notes win). Branch `feature/record-attachments`. **Slice 1 (E0 + E1, the behaviour-preserving extraction of `upload-intents` out of `verification`) was worked first and landed before any attachment migration, route or contract edit** (spec section 2, step 5). Slice 2 steps 0-9 are done; the review is clean (2026-10-19) and the docs were reconciled on 2026-10-20. One follow-up stays open outside this module's scope: repeat manual QA against real MinIO (see step 9 below and the owner decisions in spec section 14.2).
 
 ## Legend
 - [ ] todo · [~] in progress · [x] done
@@ -27,7 +27,7 @@ Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/re
 - [x] (test) E1: new unit and integration tests for the shared module (kind `verification_document` and `record_attachment` at the service boundary)
 - [x] (docs) E1: as-built notes (verification spec section 16, file-handling, architecture overview module map, INDEX)
 
-## Slice 2 — record-attachments proper (steps 0-7 worked in dispatch 2; steps 8-9 remain)
+## Slice 2 — record-attachments proper (steps 0-9 done)
 - [x] (contract) 0: contract edits C1-C6 in `contracts/openapi.yaml` + the CLAUDE.md owner edit of C5 (`AttachmentLimitReached` row and Domain-rules sentence)
 - [x] (lib) 1: `attachmentDescription` redaction key + test row; `AttachmentLimitReached` in `lib/error/types.ts`; the no-store row (`tests/integration/no-store.test.ts`; `/api/records` already in `NO_STORE_PREFIXES`)
 - [x] (migration) 2: `20261018120000_create_record_attachments` (table, constraints, partial index, `forbid_attachment_delete_after_lock` trigger, column-level grants)
@@ -44,7 +44,8 @@ Source: [spec.md](./spec.md) (v0.1.0, section 13 task order). Branch `feature/re
 - [x] (mount) 7: mount after the records router in `src/routes.ts`
 - [x] (tests) 8: unit, integration, RBAC, contract, concurrency, lock boundary, privacy, EXPLAIN, migrations (spec section 10)
 - [x] (manual-qa) 9: `scripts/curl-test-record-attachments.sh` (331 pass / 0 fail, 2026-10-19) and the re-run of `scripts/curl-test-verification.sh` (274 pass / 0 fail); both against the DEV-ONLY storage stand-in `scripts/storage-qa-fake-s3.mjs`, not MinIO / S3 — repeat against real MinIO before calling the module verified end to end (see [manual-qa.md](./manual-qa.md))
-- [ ] (docs) 9: service card, INDEX, architecture shards, runbook, records/verification spec pointers, as-built notes (spec section 14) ← /update-docs
+- [x] (docs) 9: service card, INDEX, system-design router, architecture shards (file-handling, clinical-records, data-model, api, rbac, overview, infrastructure, capacity, deployment, resilience), runbook, records/verification/patients spec pointers, as-built notes (spec section 14) — done 2026-10-20 by `/update-docs`
+- [ ] (follow-up, not a defect of this module) repeat `scripts/curl-test-record-attachments.sh` and `scripts/curl-test-verification.sh` against real MinIO and run `tests/integration/storage-adapter.test.ts` with MinIO up (Docker was unavailable for every run on record)
 
 ## Verification record (slice 1)
 Environment: isolated native PostgreSQL 18 on `127.0.0.1:5499` (trust auth, database `care_test`), Redis db 14 on `:6379`. Docker unavailable. Pre-existing environment failures, not part of this work: `tests/integration/storage-adapter.test.ts` (needs MinIO: 3 tests plus a suite that fails to run) and 4 password-rejection cases of `tests/integration/db-roles.test.ts` (trust-auth server); they fail identically before and after.

@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [rbac, authorization, ownership, privacy, security]
-related: [api, consultations-spec, schedules-spec, clinical-records, integration, infrastructure, file-handling, records-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [api, record-attachments-spec, consultations-spec, schedules-spec, clinical-records, integration, infrastructure, file-handling, records-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # RBAC and Ownership
@@ -117,9 +117,8 @@ not a policy check (`FOR SHARE` on the profile row, so it serializes with a susp
 | `POST /consultations/:id/record` (**live**, 2026-10-18) | doctor (active; check `doctor_not_suspended`, `403`) | resolver `record_write_consultation`: `allow` only when the consultation's `doctor_user_id = auth.userId`; every other caller (related or not, any status) `deny-not-found`. The service re-checks in the transaction (a mismatch is `404`) and then requires `completed` | clinical-write: `record.created` |
 | `GET /records/:id` (**live**) | patient, doctor (admin `403`) | resolver `record_reader`: patient owns the record; doctor not locally suspended (`deny-not-found` otherwise) **and** author or D-R4 relationship with the record's patient; else `deny-not-found` | clinical-read: `record.read` |
 | `PATCH /records/:id` (**live**) | doctor (active; check `doctor_not_suspended`, `403`) | resolver `record_write_record`: `allow` for the author **or** a doctor with a D-R4 relationship to the patient, else `deny-not-found`; the service then answers `403 NotAssignedDoctor` to a related non-author | clinical-write: `record.updated` (before the lock) / `record.amended` (after); a pre-lock no-op writes one `record.read` |
-| `POST /records/:id/attachments`, `DELETE /records/:id/attachments/:aid` | doctor | `assigned-doctor`; delete only before lock | clinical-write |
-| `POST /records/:id/attachments/uploads`, `…/uploads/:uploadId/complete` (planned, ADR 0013) | doctor (active, not suspended) | `assigned-doctor`; `complete` also requires intent owner = caller (else `deny-not-found`) and re-checks assignment | clinical-write on complete |
-| `POST /records/:id/attachments/:aid/download-url` (planned, ADR 0014) | patient, doctor | same as `GET /records/:id`; admins 403 | clinical-read (`attachment.url_issued`) |
+| `POST /records/:id/attachments/uploads`, `…/uploads/:uploadId/complete`, `DELETE /records/:id/attachments/:attachmentId` (**live**, 2026-10-20) | doctor only (active; check `doctor_not_suspended`, `403`); **admin and patient `403` at the role step, before any lookup** | resolver `record_attachment_writer` (`x-ownership: record-author`): `allow` only when the record's `doctor_user_id = auth.userId`; a related doctor, a stranger, an absent record and a non-numeric id are all `deny-not-found` (`NotAssignedDoctor` is never returned here). `complete` also needs the intent (owner = caller, kind `record_attachment`, target = this record, else `404`) and the service re-checks the author and, inside the transaction, the local suspension (`403`); `DELETE` needs a live attachment of this record (`404`) and an unlocked record (`409 RecordLocked`) | clinical-write: `attachment.added` (with `afterLock`) / `attachment.removed`; `POST …/uploads` writes none |
+| `POST /records/:id/attachments/:attachmentId/download-url` (**live**, 2026-10-20) | patient, doctor (admin `403`) | the same `record_reader` resolver as `GET /records/:id` (suspended doctor `deny-not-found`); the attachment must be live and belong to this record (`404`) | clinical-read: `attachment.url_issued`, committed before the URL is signed; a failed audit insert means no URL |
 | `POST /doctors/me/documents/uploads`, `…/uploads/:uploadId/complete`, `POST /doctors/me/documents/:documentId/download-url` (live) | doctor (pending, active, or rejected) | self; uploads only while the application is `draft`/`rejected`; intent owner = caller | `verification.document_uploaded` / `verification.document_url_issued` |
 | `POST /admin/applications/:id/documents/:documentId/download-url` (live) | admin | none; document must belong to the application | admin-action (`verification.document_url_issued`) |
 | `GET /help-articles`, `GET /help-articles/:id` | patient, doctor, admin | none (published and own audience; admins see drafts) | — |
@@ -147,7 +146,7 @@ Response DTOs are built with `from(entity, viewer)`:
 |---|---|---|---|
 | Consultation | get-one and own write responses: all fields incl. `complaintText`, local times in `patientTimezone`; list items omit `complaintText` | same, local times in the doctor's zone | **no `complaintText`** (also on write responses); lifecycle, parties, times, `cancelReason`, `needsAdminFollowup` (decision D-R7: `cancelReason` is administrative context, clients must not put clinical detail in it) |
 | Patient profile | all fields | all fields | not served |
-| Medical record / amendments / attachments | all fields | all fields | not served |
+| Medical record / amendments / attachments | all fields; attachment metadata only (no URL or key), files via audited `download-url` | all fields; same attachment rule | not served (no record route, no attachment route) |
 | Doctor profile | public view | own full view on `/doctors/me` | public view + `status` (bookable/not) |
 | Verification application | own, document metadata; URLs on demand | — | full, document metadata; URLs on demand (audited) |
 | Audit log entry | — | — | metadata only (never clinical text) |

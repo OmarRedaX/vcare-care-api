@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -178,7 +178,7 @@ tokens, request bodies of clinical or consultation routes.
 `key.toLowerCase().replace(/[_-]/g, "")`, so `date_of_birth` and `date-of-birth` match `dateOfBirth`; a match is
 replaced by `"[REDACTED]"`, recursively through objects and arrays; depth > 8 → `"[Truncated]"`; cycles →
 `"[Circular]"`; the `message` string is never rewritten. Keys: `complaintText`, `examinationNotes`, `diagnosisText`,
-`diagnosisCode`, `treatmentPlan`, `chiefComplaint`, `followUpInDays`, `amendments`, `amendmentReason` (records, 2026-10-18), `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `objectKey`,
+`diagnosisCode`, `treatmentPlan`, `chiefComplaint`, `followUpInDays`, `amendments`, `amendmentReason` (records, 2026-10-18), `allergies`, `chronicConditions`, `bloodType`, `dateOfBirth`, `objectKey`, `attachmentDescription` (record attachments, 2026-10-20; a bare `description` is deliberately not redacted because `specialties.description` is non-clinical, so no call site may log an attachment or intent row),
 `downloadUrl`, `uploadUrl`, `joinToken`, `authorization`, `cookie`, `setCookie`, `fullName`, `displayName`,
 `firstName`, `lastName`, `email`, `phone`, `password`, `token`, `accessToken`, `refreshToken`, `serviceToken`,
 `clientSecret`, `body`, `requestBody`, `connectionString`, `databaseUrl`, `migrationDatabaseUrl`, `headline`, `bio`,

@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [system-design, architecture, router, care]
-related: [overview, data-model, adr-0021-identity-sync-engine-module, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
+related: [overview, data-model, adr-0021-identity-sync-engine-module, adr-0022-upload-intents-module, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
 
 # System Design — care-service
@@ -17,18 +17,18 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | Shard | Read it when you need to… | Lens |
 |---|---|---|
 | [architecture/overview.md](./architecture/overview.md) | see containers, module map, layering, request pipeline | explanation |
-| [architecture/data-model.md](./architecture/data-model.md) | look up tables, constraints, indexes, ERD (as-built DDL for `medical_records` and `medical_record_amendments` included) | reference |
+| [architecture/data-model.md](./architecture/data-model.md) | look up tables, constraints, indexes, ERD (as-built DDL for `medical_records`, `medical_record_amendments` and `record_attachments` included) | reference |
 | [architecture/api.md](./architecture/api.md) | look up routes with roles, ownership, audit | reference |
 | [architecture/scheduling-slots.md](./architecture/scheduling-slots.md) | understand availability, timezones, booking re-validation, caches | explanation |
 | [architecture/consultation-lifecycle.md](./architecture/consultation-lifecycle.md) | understand statuses, transitions, windows, flows D/E/F | explanation |
-| [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records (built with `records`, 2026-10-18: creation gate, 24 h lock, amendments, timeline, `hasRecord`, follow-up link), and the designed attachments and AI boundary | explanation |
+| [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records (built with `records`, 2026-10-18: creation gate, 24 h lock, amendments, timeline, `hasRecord`, follow-up link), attachments on a record (built with `record-attachments`, 2026-10-20: author-only writes, cap of 20, audited download, removal only before the lock), and the AI boundary | explanation |
 | [architecture/rbac.md](./architecture/rbac.md) | check permissions, per-route policies, viewer-aware DTOs | reference |
 | [architecture/integration.md](./architecture/integration.md) | understand service tokens and Integration Cases 1–4 (Cases 1 and 2 built with verification; Cases 3 and 4 built with admin-doctors) | explanation |
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts, retries, durable jobs, idempotency, alerts | explanation |
 | [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars, connection settings, logging, errors, health, boot and shutdown | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics and alerts | explanation |
 | [architecture/capacity.md](./architecture/capacity.md) | check Care's load, compute, database, storage, and Redis sizing and its 10× check | explanation |
-| [architecture/file-handling.md](./architecture/file-handling.md) | understand uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, contract changes | explanation |
+| [architecture/file-handling.md](./architecture/file-handling.md) | understand uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, contract changes, and the as-built verification and record-attachment specifics (§4a, §4b) | explanation |
 | [architecture/future.md](./architecture/future.md) | see what is deferred and why | explanation |
 
 ## Key decisions
@@ -55,6 +55,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0019](./adr/0019-luxon-for-doctor-timezone-validation.md) | `luxon` validates doctor IANA timezones; canonical spelling is stored |
 | [0020](./adr/0020-local-s3-emulator-image.md) | Local/test S3 emulator: digest-pinned frozen community MinIO build |
 | [0021](./adr/0021-identity-sync-engine-module.md) | Identity-sync engine as its own module shared by verification, suspension and reinstatement (kind policies, injected clock, reason clamp, permanent Identity rejections) |
+| [0022](./adr/0022-upload-intents-module.md) | Upload-intent lifecycle as its own `upload-intents` module shared by verification and record attachments (callback-based `complete`, unchanged lock namespaces and loop name, purge covers every kind) |
 
 `/system-design` 2026-09-15 (Care runtime, capacity, notifications, reinstatement) also produced hub ADR 0009
 (doctor reinstatement via Care) and hub ADR 0010 (notification contact lookup). The file-handling session
