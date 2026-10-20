@@ -32,7 +32,11 @@ Never use git worktree with a node_modules junction (it deleted real node_module
 - /review-code ran (review-20261019-1104.md, no Critical/High) and /develop --fix-review fixed K3, K8, K9, K10 (all RESOLVED, UNCOMMITTED in working tree; gates in tasks.md "Verification record (review fixes)": typecheck/eslint clean, unit 3304 pass, integration only known failures + 1 clock-flaky consultations.test.ts).
 - Hub contract + card re-synced on chore/sync-care-record-attachments (uncommitted); re-sync again after /update-docs.
 
+## Progress (2026-10-20, session 3, end)
+- Review fixes committed (e9d5dbc); re-review CLEAN (review file deleted, 72c4495); /update-docs DONE (fbf46fa, spec 0.2.0); Codex read-only check found 2 doc issues, fixed.
+- Pushed: care feature/record-attachments (fbf46fa), hub chore/sync-care-record-attachments (ed1425c). NO PRs opened.
+
 ## ▶ NEXT STEP
-3. Commit the review fixes, then re-run /review-code record-attachments to verify each fix (review file deleted when clean; /develop --fix-review again only if it finds more).
-4. /update-docs record-attachments (spec 14 as-built, 12 docs list, service-card, INDEX, shards, runbook; note findLive plans on idx_record_attachments_medical_record_id not PK), then hub: cd ../vcare-hub && git checkout chore/sync-care-record-attachments && scripts/sync-from-spoke.sh care-service ../vcare-care-api, commit+push both.
-5. STOP and report. Do not open/merge PRs without asking (care first, then hub).
+1. Ask the owner: open care PR (feature/record-attachments -> main), then hub PR; merge care first, then hub.
+2. Before merge, report: real MinIO/S3 never run (storage-adapter.test.ts + both curl scripts used scripts/storage-qa-fake-s3.mjs); 8 known integration failures (db-roles 4, storage-adapter 3, consultations clock-flaky 1).
+3. For the owner: CLAUDE.md drift (error table lacks UploadIntentExpired 410 / ApplicationNotEditable / VideoUnavailable; status line + module list stale); hub TODO.md bucket IAM/lifecycle should name record-attachments/* (/system-design); K1 follow-up (post-promote failure deletes quarantine bytes, affects verification too).
