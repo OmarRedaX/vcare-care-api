@@ -36,7 +36,12 @@ Never use git worktree with a node_modules junction (it deleted real node_module
 - Review fixes committed (e9d5dbc); re-review CLEAN (review file deleted, 72c4495); /update-docs DONE (fbf46fa, spec 0.2.0); Codex read-only check found 2 doc issues, fixed.
 - Pushed: care feature/record-attachments (fbf46fa), hub chore/sync-care-record-attachments (ed1425c). NO PRs opened.
 
+## Progress (2026-10-20, session 3, PRs)
+- Real MinIO: storage-adapter 3/3; curl-test-record-attachments 308/0/5 skipped (stand-in-only checks). curl-test-verification NOT re-run on MinIO (needs real Identity stack).
+- K1 fixed (ADR 0023, commit 2195a14): quarantine deleted after commit; retry after failed short tx works. CLAUDE.md updated (9e236dc). Hub TODO.md names record-attachments/* (hub 0c0fa0a).
+- PRs OPEN: care vcare-care-api#45 (feature/record-attachments -> main), hub Vcare#25 (chore/sync-care-record-attachments -> main). NOT merged.
+
 ## ▶ NEXT STEP
-1. Ask the owner: open care PR (feature/record-attachments -> main), then hub PR; merge care first, then hub.
-2. Before merge, report: real MinIO/S3 never run (storage-adapter.test.ts + both curl scripts used scripts/storage-qa-fake-s3.mjs); 8 known integration failures (db-roles 4, storage-adapter 3, consultations clock-flaky 1).
-3. For the owner: CLAUDE.md drift (error table lacks UploadIntentExpired 410 / ApplicationNotEditable / VideoUnavailable; status line + module list stale); hub TODO.md bucket IAM/lifecycle should name record-attachments/* (/system-design); K1 follow-up (post-promote failure deletes quarantine bytes, affects verification too).
+1. Owner reviews/merges care #45 first, then hub #25. After the care merge, re-run the hub sync from main if the card changed.
+2. Optional follow-up: run scripts/curl-test-verification.sh on real MinIO with the real Identity stack.
+3. Later (not started): availability (doctor search + slots endpoint) and help-articles modules.
