@@ -29,8 +29,8 @@ Never use git worktree with a node_modules junction (it deleted real node_module
 - Env restart: pg_ctl -D "C:/Users/power tech/AppData/Local/Temp/care-pg/data" -o "-p 5499" start (run in background; it holds stdout).
 
 ## Progress (2026-10-20, session 3)
-- /review-code ran (review-20261019-1104.md, no Critical/High) and /develop --fix-review fixed K3, K8, K9, K10 (all RESOLVED, UNCOMMITTED in working tree; gates in tasks.md "Verification record (review fixes)": typecheck/eslint clean, unit 3304 pass, integration only known failures + 1 clock-flaky consultations.test.ts).
-- Hub contract + card re-synced on chore/sync-care-record-attachments (uncommitted); re-sync again after /update-docs.
+- /review-code ran (review-20261019-1104.md, no Critical/High) and /develop --fix-review fixed K3, K8, K9, K10 (all RESOLVED, committed e9d5dbc; gates in tasks.md "Verification record (review fixes)": typecheck/eslint clean, unit 3304 pass, integration only known failures + 1 clock-flaky consultations.test.ts).
+- Hub contract + card re-synced on chore/sync-care-record-attachments (committed ed1425c after /update-docs).
 
 ## Progress (2026-10-20, session 3, end)
 - Review fixes committed (e9d5dbc); re-review CLEAN (review file deleted, 72c4495); /update-docs DONE (fbf46fa, spec 0.2.0); Codex read-only check found 2 doc issues, fixed.
