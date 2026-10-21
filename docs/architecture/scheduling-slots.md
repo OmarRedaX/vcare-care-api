@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-12
+last_verified: 2026-10-21
 tags: [scheduling, slots, timezones, booking, caching, performance]
-related: [consultations-spec, schedules-spec, data-model, consultation-lifecycle, resilience, capacity, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh]
+related: [consultations-spec, schedules-spec, data-model, consultation-lifecycle, resilience, capacity, availability, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh, adr-0024-next-available-rank-index-free-map-and-sweep]
 ---
 
 # Scheduling and Slot Computation
@@ -69,7 +69,7 @@ both stay with `availability` (steps 1, 5-7) and `consultations` (booking re-val
 
 Two in-process ports, both with no-op defaults registered in `bootstrap.ts`, are the seams for the next modules:
 - `ScheduleImpactProvider` (`findAffected`, `flagAffected`; inside the write's transaction): **bound by `consultations` since 2026-10-12** (the no-op default remains for tests). `findAffected` reads the future `booked`/`waiting`/`in_progress` rows of the doctor (narrowed to the changed UTC window for an exception change), resolves the **new** open intervals through the write's transaction (`SchedulesService.resolveOpenDays`, 3 queries) and returns the ids whose interval is not contained in one open interval (`isCoveredByOpenIntervals`; the slot grid is deliberately not re-checked, so a shifted shift anchor does not flag every booking). `flagAffected` flags only rows not already flagged `schedule_blocked` and enqueues one `schedule_blocked` outbox row per newly flagged patient, so a patient is notified once; the `409` body still lists already-flagged ids.
-- `ScheduleChangeListener` (after commit; a failure is logged and never fails the write): `availability` binds it to invalidate `slots:*` / `next-available:*` and enqueue the coalesced refresh ([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)). The default does nothing.
+- `ScheduleChangeListener` (after commit; a failure is logged and never fails the write): `availability` binds it to bump `slots-ver`, remove the doctor from the rank index and enqueue the refresh ([ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md), superseding ADR 0010). The default does nothing.
 
 A third port, `ScheduleOwnerResolver`, only breaks the `doctors` / `schedules` construction cycle.
 
@@ -114,20 +114,21 @@ Then in-memory computation, O(days × intervals + busy). Always the primary for 
 reads may use a replica when one is introduced.
 
 ## Caching and invalidation (derived data only)
-| Key | Value | TTL | Used by |
-|---|---|---|---|
-| `slots:<doctorUserId>:<typeId>:<fromDoctorDate>:<toDoctorDate>` | UTC slot list (not viewer-rendered) | ≤ 60 s | slots endpoint, doctor profile preview |
-| `next-available:<doctorUserId>` | earliest free slot start in the next 14 days | ≤ 5 min | search `sort=earliest_availability`, `availableFrom/To` filters |
+**Redesigned 2026-10-21** ([availability.md](./availability.md), [ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md),
+which supersedes ADR 0010). Summary; the key table, flows and failure handling live in the shard:
 
-Invalidated by doctor prefix **after commit** on: booking, reschedule, cancel, no-show, working-hours change,
-exception change, consultation-type change, timezone change, accepting toggle, suspension, reinstatement. Each
-invalidation also enqueues a coalesced `next-available` refresh that `care-worker` recomputes within seconds
-([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)). Rendering per viewer happens after the cache.
-A cache miss must still meet the budget.
+| Key | Value | Lifetime |
+|---|---|---|
+| `slots:<doctorUserId>:<ver>:<typeId>:<fromDoctorDate>:<toDoctorDate>` | UTC slot list (not viewer-rendered) | ≤ 60 s; `slots-ver:<doctorUserId>` is bumped on any input change instead of deleting by prefix |
+| `next-available:index` (ZSET) and `free-map:<doctorUserId>` | earliest free start and a 15-minute free-slot bitmap for the next 14 days, on the shortest active type | removed on input change, rewritten by the worker refresh and a 120 s sweep |
 
-**Search** never computes slots for every row: SQL filters on indexed columns produce the bookable candidate
-page; `next-available` is read with one `MGET` and computed lazily only for misses on that page; names come from
-one batched Identity call (Case 2).
+Invalidated **after commit** on: booking, reschedule, cancel, no-show, completion, working-hours change, exception
+change, consultation-type change, timezone change, accepting toggle, suspension, reinstatement. Rendering per viewer
+happens after the cache. A cache miss must still meet the budget.
+
+**Search** ranks the whole SQL-filtered bookable candidate set from the index (`ZMSCORE`), computes at most a small
+capped number of misses inline, and hydrates the page with one batched Identity call (Case 2). Details, including the
+Redis-down degradation, are in [availability.md](./availability.md).
 
 ## Budgets (p95)
 | Path | Budget |

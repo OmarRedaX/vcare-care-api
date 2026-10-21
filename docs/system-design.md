@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [system-design, architecture, router, care]
-related: [overview, data-model, adr-0021-identity-sync-engine-module, adr-0022-upload-intents-module, adr-0023-complete-deletes-quarantine-after-commit, api, scheduling-slots, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
+related: [overview, data-model, adr-0021-identity-sync-engine-module, adr-0022-upload-intents-module, adr-0023-complete-deletes-quarantine-after-commit, adr-0024-next-available-rank-index-free-map-and-sweep, adr-0025-derived-name-index, adr-0026-discovery-degradation-when-redis-is-down, api, scheduling-slots, availability, consultation-lifecycle, clinical-records, rbac, integration, resilience, infrastructure, future]
 ---
 
 # System Design — care-service
@@ -20,6 +20,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [architecture/data-model.md](./architecture/data-model.md) | look up tables, constraints, indexes, ERD (as-built DDL for `medical_records`, `medical_record_amendments` and `record_attachments` included) | reference |
 | [architecture/api.md](./architecture/api.md) | look up routes with roles, ownership, audit | reference |
 | [architecture/scheduling-slots.md](./architecture/scheduling-slots.md) | understand availability, timezones, booking re-validation, caches | explanation |
+| [architecture/availability.md](./architecture/availability.md) | understand doctor search, the profile preview and the slots endpoint: the Redis rank index and free-map, freshness (remove-on-change, refresh, sweep), the name index, Redis-down degradation, worker loops, contract changes (designed 2026-10-21, not built) | explanation |
 | [architecture/consultation-lifecycle.md](./architecture/consultation-lifecycle.md) | understand statuses, transitions, windows, flows D/E/F | explanation |
 | [architecture/clinical-records.md](./architecture/clinical-records.md) | understand records (built with `records`, 2026-10-18: creation gate, 24 h lock, amendments, timeline, `hasRecord`, follow-up link), attachments on a record (built with `record-attachments`, 2026-10-20: author-only writes, cap of 20, audited download, removal only before the lock), and the AI boundary | explanation |
 | [architecture/rbac.md](./architecture/rbac.md) | check permissions, per-route policies, viewer-aware DTOs | reference |
@@ -43,7 +44,7 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0007](./adr/0007-log-derived-metrics.md) | Log-derived metrics (embedded metric format) |
 | [0008](./adr/0008-care-worker-component.md) | Background work in a separate `care-worker` |
 | [0009](./adr/0009-audit-logs-monthly-partitions.md) | `audit_logs` monthly range partitions, ≥ 6-year retention |
-| [0010](./adr/0010-next-available-lazy-cache-worker-refresh.md) | `next-available` lazy cache + worker refresh |
+| [0010](./adr/0010-next-available-lazy-cache-worker-refresh.md) | `next-available` lazy cache + worker refresh (superseded by 0024) |
 | [0011](./adr/0011-notification-outbox-and-reminders.md) | Notifications via transactional outbox; reminders via worker scan |
 | [0012](./adr/0012-doctor-reinstatement.md) | Admin doctor reinstatement, retry-report-pending (Case 4) |
 | [0013](./adr/0013-verified-direct-upload-lifecycle.md) | Direct-to-S3 uploads via temporary intent; row only after verified `complete` |
@@ -57,6 +58,9 @@ Seeded from the PRD (`../vcare-hub/product/prd.md`) and `CLAUDE.md`; `/system-de
 | [0021](./adr/0021-identity-sync-engine-module.md) | Identity-sync engine as its own module shared by verification, suspension and reinstatement (kind policies, injected clock, reason clamp, permanent Identity rejections) |
 | [0022](./adr/0022-upload-intents-module.md) | Upload-intent lifecycle as its own `upload-intents` module shared by verification and record attachments (callback-based `complete`, unchanged lock namespaces and loop name, purge covers every kind) |
 | [0023](./adr/0023-complete-deletes-quarantine-after-commit.md) | `complete` deletes quarantine after commit, retaining bytes for retry when its short transaction rolls back (K1) |
+| [0024](./adr/0024-next-available-rank-index-free-map-and-sweep.md) | `next-available` as a Redis rank index with a 15-minute free-slot map, remove-on-change + refresh + sweep freshness, versioned slot-list keys (supersedes 0010) |
+| [0025](./adr/0025-derived-name-index.md) | TTL-bound derived name index in Redis for the doctor name filter, headline-only fallback |
+| [0026](./adr/0026-discovery-degradation-when-redis-is-down.md) | Doctor search degrades to price order with `meta.degraded` when Redis is down |
 
 `/system-design` 2026-09-15 (Care runtime, capacity, notifications, reinstatement) also produced hub ADR 0009
 (doctor reinstatement via Care) and hub ADR 0010 (notification contact lookup). The file-handling session
