@@ -2,17 +2,17 @@
 title: "ADR 0010: next-available is a lazy Redis cache refreshed by the worker"
 owner: care-team
 service: care-service
-status: accepted
+status: superseded by 0024
 date: 2026-09-15
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-10-21
 tags: [adr, decision, search, caching, performance, slots]
 related: [scheduling-slots, capacity, adr-0002-slots-never-stored, adr-0008-care-worker-component]
 ---
 
 # ADR 0010 — `next-available` is a lazy Redis cache refreshed by the worker
 
-- **Status:** Accepted • **Date:** 2026-09-15 • **Deciders:** care-team
+- **Status:** Superseded by [ADR 0024](./0024-next-available-rank-index-free-map-and-sweep.md) (2026-10-21) • **Date:** 2026-09-15 • **Deciders:** care-team
 
 ## Context
 Search sorts by earliest availability at ~25 rps peak (≈ 300 k searches/day) within a 400 ms p95 budget. Slots are

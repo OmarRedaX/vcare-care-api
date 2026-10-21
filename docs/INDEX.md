@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -36,6 +36,7 @@ Diátaxis type — a label, not a folder tree.
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts (Postgres, Redis, HTTP, shutdown), Postgres failure modes, retries, degrade policies, idempotency, durable jobs | explanation |
 | [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars (implemented vs planned), database and Redis connection settings, logging and redaction, error envelope, health, request ids, boot and shutdown, worker loops and `--once`, the local compose stack (Postgres, Redis, MinIO) | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics, alerts | explanation |
+| [architecture/availability.md](./architecture/availability.md) | understand or build doctor search, the profile preview and the slots endpoint (designed 2026-10-21, not built): the Redis rank index and free-map, freshness, the name index, Redis-down degradation, worker loops, build slices and the contract changes still to land | explanation |
 | [architecture/capacity.md](./architecture/capacity.md) | check Care's load, compute, database, storage, Redis sizing, 10× check | explanation |
 | [architecture/file-handling.md](./architecture/file-handling.md) | understand document/attachment uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, contract changes, and the as-built verification deviations (§4a) and record-attachment specifics (§4b) | explanation |
 | [architecture/future.md](./architecture/future.md) | see deferred work: events, Phase-2 AI (Care's side), scale, out of scope | explanation |
@@ -52,7 +53,7 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0007-log-derived-metrics.md](./adr/0007-log-derived-metrics.md) | log-derived metrics, no tracing SDK in MVP | explanation |
 | [adr/0008-care-worker-component.md](./adr/0008-care-worker-component.md) | background work in a separate `care-worker` | explanation |
 | [adr/0009-audit-logs-monthly-partitions.md](./adr/0009-audit-logs-monthly-partitions.md) | `audit_logs` monthly partitions, ≥ 6-year retention | explanation |
-| [adr/0010-next-available-lazy-cache-worker-refresh.md](./adr/0010-next-available-lazy-cache-worker-refresh.md) | `next-available` lazy cache + worker refresh | explanation |
+| [adr/0010-next-available-lazy-cache-worker-refresh.md](./adr/0010-next-available-lazy-cache-worker-refresh.md) | `next-available` lazy cache + worker refresh (superseded by ADR 0024) | explanation |
 | [adr/0011-notification-outbox-and-reminders.md](./adr/0011-notification-outbox-and-reminders.md) | notifications via outbox; reminders via worker scan | explanation |
 | [adr/0012-doctor-reinstatement.md](./adr/0012-doctor-reinstatement.md) | admin doctor reinstatement, retry-report-pending (Case 4) | explanation |
 | [adr/0013-verified-direct-upload-lifecycle.md](./adr/0013-verified-direct-upload-lifecycle.md) | direct-to-S3 uploads via a temporary intent; the real row only after `complete` verifies the bytes | explanation |
@@ -66,6 +67,9 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0021-identity-sync-engine-module.md](./adr/0021-identity-sync-engine-module.md) | understand why the Identity-sync engine is its own module shared by verification, suspension and reinstatement (per-kind policy, one worker loop, `SyncTiming`, reason clamp) | explanation |
 | [adr/0022-upload-intents-module.md](./adr/0022-upload-intents-module.md) | understand why the upload-intent lifecycle (intent, per-intent lock, verify-and-promote `complete`, purge loop) is its own `upload-intents` module shared by `verification` and `record-attachments` (callback-based complete flow, unchanged lock namespaces 1101/1103 and loop name, the four observable differences) | explanation |
 | [adr/0023-complete-deletes-quarantine-after-commit.md](./adr/0023-complete-deletes-quarantine-after-commit.md) | understand why `complete` retains quarantine bytes until its short transaction commits and retries work after rollback (K1) | explanation |
+| [adr/0024-next-available-rank-index-free-map-and-sweep.md](./adr/0024-next-available-rank-index-free-map-and-sweep.md) | understand why next-available is a Redis sorted-set rank index plus a free-slot bitmap, and how remove-on-change, refresh and the sweep keep it fresh (supersedes 0010) | explanation |
+| [adr/0025-derived-name-index.md](./adr/0025-derived-name-index.md) | understand how the doctor name filter works without copying Identity names into Care's database | explanation |
+| [adr/0026-discovery-degradation-when-redis-is-down.md](./adr/0026-discovery-degradation-when-redis-is-down.md) | understand what doctor search returns when Redis is down (`meta.degraded`) | explanation |
 
 ## Module docs
 Created by the workflow, not ahead of time: `/brainstorm <feature>` creates `docs/<module>/` (brainstorm,

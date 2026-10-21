@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [architecture, capacity, sizing, load, storage, redis]
-related: [deployment, infrastructure, data-model, scheduling-slots, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, hub-capacity]
+related: [deployment, infrastructure, data-model, scheduling-slots, availability, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, adr-0024-next-available-rank-index-free-map-and-sweep, adr-0025-derived-name-index, hub-capacity]
 ---
 
 # Capacity Derivation — care-service
@@ -49,13 +49,13 @@ Case 2 hydration reaching Identity and JWKS/service-token load are platform numb
 | Component | Size | Count | Reasoning |
 |---|---|---|---|
 | `care-api` | 1 vCPU, 2 GB | min 2, max 6 | ≈ 50 rps per task at peak, DB-bound handlers, slot computation < 5 ms in memory; autoscale on CPU 60 % or search p95 > 400 ms |
-| `care-worker` | 0.5 vCPU, 1 GB | 1 (2 when lag alerts repeat) | ≈ 25 k outbox rows/day, 1-minute reminder scan, coalesced `next-available` refreshes ([ADR 0008](../adr/0008-care-worker-component.md)) |
+| `care-worker` | 0.5 vCPU, 1 GB | 1 (2 when lag alerts repeat) | ≈ 25 k outbox rows/day, 1-minute reminder scan, `availability-refresh` and the 120 s `availability-sweep` ([ADR 0008](../adr/0008-care-worker-component.md), [ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md)); the sweep recomputes every bookable doctor (≈ 2.5 k × ≈ 5 ms ≈ 15–20 s of CPU per cycle including batched reads, ≈ 15 % of the worker) under a singleton advisory lock, so a second worker does not double it |
 | `care-migrate` | 0.5 vCPU, 1 GB | one-off per release | |
 
 ## 4. PostgreSQL
 - **Class:** 2 vCPU / 8 GB; single-AZ primary + async replica in a second AZ ([ADR 0005](../adr/0005-availability-and-recovery-targets.md)).
-- **Load at peak:** ≈ 400 queries/s (search 3 queries, slots 5 on a cache miss, lists 1–2), ≈ 10 writes/s including
-  audit and outbox rows.
+- **Load at peak:** ≈ 400 queries/s (search 1–2 queries: the bookable candidate query, plus the 4-query loader for inline misses; slots 5 on a cache miss, lists 1–2), ≈ 10 writes/s including
+  audit and outbox rows. The unfiltered candidate query returns up to ≈ 2.5 k narrow rows (id, fee, years) from a partial index.
 - **Connections:** each `care-api` task opens up to `DATABASE_POOL_MAX` request connections **plus 1** for the
   readiness probe pool (`application_name=care-api-probe`, foundation 2026-09-28); the worker is budgeted at 7
   (its pool max is 6 since notifications, 2026-10-12); `care-migrate` uses 1 during a release.
@@ -82,7 +82,7 @@ Case 2 hydration reaching Identity and JWKS/service-token load are platform numb
 | Keyspace | Size |
 |---|---|
 | `slots:*` (TTL ≤ 60 s) | < 50 MB |
-| `next-available:*` (2.5 k doctors) | < 1 MB |
+| `next-available:index`, `free-map:*` (≈ 170 B each), `name-index`, refresh set (2.5 k doctors) | < 2 MB |
 | `identity:user:*` (TTL 300 s, ~30 k active ids) | ≈ 10 MB |
 | idempotency (24 h, ~10 k writes/day) | ≈ 20 MB |
 | rate limits, refresh set | small |
@@ -103,8 +103,15 @@ Soft-deleted objects are not purged in MVP (a removed record attachment keeps it
 | Redis | < 1 GB | holds |
 | Object storage | ≈ 20 TB/year | holds (cost, not architecture) |
 | Worker | ≈ 250 k outbox rows/day | holds with 2 workers |
-**Verdict: holds with scale-out** — no redesign.
+| Availability sweep | ≈ 25 k bookable doctors: ≈ 150–200 s of CPU per 120 s cycle | does not fit one cycle: shard the sweep by doctor-id range across workers and lengthen the interval; the refresh loop is unaffected |
+| Search candidate query | ≈ 25 k rows per unfiltered search at ≈ 250 rps | stops being cheap: cache the bookable candidate projection in Redis (TTL ≈ 60 s) or serve it from the replica |
+**Verdict: holds with scale-out** — no redesign; the two availability rows are the first pieces that need re-shaping, not re-architecture.
 
 ## 8. Revisit triggers
 Any of, for a week: search p95 > 300 ms · API tasks at max for > 3 days · DB CPU > 60 % at peak · an `audit_logs`
-partition > 10 GB · consultations > 20 k/day · replica lag p95 > 30 s. Platform triggers live in the hub.
+partition > 10 GB · consultations > 20 k/day · replica lag p95 > 30 s · bookable doctors > 6 k · `availability_sweep_duration_ms` > 60 000. Platform triggers live in the hub.
+
+## 9. Availability inputs (authored here)
+The name-index refresh ([ADR 0025](../adr/0025-derived-name-index.md)) hydrates ≈ 2.5 k doctors every 300 s through the
+`identity:user:*` read-through cache: ≈ 25 batched calls per refresh, ≈ 7.2 k calls/day reaching Identity (≈ +7 % on the
+hub's Case 2 figure). The hub cross-service load row quotes this value and links back here.

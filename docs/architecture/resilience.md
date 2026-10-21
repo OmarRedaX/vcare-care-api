@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
-related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec]
+related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, adr-0026-discovery-degradation-when-redis-is-down, availability, admin-doctors-spec]
 ---
 
 # Resilience
@@ -146,7 +146,7 @@ action. Reminders are produced by a 1-minute worker scan over `consultations` (`
 |---|---|
 | Identity (internal) | search/lists without names (Case 2); approvals 202 pending (Case 1); suspensions 503 with local effect applied (Case 3); bookings unaffected |
 | Identity JWKS only | cached keys keep working for up to 1 h after the last successful fetch (`identityJwks: down`, `jwks_refresh_failed`); a rotated unknown `kid` → one gated refetch per minute, else 401; after 1 h every user token → 401 (`jwks_keys_expired`, alert `IdentityJwksStale` pages at 30 min) |
-| Redis (Tier 2) | no caches (slower reads), per-instance fallback rate limits, idempotency falls back to the DB key for booking; readiness reports `degraded`, never 503 |
+| Redis (Tier 2) | no caches (slower reads), per-instance fallback rate limits, idempotency falls back to the DB key for booking; readiness reports `degraded`, never 503. Designed 2026-10-21 for discovery ([ADR 0026](../adr/0026-discovery-degradation-when-redis-is-down.md), [availability.md](./availability.md)): search still answers `200` in price order with `meta.degraded`, `/slots` computes from Postgres |
 | `care-worker` | sync retries, emails, reminders, the outbox purge, and cache refreshes delayed; requests unaffected; `WorkerHeartbeatStale` pages |
 | Postgres | service unavailable; health 503 |
 | Video provider | join/start answer `503 VideoUnavailable` (`video_provider_failed` warn, code only); consultations remain in a valid state, repeating `join` repairs it; complete, no-show and cancel still work |

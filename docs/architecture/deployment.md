@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
-related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, hub-deployment]
+related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, adr-0024-next-available-rank-index-free-map-and-sweep, availability, hub-deployment]
 ---
 
 # Runtime, Availability and Observability — care-service
@@ -26,7 +26,7 @@ Sizing: [capacity.md](./capacity.md). Env vars: [infrastructure.md](./infrastruc
 All reach own Postgres and Redis; `care-api` and `care-worker` reach Identity's internal LB, and `care-api` its
 public JWKS. Only `care-migrate` holds the owner credential ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md);
 hub `deployment.md` → Release pipeline step 3).
-`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1, 3 and 4 retrier, suspension jobs first, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **built 2026-10-12 (notifications):** `notification-outbox` (claim, contacts lookup, send; every `OUTBOX_POLL_SECONDS`, 5 s), `consultation-reminders` (24 h / 1 h scan, every `REMINDER_SCAN_SECONDS`, 60 s) and `notification-outbox-purge` (`sent` rows past `OUTBOX_RETENTION_DAYS`, hourly); **planned:** `next-available` refresh. Upload-intent purge (5 min) is described in [file-handling.md](./file-handling.md), ADR 0013.
+`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1, 3 and 4 retrier, suspension jobs first, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **built 2026-10-12 (notifications):** `notification-outbox` (claim, contacts lookup, send; every `OUTBOX_POLL_SECONDS`, 5 s), `consultation-reminders` (24 h / 1 h scan, every `REMINDER_SCAN_SECONDS`, 60 s) and `notification-outbox-purge` (`sent` rows past `OUTBOX_RETENTION_DAYS`, hourly); **designed 2026-10-21 ([availability.md](./availability.md), ADR 0024), not built:** `availability-refresh` (drains the refresh set, ~2 s) and `availability-sweep` (120 s, singleton lock; also rebuilds `name-index` every 300 s). Upload-intent purge (5 min) is described in [file-handling.md](./file-handling.md), ADR 0013.
 
 ## 2. Availability and recovery ([ADR 0005](../adr/0005-availability-and-recovery-targets.md))
 | Target | Value | Mechanism |
@@ -51,7 +51,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 ## 4. Bottlenecks and mitigations
 | # | Bottleneck | Mitigation |
 |---|---|---|
-| 1 | Search at peak / mass cache invalidation | indexed SQL page, one `MGET`, worker refresh of `next-available` ([ADR 0010](../adr/0010-next-available-lazy-cache-worker-refresh.md)); alert `SearchLatencyHigh` |
+| 1 | Search at peak / mass cache invalidation | indexed SQL candidate query, one `ZMSCORE` over the rank index, capped inline misses, worker refresh and 120 s sweep ([ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md), superseding ADR 0010); alerts `SearchLatencyHigh`, `AvailabilitySweepStale`, `AvailabilityDegradedHigh` |
 | 2 | Slot computation on hot doctors | fixed 5-query plan, 60 s cache; alert `SlotComputationLatencyHigh` |
 | 3 | `audit_logs` growth | monthly partitions, time-bounded queries ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
 | 4 | Connections / failover | request pool per task (`DATABASE_POOL_MAX`) + a 1-connection readiness probe pool; statement timeout 2 s, client query timeout 3 s, connect timeout 2 s, TCP keepalive; fast-fail on pool wait > 1 s; a connection whose query timed out is discarded, not reused ([resilience.md](./resilience.md) → Postgres failure modes); proxy past ~10 tasks (verify it forwards the `options` / `statement_timeout` startup parameters first — [infrastructure.md](./infrastructure.md) → Database connection); promotion drill |
@@ -64,6 +64,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 |---|---|---|
 | `http_requests`, `http_latency_ms`, `http_errors` | `route`, `status`, `code` | RED dashboards, latency alerts, budget burn |
 | `slot_computation_ms`, `search_cache_miss_ratio` | — | bottlenecks 1–2 |
+| `availability_index_miss`, `availability_inline_compute_ms`, `availability_degraded` (`reason`), `availability_sweep_duration_ms`, `availability_sweep_age_s`, `availability_refresh_queue_depth` (designed, not emitted yet) | `reason` | `AvailabilitySweepStale`, `AvailabilityDegradedHigh` |
 | `identity_hydration_degraded`, `identity_call_failed` | `case` | Case 2 / sync alerts |
 | `identity_sync_job_consecutive_failures`, `identity_sync_job_pending_age_s` | `kind` | Cases 1, 3, 4 alerts |
 | `notification_outbox_lag_seconds` (gauge per outbox tick: age of the oldest due `pending` row, 0 when none; rows in backoff are not due) | none | `OutboxLagHigh` |
@@ -89,7 +90,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 (`audit_partition_missing = 1`, next month missing, or `audit_default_partition_rows > 0`, ticket) ·
 `IdentityJwksStale` (`jwks_cache_age_s` > 1 800, page — cached keys are distrusted at 3 600, after which every
 authenticated Care request is 401; the platform alert row lives in hub `architecture/deployment.md` → Observability) · `IdentityReinstatementSyncPending` (Case 4 job > 15 min, ticket) ·
-`RateLimiterDegraded` (any for 2 min, ticket) · `UploadVerificationFailureSpike` (> 20 in 10 min, ticket) · `AvailabilityBudgetBurn` (5xx + readiness failures burning 99.9 % at
+`AvailabilitySweepStale` (`availability_sweep_age_s` > 600, ticket; designed) · `AvailabilityDegradedHigh` (> 5 % of searches degraded for 5 min, ticket; designed) · `RateLimiterDegraded` (any for 2 min, ticket) · `UploadVerificationFailureSpike` (> 20 in 10 min, ticket) · `AvailabilityBudgetBurn` (5xx + readiness failures burning 99.9 % at
 > 2× over 1 h, page). `HealthCheckFailing` now probes readiness.
 
 ## 6. Contract changes required (land via `/construct-spec` + `/develop`)
