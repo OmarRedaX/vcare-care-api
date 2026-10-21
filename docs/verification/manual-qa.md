@@ -5,7 +5,7 @@ service: care-service
 module: verification
 status: verified
 diataxis: how-to
-last_verified: 2026-10-11
+last_verified: 2026-10-19
 tags: [verification, manual-qa, curl, rbac, minio, identity-sync, worker, case-1, case-2]
 related: [verification-spec, verification-tasks, verification-brainstorm, file-handling, integration, quickstart]
 ---
@@ -33,6 +33,10 @@ The shim above is no longer needed: `internal-users` is built in `vcare-identity
 The first run was 270 / 4, none of it Identity: (1) cases 89, 90 and 248 expected idempotency on `POST /doctors/me/documents/uploads`, but spec D6 and `routes.ts` deliberately mount none there (signed POST policies are never stored in Redis), so the script now asserts the key is ignored; (2) case 71 (`410 UploadIntentExpired`) failed once because the worker's 300 s `upload-intent-purge` loop closed the intent between the script's `UPDATE expires_at` and its `complete` call. Re-run with `UPLOAD_INTENT_PURGE_SECONDS=3600` on the worker it passed. The script races that loop at the default interval, so run it with a long purge interval.
 
 Cases 3 and 4 (`PATCH /api/admin/doctors/{id}/suspend` and `/reinstate`) were checked end to end with real logins, not through `curl-test-admin-doctors.sh` (that script needs the fake Identity to mint tokens): 19 of 19 checks passed. Suspend returned 200 and left Identity `suspended` with a `user_status_changes` row (`actor_service=care-service`, `actor_user_id` = the admin, Care's `X-Request-Id` carried), all refresh tokens revoked, the doctor's refresh `401` and login `403 AccountSuspended`. A repeat suspend returned 200 and added no Identity row. Reinstate returned 200, Identity `active`, the history row `suspended>active`, the old refresh token stayed revoked, the doctor signed in again, and a blind repeat returned 200. A `care-service` token aimed directly at a patient got `403 Forbidden` and the patient was unchanged (ADR 0025). Case 5 (`/internal/users/contacts`) was only exercised provider-side with the `care-service` token (`200`, email and locale returned, no phone); Care has no consumer for it yet.
+
+## Re-run after the `upload-intents` extraction (2026-10-19)
+
+`scripts/curl-test-verification.sh` is the behaviour gate of the `upload-intents` extraction ([record-attachments spec](../record-attachments/spec.md) section 2, ADR 0022). Re-run on branch `feature/record-attachments` against the real `vcare-identity-api` (`main`, internal users built, no shim; own throwaway database, Redis db 10, a freshly seeded `care-qa-verification` service client), `care-api` plus a continuously running `care-worker`, native PostgreSQL 18 and Redis, and **a DEV-ONLY in-memory S3 stand-in (`scripts/storage-qa-fake-s3.mjs`) instead of MinIO**. **Result: 274 pass / 0 fail / 0 skipped, identical to the 274 / 0 above** (including the Identity outage, `202` pending and worker convergence, the `upload-intent-purge` tick, the `410` expiry, the 60 s URL expiry and the log grep). A first run was 273 / 1: case 95 (unsigned object URL) got 200 because the stand-in allowed anonymous reads (a stand-in gap, since fixed; a private bucket answers 403). The stand-in is not real S3 or MinIO (no signature verification, encryption, CORS or lifecycle), so MinIO remains the run to repeat for full end-to-end verification. Environment and notes: [record-attachments/manual-qa.md](../record-attachments/manual-qa.md).
 
 ## Cases
 

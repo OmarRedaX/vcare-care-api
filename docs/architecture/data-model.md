@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [data-model, postgresql, schema, indexes, erd]
-related: [scheduling-slots, clinical-records, integration, file-handling, records-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
+related: [scheduling-slots, clinical-records, integration, file-handling, records-spec, record-attachments-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
@@ -16,8 +16,8 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
 (see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
-`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below); records (2026-10-18) — `20261017120000_create_medical_records` (table, lock `CHECK`, trigger, column-level `UPDATE` grant), `20261017120100_create_medical_record_amendments` (append-only by grant), `20261017120200_add_consultations_follow_up_fk` (the deferred FK; no table); see `medical_records` and `medical_record_amendments` below. `knex_migrations` records migration names without the file extension. Everything else below is the design the
-remaining modules will build (`record_attachments`, `help_articles`, and the remaining tables). Written in the style migrations
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below); records (2026-10-18) — `20261017120000_create_medical_records` (table, lock `CHECK`, trigger, column-level `UPDATE` grant), `20261017120100_create_medical_record_amendments` (append-only by grant), `20261017120200_add_consultations_follow_up_fk` (the deferred FK; no table); see `medical_records` and `medical_record_amendments` below; record-attachments (2026-10-20) — `20261018120000_create_record_attachments` (table, partial index, delete-after-lock trigger, column-level grants), `20261018120100_comment_upload_intents_description` (a column comment only); see `record_attachments` and `upload_intents` below. `knex_migrations` records migration names without the file extension. Everything else below is the design the
+remaining modules will build (`help_articles` and the remaining tables). Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
 - `id BIGSERIAL` everywhere; FKs `BIGINT` with named constraints and a leading-column index.
@@ -542,31 +542,61 @@ GRANT USAGE ON SEQUENCE medical_record_amendments_id_seq TO vcare_app;
 As built, beyond the original design: two extra `CHECK`s (`follow_up_in_days` range and the diagnosis-code format), the positive grants in place of `REVOKE UPDATE, DELETE`, and the index `(medical_record_id, id)` (renamed from `..._created_at` by the in-place edit before merge). `reason` is `NOT NULL` and deliberately outside the non-empty `CHECK`; the `CHECK` is why a field cannot be cleared to null by an amendment (accepted MVP limitation).
 
 ## `record_attachments`
+**Built** by `record-attachments` (2026-10-20, migration `20261018120000_create_record_attachments`; [spec](../record-attachments/spec.md) section 3.1). As built:
 ```sql
 CREATE TABLE record_attachments (
     id                   BIGSERIAL PRIMARY KEY,
     medical_record_id    BIGINT NOT NULL,
-    uploaded_by_user_id  BIGINT NOT NULL,               -- Identity user id
-    object_key           VARCHAR(512) NOT NULL,         -- never a URL; never logged
-    file_type            VARCHAR(32) NOT NULL,
-    size_bytes           INT NOT NULL,
-    description          VARCHAR(500),
+    uploaded_by_user_id  BIGINT NOT NULL,               -- Identity user id (always the record's author)
+    object_key           VARCHAR(512) NOT NULL,         -- record-attachments/<uuid>; never a URL; never logged
+    file_type            VARCHAR(32) NOT NULL,          -- the DETECTED type
+    size_bytes           INT NOT NULL,                  -- the HEAD size
+    description          VARCHAR(500),                  -- clinical free text; never logged
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at           TIMESTAMPTZ,
     CONSTRAINT fk_record_attachments_medical_record_id FOREIGN KEY (medical_record_id) REFERENCES medical_records(id) ON DELETE RESTRICT,
     CONSTRAINT uq_record_attachments_object_key UNIQUE (object_key),
     CONSTRAINT chk_record_attachments_file_type CHECK (file_type IN ('application/pdf', 'image/jpeg', 'image/png')),
-    CONSTRAINT chk_record_attachments_size CHECK (size_bytes BETWEEN 1 AND 10485760)
+    CONSTRAINT chk_record_attachments_size CHECK (size_bytes BETWEEN 1 AND 10485760),
+    CONSTRAINT chk_record_attachments_description CHECK (description IS NULL OR btrim(description) <> '')
 );
--- Record view: WHERE medical_record_id = ANY($1) AND deleted_at IS NULL ORDER BY id
+-- Record view, timeline page, PATCH 200: WHERE medical_record_id = ANY($1) AND deleted_at IS NULL ORDER BY id
+-- the cap count: WHERE medical_record_id = $1 AND deleted_at IS NULL; findLive(id, recordId) is planned on it too
 CREATE INDEX idx_record_attachments_medical_record_id ON record_attachments (medical_record_id, id) WHERE deleted_at IS NULL;
+
+-- Removal is refused once the PARENT record is locked, in the database: on the deleted_at NULL -> NOT NULL transition the
+-- function reads medical_records.locked_at and raises check_violation with CONSTRAINT = the trigger name when locked_at <= NOW()
+-- (the service maps it to 409 RecordLocked). Adding never touches medical_records.
+CREATE OR REPLACE FUNCTION forbid_attachment_delete_after_lock() RETURNS trigger AS $$
+DECLARE
+    parent_locked_at TIMESTAMPTZ;
+BEGIN
+    IF OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL THEN
+        SELECT locked_at INTO parent_locked_at FROM medical_records WHERE id = OLD.medical_record_id;
+        IF parent_locked_at <= NOW() THEN
+            RAISE EXCEPTION 'record % is locked; attachment % cannot be removed', OLD.medical_record_id, OLD.id
+                USING ERRCODE = 'check_violation', CONSTRAINT = 'trg_record_attachments_forbid_delete_after_lock';
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_record_attachments_forbid_delete_after_lock
+    BEFORE UPDATE ON record_attachments FOR EACH ROW EXECUTE FUNCTION forbid_attachment_delete_after_lock();
+
+-- ADR 0018, column level: read, append six columns, set deleted_at. No DELETE, no TRUNCATE, no other UPDATE.
+GRANT SELECT ON record_attachments TO vcare_app;
+GRANT INSERT (medical_record_id, uploaded_by_user_id, object_key, file_type, size_bytes, description) ON record_attachments TO vcare_app;
+GRANT UPDATE (deleted_at) ON record_attachments TO vcare_app;
+GRANT USAGE ON SEQUENCE record_attachments_id_seq TO vcare_app;
 ```
+As built, beyond the original design: `chk_record_attachments_description` (mirror of the DTO's not-blank rule), the function `forbid_attachment_delete_after_lock()` and its trigger, column-level grants, and `COMMENT ON` lines. A clinical table: no `ON DELETE CASCADE`. The cap of 20 live attachments per record is not a constraint: the service counts under `FOR NO KEY UPDATE` on the parent row. The delete-lock verdict and the trigger both read the transaction-start `NOW()` (spec section 14.2, K2). The stored object is kept after a soft delete.
 
 ## `upload_intents`
 Temporary, single-use upload intents ([ADR 0013](../adr/0013-verified-direct-upload-lifecycle.md),
 [file-handling.md](./file-handling.md)). Operational, never exposed: a row is **not** a document or attachment; the
 real row is inserted only after `complete` verifies the stored object. `file_type` of the real row is the detected
-type. `care-worker` (`upload-intent-purge`, every 5 min) closes expired intents and purges rows older than 7 days. **Built** by verification (migration `20261007120000`); `complete` serializes on a session advisory lock per intent, so concurrent completes and the purge never act on one intent together.
+type. `care-worker` (`upload-intent-purge`, every 5 min) closes expired intents of every kind and purges consumed rows older than 7 days. **Built** by verification (migration `20261007120000`); owned by the `upload-intents` module since the ADR 0022 extraction; `complete` serializes on a session advisory lock per intent, so concurrent completes and the purge never act on one intent together.
 ```sql
 CREATE TABLE upload_intents (
     id              BIGSERIAL PRIMARY KEY,
@@ -574,7 +604,7 @@ CREATE TABLE upload_intents (
     target_id       BIGINT NOT NULL,                -- doctor_profiles.id or medical_records.id (by kind), re-checked at complete
     owner_user_id   BIGINT NOT NULL,                -- Identity user id
     document_type   VARCHAR(16),                    -- verification documents only
-    description     VARCHAR(500),                   -- record attachments only
+    description     VARCHAR(500),                   -- record attachments only; clinical free text, never logged, purged with the row after 7 days (column comment, migration 20261018120100)
     quarantine_key  VARCHAR(512) NOT NULL,          -- storage key, never a URL; never logged
     max_bytes       INT NOT NULL,
     expires_at      TIMESTAMPTZ NOT NULL,
@@ -589,7 +619,7 @@ CREATE TABLE upload_intents (
     CONSTRAINT chk_upload_intents_max_bytes CHECK (max_bytes BETWEEN 1 AND 10485760),
     CONSTRAINT chk_upload_intents_result CHECK (result_id IS NULL OR consumed_at IS NOT NULL)
 );
--- Worker purge: WHERE consumed_at IS NULL AND expires_at < now() ORDER BY expires_at LIMIT 500
+-- Worker purge (every kind; the former kind predicate is gone, ADR 0022): WHERE consumed_at IS NULL AND expires_at < now() ORDER BY expires_at LIMIT 500
 CREATE INDEX idx_upload_intents_expires_at_open ON upload_intents (expires_at) WHERE consumed_at IS NULL;
 -- Old-row purge: WHERE created_at < now() - interval '7 days'
 CREATE INDEX idx_upload_intents_created_at ON upload_intents (created_at);

@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [api, reference, routes, rbac]
-related: [rbac, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec]
+related: [rbac, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec]
 ---
 
 # API — care-service (human view)
@@ -143,7 +143,7 @@ Live (2026-10-12, `consultations` module, [spec](../consultations/spec.md)): `PO
 | PATCH | `/api/consultations/{id}/no-show` | doctor, admin | assigned-doctor or admin | — | admin-action (`consultation.no_show`; `noteLength` only, the optional `note` is not stored) | 200, 409 `NoShowTooEarly` (before `startsAt` + grace)/`InvalidTransition` (only from `booked`/`waiting`), 429 |
 
 ## records (admins are never allowed)
-The first four rows are **live** (2026-10-18, `records` module, [spec](../records/spec.md)); the attachment rows are the next module (`record-attachments`) and are still planned. Admins get `403 Forbidden` on every record route at the role step, before any lookup. All record responses are `no-store` (`/api/records` joined `NO_STORE_PREFIXES`, so parser-level errors carry it too). **No record route takes an `Idempotency-Key`** (a retried create is `409 Conflict`; no record text reaches Redis). Rate limits per user: create and `PATCH` share one bucket of 20/min, `GET /records/{id}` 120/min, the timeline 60/min. Every successful read is audited before the response and a failed audit insert fails the read (`500`). A locally suspended doctor gets `403 Forbidden` on create/`PATCH` and `404` on both reads. A non-numeric `{id}` is `404`. `MedicalRecord.attachments` is always `[]` for now.
+The first four rows are **live** (2026-10-18, `records` module, [spec](../records/spec.md)); the attachment rows are **live** since 2026-10-20 (`record-attachments` module, [spec](../record-attachments/spec.md)). Admins get `403 Forbidden` on every record route at the role step, before any lookup. All record responses are `no-store` (`/api/records` joined `NO_STORE_PREFIXES`, so parser-level errors carry it too). **No record route takes an `Idempotency-Key`** (a retried create is `409 Conflict`; no record text reaches Redis). Rate limits per user: create and `PATCH` share one bucket of 20/min, `GET /records/{id}` 120/min, the timeline 60/min. Every successful read is audited before the response and a failed audit insert fails the read (`500`). A locally suspended doctor gets `403 Forbidden` on create/`PATCH` and `404` on both reads. A non-numeric `{id}` is `404`. `MedicalRecord.attachments` lists the live attachment metadata (no URL, no key; `[]` when none) on `GET /records/{id}`, each timeline item and the `PATCH` `200`; the create `201` carries `[]` and the amendment `201` has no attachment list. Attachment routes: only the record's author writes (every other doctor `404`, `NotAssignedDoctor` is never returned), admins `403` at the role step, no `Idempotency-Key`, all `no-store`.
 
 | Method | Path | Roles | Ownership | Audit | Errors |
 |---|---|---|---|---|---|
@@ -151,11 +151,10 @@ The first four rows are **live** (2026-10-18, `records` module, [spec](../record
 | GET | `/api/records/{id}` (live) | patient, doctor | owning patient, author, or doctor who consulted the patient (else 404); suspended doctor 404 | clinical-read `record.read` | 200 with amendments oldest first; 400 (any query member), 403 (admin), 404, 429 |
 | PATCH | `/api/records/{id}` (live) | doctor | resolver admits the author or a doctor with a relationship to the patient (else 404); the service answers 403 to the latter | clinical-write `record.updated` / `record.amended`; a pre-lock no-op writes one `record.read` | 200 in place before lock (also the no-op, with the current record) · 201 `MedicalRecordAmendment` after lock (`reason` required, always appended) · 400 (no record field, `reason` rules) · 403 `Forbidden` / `NotAssignedDoctor` (a related doctor who is not the author) · 404 · 409 `RecordLocked` (trigger backstop) · 429 |
 | GET | `/api/patients/{patientUserId}/records` (live) | patient, doctor | see `patients` above | clinical-read `patient_records.listed` | 200 + `meta`; 400 (cursor, `limit`, unknown member), 403 (admin), 404, 429 |
-| POST | `/api/records/{id}/attachments` | doctor | assigned-doctor | clinical-write | 400 MIME/size, 403, 429 (20/h) — **to be replaced**, ADR 0013; not built |
-| POST | `/api/records/{id}/attachments/uploads` (planned, ADR 0013) | doctor | assigned-doctor | — (20/h) | 201 intent, 400, 403 `NotAssignedDoctor`, 404 |
-| POST | `/api/records/{id}/attachments/uploads/{uploadId}/complete` (planned) | doctor | assigned-doctor (intent owner) | clinical-write `attachment.added` | 201, 200 replay, 400 bad bytes, 403, 404, 409, 410 |
-| POST | `/api/records/{id}/attachments/{attachmentId}/download-url` (planned, ADR 0014) | patient, doctor | as `GET /api/records/{id}` (admins 403) | clinical-read `attachment.url_issued` | 200 `{ url, expiresAt }` (60 s), 403, 404 |
-| DELETE | `/api/records/{id}/attachments/{attachmentId}` | doctor | assigned-doctor | clinical-write | 204, 409 `RecordLocked` |
+| POST | `/api/records/{id}/attachments/uploads` (live) | doctor | record author only (resolver `record_attachment_writer`; related or stranger doctor `404`); active, not locally suspended (`403`) | — (20/h per user) | 201 `UploadIntent`; 400, 403, 404, 409 `AttachmentLimitReached` (20 live), 429 |
+| POST | `/api/records/{id}/attachments/uploads/{uploadId}/complete` (live) | doctor | record author; intent owner, kind and record must match (else `404`) | clinical-write `attachment.added` (once; none on replay) | 201 new, 200 replay; 400 (stored file invalid, `field: file`; or a request body), 403, 404, 409 `Conflict` (`Retry-After: 1` only when the intent lock is held) / `AttachmentLimitReached`, 410 `UploadIntentExpired`, 429 (20/min, shared with delete) |
+| POST | `/api/records/{id}/attachments/{attachmentId}/download-url` (live) | patient, doctor | as `GET /api/records/{id}` (admin `403`; suspended doctor `404`); attachment must be live and in this record | clinical-read `attachment.url_issued`, committed before the URL is signed | 200 `{ url, expiresAt }` (60 s); 400 (a request body), 403, 404, 429 (120/min) |
+| DELETE | `/api/records/{id}/attachments/{attachmentId}` (live) | doctor | record author; attachment live and in this record | clinical-write `attachment.removed` | 204 (soft delete; the stored object is kept); 400 (a request body), 403, 404 (before the lock verdict), 409 `RecordLocked` (after the 24 h lock), 429 (20/min, shared with complete) |
 
 ## help-articles
 | Method | Path | Roles | Ownership | Audit |

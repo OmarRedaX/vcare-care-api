@@ -54,7 +54,7 @@ async function isSuspended(userId: number, doctors: Pick<DoctorsService, "isLoca
 }
 
 /** `x-ownership: consulted-patient-or-self` on `GET /records/{id}` (resolver `record_reader`): the record patient, its author, or a doctor with a consultation relationship to the patient. */
-function recordReaderRule(doctors: Pick<DoctorsService, "isLocallySuspended">, links: Pick<RecordLinksService, "findAccessRow">,
+export function recordReaderRule(doctors: Pick<DoctorsService, "isLocallySuspended">, links: Pick<RecordLinksService, "findAccessRow">,
     relationship: PatientRelationshipChecker): OwnershipRule {
     return {
         kind: "resolver", name: "record_reader",

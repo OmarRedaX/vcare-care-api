@@ -1,5 +1,7 @@
 import { PatientProfileResponseDto } from "../../patients/dto/patients.response.dto";
 import type { PatientProfile } from "../../patients/entity/patient-profile.entity";
+import { RecordAttachmentResponseDto } from "../../record-attachments/dto/record-attachments.response.dto";
+import type { RecordAttachmentSummary } from "../../record-attachments/types";
 import type { MedicalRecordAmendment } from "../entity/medical-record-amendment.entity";
 import type { MedicalRecord } from "../entity/medical-record.entity";
 import type { RecordViewer, RecordWithAmendments } from "../types";
@@ -50,20 +52,21 @@ export class MedicalRecordResponseDto {
     lockedAt!: string;
     isLocked!: boolean;
     amendments!: MedicalRecordAmendmentResponseDto[];
-    /** Always `[]` until the `record-attachments` module ships; no response carries a URL, an object key or a file field. */
-    attachments!: never[];
+    /** Live attachment metadata, oldest first; no response carries a URL, an object key or an uploader id. */
+    attachments!: RecordAttachmentResponseDto[];
     createdAt!: string;
     updatedAt!: string;
 
-    /** `amendments` are the record's amendments, oldest first (empty on create and on a pre-lock no-op). */
-    static from(entity: MedicalRecord, amendments: readonly MedicalRecordAmendment[], viewer: RecordViewer): MedicalRecordResponseDto {
+    /** `amendments` are the record's amendments, oldest first (empty on create and on a pre-lock update); `attachments` its live attachment metadata, oldest first (empty on create). */
+    static from(entity: MedicalRecord, amendments: readonly MedicalRecordAmendment[], attachments: readonly RecordAttachmentSummary[], viewer: RecordViewer): MedicalRecordResponseDto {
         assertClinicalViewer(viewer, entity.patientUserId);
         return {
             id: entity.id, consultationId: entity.consultationId, patientUserId: entity.patientUserId, doctorUserId: entity.doctorUserId,
             chiefComplaint: entity.chiefComplaint, examinationNotes: entity.examinationNotes, diagnosisText: entity.diagnosisText,
             diagnosisCode: entity.diagnosisCode, treatmentPlan: entity.treatmentPlan, followUpInDays: entity.followUpInDays,
             lockedAt: entity.lockedAt.toISOString(), isLocked: entity.isLocked,
-            amendments: amendments.map((amendment) => MedicalRecordAmendmentResponseDto.from(amendment, viewer)), attachments: [],
+            amendments: amendments.map((amendment) => MedicalRecordAmendmentResponseDto.from(amendment, viewer)),
+            attachments: attachments.map((attachment) => RecordAttachmentResponseDto.from(attachment, viewer)),
             createdAt: entity.createdAt.toISOString(), updatedAt: entity.updatedAt.toISOString(),
         };
     }
@@ -78,7 +81,7 @@ export class PatientTimelineResponseDto {
         if (viewer.role === "admin") throw new Error("medical_record_viewer_not_permitted");
         return {
             patient: profile === null ? null : PatientProfileResponseDto.from(profile, viewer),
-            records: items.map((item) => MedicalRecordResponseDto.from(item.record, item.amendments, viewer)),
+            records: items.map((item) => MedicalRecordResponseDto.from(item.record, item.amendments, item.attachments, viewer)),
         };
     }
 }

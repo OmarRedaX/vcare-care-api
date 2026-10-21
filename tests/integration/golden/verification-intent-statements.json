@@ -1,0 +1,157 @@
+{
+  "create": {
+    "sql": [
+      "select \"id\" from \"doctor_profiles\" where \"user_id\" = ? and \"deleted_at\" is null and \"suspended_at\" is not null limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"user_id\" = ? and \"deleted_at\" is null limit ?",
+      "insert into \"upload_intents\" (\"description\", \"document_type\", \"expires_at\", \"kind\", \"max_bytes\", \"owner_user_id\", \"quarantine_key\", \"target_id\") values (?, ?, ?, ?, ?, ?, ?, ?) returning \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\""
+    ],
+    "storage": [
+      {
+        "operation": "createUploadPolicy",
+        "args": [
+          "quarantine/<uuid>",
+          10485760,
+          300
+        ]
+      }
+    ]
+  },
+  "complete": {
+    "sql": [
+      "select \"id\" from \"doctor_profiles\" where \"user_id\" = ? and \"deleted_at\" is null and \"suspended_at\" is not null limit ?",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "SELECT pg_try_advisory_lock(hashtextextended(?::text, ?::bigint)) AS acquired <1,1101>",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "BEGIN;",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ? for update",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ? for update",
+      "insert into \"verification_documents\" (\"doctor_profile_id\", \"file_type\", \"object_key\", \"size_bytes\", \"status\", \"type\") values (?, ?, ?, ?, ?, ?) returning \"id\", \"doctor_profile_id\", \"type\", \"object_key\", \"file_type\", \"size_bytes\", \"status\", \"reviewed_by\", \"review_note\", \"created_at\", \"updated_at\", \"deleted_at\"",
+      "INSERT INTO audit_logs (actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata)\nVALUES (?, ?, ?, ?, ?, ?, ?::jsonb)",
+      "update \"upload_intents\" set \"consumed_at\" = CURRENT_TIMESTAMP, \"result_id\" = ? where \"id\" = ? and \"consumed_at\" is null",
+      "COMMIT;",
+      "SELECT pg_advisory_unlock(hashtextextended(?::text, ?::bigint)) <1,1101>"
+    ],
+    "storage": [
+      {
+        "operation": "headObject",
+        "args": [
+          "quarantine/<uuid>"
+        ]
+      },
+      {
+        "operation": "readHead",
+        "args": [
+          "quarantine/<uuid>",
+          16
+        ]
+      },
+      {
+        "operation": "promote",
+        "args": [
+          "quarantine/<uuid>",
+          "verification-documents/<uuid>"
+        ]
+      },
+      {
+        "operation": "delete",
+        "args": [
+          "quarantine/<uuid>"
+        ]
+      }
+    ]
+  },
+  "replay": {
+    "sql": [
+      "select \"id\" from \"doctor_profiles\" where \"user_id\" = ? and \"deleted_at\" is null and \"suspended_at\" is not null limit ?",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "SELECT pg_try_advisory_lock(hashtextextended(?::text, ?::bigint)) AS acquired <1,1101>",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "select \"id\", \"doctor_profile_id\", \"type\", \"object_key\", \"file_type\", \"size_bytes\", \"status\", \"reviewed_by\", \"review_note\", \"created_at\", \"updated_at\", \"deleted_at\" from \"verification_documents\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "SELECT pg_advisory_unlock(hashtextextended(?::text, ?::bigint)) <1,1101>"
+    ],
+    "storage": []
+  },
+  "expired": {
+    "sql": [
+      "select \"id\" from \"doctor_profiles\" where \"user_id\" = ? and \"deleted_at\" is null and \"suspended_at\" is not null limit ?",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "SELECT pg_try_advisory_lock(hashtextextended(?::text, ?::bigint)) AS acquired <2,1101>",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "BEGIN;",
+      "update \"upload_intents\" set \"consumed_at\" = CURRENT_TIMESTAMP, \"result_id\" = ? where \"id\" = ? and \"consumed_at\" is null",
+      "COMMIT;",
+      "SELECT pg_advisory_unlock(hashtextextended(?::text, ?::bigint)) <2,1101>"
+    ],
+    "storage": [
+      {
+        "operation": "delete",
+        "args": [
+          "quarantine/<uuid>"
+        ]
+      }
+    ]
+  },
+  "falseBytes": {
+    "sql": [
+      "select \"id\" from \"doctor_profiles\" where \"user_id\" = ? and \"deleted_at\" is null and \"suspended_at\" is not null limit ?",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "SELECT pg_try_advisory_lock(hashtextextended(?::text, ?::bigint)) AS acquired <3,1101>",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ?",
+      "select \"id\", \"user_id\", \"headline\", \"bio\", \"years_experience\", \"consultation_fee\", \"currency\", \"default_slot_minutes\", \"timezone\", \"is_accepting_patients\", \"verification_status\", \"submitted_at\", \"reviewed_by\", \"review_note\", \"decided_at\", \"identity_sync_status\", \"suspended_at\", \"suspended_by\", \"suspension_reason\", \"created_at\", \"updated_at\" from \"doctor_profiles\" where \"id\" = ? and \"deleted_at\" is null limit ?",
+      "BEGIN;",
+      "update \"upload_intents\" set \"consumed_at\" = CURRENT_TIMESTAMP, \"result_id\" = ? where \"id\" = ? and \"consumed_at\" is null",
+      "COMMIT;",
+      "SELECT pg_advisory_unlock(hashtextextended(?::text, ?::bigint)) <3,1101>"
+    ],
+    "storage": [
+      {
+        "operation": "headObject",
+        "args": [
+          "quarantine/<uuid>"
+        ]
+      },
+      {
+        "operation": "readHead",
+        "args": [
+          "quarantine/<uuid>",
+          16
+        ]
+      },
+      {
+        "operation": "delete",
+        "args": [
+          "quarantine/<uuid>"
+        ]
+      }
+    ]
+  },
+  "purge": {
+    "sql": [
+      "SELECT pg_try_advisory_lock(hashtextextended(?::text, ?::bigint)) AS acquired <0,1103>",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"consumed_at\" is null and \"expires_at\" <= CURRENT_TIMESTAMP order by \"expires_at\" asc limit ?",
+      "SELECT pg_try_advisory_lock(hashtextextended(?::text, ?::bigint)) AS acquired <4,1101>",
+      "BEGIN;",
+      "select \"id\", \"kind\", \"target_id\", \"owner_user_id\", \"document_type\", \"description\", \"quarantine_key\", \"max_bytes\", \"expires_at\", \"consumed_at\", \"result_id\", \"created_at\" from \"upload_intents\" where \"id\" = ? limit ? for update",
+      "update \"upload_intents\" set \"consumed_at\" = CURRENT_TIMESTAMP, \"result_id\" = ? where \"id\" = ? and \"consumed_at\" is null",
+      "COMMIT;",
+      "SELECT pg_advisory_unlock(hashtextextended(?::text, ?::bigint)) <4,1101>",
+      "select \"id\" from \"upload_intents\" where \"created_at\" < ? and \"consumed_at\" is not null order by \"created_at\" asc limit ?",
+      "SELECT pg_advisory_unlock(hashtextextended(?::text, ?::bigint)) <0,1103>"
+    ],
+    "storage": [
+      {
+        "operation": "delete",
+        "args": [
+          "quarantine/<uuid>"
+        ]
+      }
+    ]
+  }
+}

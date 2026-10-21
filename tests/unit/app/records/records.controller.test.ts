@@ -63,12 +63,24 @@ describe("RecordsController", () => {
     it("should answer 200 with the current record for an in-place update and for the pre-lock no-op", async () => {
         const { controller, commands, res, json, status, req } = setup();
         for (const kind of ["updated", "unchanged"] as const) {
-            commands.update.mockResolvedValue({ kind, record: recordEntity() });
+            commands.update.mockResolvedValue({ kind, record: recordEntity(), attachments: [] });
             await controller.update(req(doctor, { params: { id: "9" }, body: { treatmentPlan: PLAN, reason: REASON } }), res);
         }
         expect(commands.update).toHaveBeenCalledWith(doctor, 9, { changes: { treatmentPlan: PLAN }, reason: REASON });
         expect(status.mock.calls).toEqual([[200], [200]]);
         expect(json.mock.calls.map(([body]) => body.data.amendments)).toEqual([[], []]);
+    });
+
+    it("should render the live attachment metadata on the in-place and no-op 200 and on a read, without any url or key member", async () => {
+        const { controller, commands, queries, res, json, req } = setup();
+        const attachment = { id: 4, recordId: 9, fileType: "application/pdf", sizeBytes: 12, attachmentDescription: "SYNTHETIC-ATTACH-DESC-0001", createdAt: new Date(0) };
+        commands.update.mockResolvedValue({ kind: "updated", record: recordEntity(), attachments: [attachment] });
+        queries.get.mockResolvedValue({ record: recordEntity(), amendments: [], attachments: [attachment] });
+        await controller.update(req(doctor, { params: { id: "9" }, body: { treatmentPlan: PLAN } }), res);
+        await controller.get(req(patient, { params: { id: "9" } }), res);
+        for (const [body] of json.mock.calls) {
+            expect(body.data.attachments).toEqual([{ id: 4, recordId: 9, fileType: "application/pdf", sizeBytes: 12, description: "SYNTHETIC-ATTACH-DESC-0001", createdAt: new Date(0).toISOString() }]);
+        }
     });
 
     it("should answer 201 with the amendment, not the record, after the lock", async () => {
@@ -90,7 +102,7 @@ describe("RecordsController", () => {
 
     it("should render the read of one record with its amendments for the viewer", async () => {
         const { controller, queries, res, json, status, req } = setup();
-        queries.get.mockResolvedValue({ record: recordEntity({ isLocked: true }), amendments: [amendmentEntity()] });
+        queries.get.mockResolvedValue({ record: recordEntity({ isLocked: true }), amendments: [amendmentEntity()], attachments: [] });
         await controller.get(req(patient, { params: { id: "9" } }), res);
         expect(queries.get).toHaveBeenCalledWith(patient, 9);
         expect(status).toHaveBeenCalledWith(200);
@@ -99,7 +111,7 @@ describe("RecordsController", () => {
 
     it("should pass the validated cursor and limit to the timeline, answer 200 with the page meta and nothing else in meta", async () => {
         const { controller, queries, res, json, req } = setup();
-        queries.timeline.mockResolvedValue({ patient: null, items: [{ record: recordEntity(), amendments: [] }], meta: { nextCursor: null, hasMore: false, count: 1 } });
+        queries.timeline.mockResolvedValue({ patient: null, items: [{ record: recordEntity(), amendments: [], attachments: [] }], meta: { nextCursor: null, hasMore: false, count: 1 } });
         await controller.timeline(req(doctor, { params: { patientUserId: "101" }, query: { limit: "5", cursor: "abc" } }), res);
         expect(queries.timeline).toHaveBeenCalledWith(doctor, 101, { cursor: "abc", limit: 5 });
         expect(json.mock.calls[0]?.[0]).toMatchObject({ success: true, data: { patient: null, records: [{ id: 9 }] }, meta: { nextCursor: null, hasMore: false, count: 1 } });
@@ -119,7 +131,7 @@ describe("RecordsController", () => {
 
     it("should hand the admin principal to the response DTO, which refuses it, if a policy bug ever let one through", async () => {
         const { controller, queries, res, req } = setup();
-        queries.get.mockResolvedValue({ record: recordEntity(), amendments: [] });
+        queries.get.mockResolvedValue({ record: recordEntity(), amendments: [], attachments: [] });
         await expect(controller.get(req(admin, { params: { id: "9" } }), res)).rejects.toThrow("medical_record_viewer_not_permitted");
     });
 });

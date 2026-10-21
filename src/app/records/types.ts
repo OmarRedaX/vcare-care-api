@@ -2,6 +2,7 @@ import type { PageMeta, StringCursorPosition } from "../../lib/http/pagination/t
 import type { UserPolicy } from "../../lib/rbac/types";
 import type { Role } from "../../lib/types/types";
 import type { PatientProfile } from "../patients/entity/patient-profile.entity";
+import type { RecordAttachmentSummary } from "../record-attachments/types";
 import type { MedicalRecordAmendment } from "./entity/medical-record-amendment.entity";
 import type { MedicalRecord } from "./entity/medical-record.entity";
 import type { RecordField } from "./enums";
@@ -41,16 +42,19 @@ export interface NewAmendment { recordId: number; authorUserId: number; changes:
 
 /** `unchanged` is the pre-lock no-op (R-D7): no record write; one `record.read` audit row (M3). */
 export type RecordUpdateResult =
-    | { kind: "updated" | "unchanged"; record: MedicalRecord }
+    | { kind: "updated" | "unchanged"; record: MedicalRecord; attachments: RecordAttachmentSummary[] }
     | { kind: "amended"; amendment: MedicalRecordAmendment };
 
 /** No clinical text: what the ownership resolvers and the other modules need to decide access. */
 export interface RecordAccessRow { id: number; patientUserId: number; doctorUserId: number }
 
+/** The lock read of a live record under `FOR NO KEY UPDATE`: ids, parties and the lock verdict (database time); no clinical column. */
+export interface RecordLockRow { id: number; patientUserId: number; doctorUserId: number; isLocked: boolean }
+
 /** The two user ids a write resolver needs; both `ConsultationParties` and `RecordAccessRow` satisfy it. */
 export interface RecordParties { doctorUserId: number; patientUserId: number }
 
-export interface RecordWithAmendments { record: MedicalRecord; amendments: MedicalRecordAmendment[] }
+export interface RecordWithAmendments { record: MedicalRecord; amendments: MedicalRecordAmendment[]; attachments: RecordAttachmentSummary[] }
 export interface PatientTimelineResult { patient: PatientProfile | null; items: RecordWithAmendments[]; meta: PageMeta }
 
 /** A validated `GET /patients/{patientUserId}/records` query. */

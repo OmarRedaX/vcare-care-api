@@ -19,6 +19,8 @@ const EXPECTED_KEYS = [
     "dateOfBirth",
     "gender",
     "objectKey",
+    // record-attachments
+    "attachmentDescription",
     "downloadUrl",
     "uploadUrl",
     "joinToken",
@@ -88,6 +90,12 @@ describe("lib/logger/redact", () => {
         for (const key of REDACTED_KEYS) {
             expect(isRedactedKey(key)).toBe(true);
         }
+    });
+
+    it("should keep a bare description visible and redact only the scoped attachmentDescription key (specialties.description is non-clinical)", () => {
+        expect(redact({ description: "visible", attachmentDescription: "SYNTHETIC-ATTACH-DESC-0001" })).toEqual({ description: "visible", attachmentDescription: "[REDACTED]" });
+        expect(isRedactedKey("attachment_description")).toBe(true);
+        expect(isRedactedKey("description")).toBe(false);
     });
 
     it("should redact whole objects when a redacted key holds an object", () => {

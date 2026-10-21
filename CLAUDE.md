@@ -10,8 +10,11 @@ not need another repo's CLAUDE.md to follow it.
 - **Citing this file:** always cite sections **by name** (e.g. "CLAUDE.md → Domain rules"), never by number.
 - **Architect trigger:** when the user says **"let's system design"** (or runs `/system-design <topic>`), run the `/system-design` command inline — see "Architect mode — /system-design".
 
-> Status: AI setup only — **no application code exists yet**. Modules are created through the workflow
-> (`/system-design` → `/brainstorm` → … → `/update-docs`). Do not scaffold `src/` outside that workflow.
+> Status: **in build** (as of 2026-10-20). Built modules: `specialties`, `doctors`, `verification`, `admin-doctors`,
+> `identity-sync`, `upload-intents`, `schedules`, `consultations`, `sessions`, `patients`, `records`, `record-attachments`,
+> `notifications`, `audit`, `health`. Not built yet: `availability` (doctor search and the slots endpoint) and `help-articles`.
+> Modules are created through the workflow (`/system-design` → `/brainstorm` → … → `/update-docs`). Do not scaffold `src/`
+> outside that workflow. `docs/architecture/overview.md` carries the live module map.
 
 When a rule here conflicts with your defaults, **this file wins**. When a rule here conflicts with
 `contracts/openapi.yaml`, **the contract wins** and this file or the spec is stale — flag it.
@@ -39,9 +42,9 @@ Care **never stores a password, never issues a token, and holds only `user_id` r
 accounts (`BIGINT`, no cross-database FK). Care is **Tier 1** for booking and consultations; search is the
 hot read path; medical records carry the strictest privacy rules on the platform.
 
-Expected bounded contexts (module slugs are fixed by `/brainstorm`, not pre-created): `specialties`,
-`doctors`, `verification`, `schedules`, `availability`, `consultations`, `sessions`, `patients`, `records`,
-`help-articles`, `audit`, `identity-client` (lib).
+Bounded contexts (module slugs are fixed by `/brainstorm`, not pre-created): `specialties`, `doctors`, `verification`,
+`admin-doctors`, `identity-sync`, `upload-intents`, `schedules`, `availability`, `consultations`, `sessions`, `patients`,
+`records`, `record-attachments`, `help-articles`, `notifications`, `audit`, `identity-client` (lib).
 
 ---
 
@@ -79,6 +82,7 @@ src/
   internal-app.ts            # internal express app (mounted under /internal) — separate listener
   server.ts                  # bootstrap both listeners + graceful shutdown
   worker.ts                  # care-worker entrypoint — background loops only (ADR 0008)
+  worker-loops.ts            # the loop list the worker runs (audit-partitions, identity-sync, upload-intent-purge, …)
   bootstrap.ts               # DI registration (the only place that wires app/ into the container)
   migrate.ts                 # migration CLI (latest / rollback / status / make)
   routes.ts                  # mounts public module routers
@@ -214,7 +218,7 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 
 **Idempotency:** `Idempotency-Key` (UUID) is **required** on `POST /consultations`, `PATCH /consultations/:id/reschedule`, `PATCH /consultations/:id/cancel` (missing → `400 ValidationFailed`), optional on other writes. Redis-backed for 24 h, keyed by `(route, principal, key)` with a request-body hash: same key + same body → replay original response; same key + different body → `422 IdempotencyConflict`; same key while the first request is still in flight → immediate `409 Conflict` with `Retry-After: 1`. Booking additionally persists the key on the consultation row (`uq_consultations_idempotency`) so a Redis loss cannot double-book.
 
-**Status codes:** 200 · 201 · 204 · 400 `ValidationFailed` · 401 `Unauthorized`/`TokenExpired` · 403 `Forbidden`/state errors · 404 `NotFound` · 409 conflicts · 422 `IdempotencyConflict` · 429 `RateLimited` · 500 `InternalError` · 503 dependency down (health only). **A Case-2 Identity outage never produces a 5xx.**
+**Status codes:** 200 · 201 · 204 · 400 `ValidationFailed` · 401 `Unauthorized`/`TokenExpired` · 403 `Forbidden`/state errors · 404 `NotFound` · 409 conflicts · 410 `UploadIntentExpired` · 422 `IdempotencyConflict` · 429 `RateLimited` · 500 `InternalError` · 503 dependency down (health probes, plus `IdentityUnavailable` on a must-succeed suspension and `VideoUnavailable` on join/start). **A Case-2 Identity outage never produces a 5xx.**
 
 **Error codes owned by Care** (stable):
 
@@ -238,9 +242,13 @@ Success: `{ "success": true, "data": <payload>, "meta": { … } }`. Unknown erro
 | `RecordRequiresCompleted` | 409 | record on a non-`completed` consultation |
 | `NotAssignedDoctor` | 403 | `PATCH /records/:id` by a doctor who has a consultation relationship with the patient but is not the record's author (creating a record on a consultation that is not yours is `404`) |
 | `RecordLocked` | 409 | an in-place record edit refused because the record is locked, or deleting an attachment after the 24 h lock |
+| `AttachmentLimitReached` | 409 | a record already holds 20 live attachments (intent creation or complete) |
 | `ApplicationNotReviewable` | 409 | approve/reject on an application not in `submitted` |
+| `ApplicationNotEditable` | 409 | profile or document edit on an application that is `submitted` (locked until decided) |
+| `UploadIntentExpired` | 410 | `complete` on an upload intent past its 15-minute `expires_at` |
 | `ScheduleConflictsUnconfirmed` | 409 | blocking time that holds bookings without `confirmConflicts=true` |
 | `IdentityUnavailable` | 503 | a **must-succeed** Identity call is still failing (suspension reported as pending) |
+| `VideoUnavailable` | 503 | the video provider failed or exceeded its 2 s budget while issuing a join/start room token |
 | `IdempotencyConflict` | 422 | same key, different body |
 | `NotFound` | 404 | absent, or not visible to the caller |
 | `Conflict` | 409 | generic uniqueness conflict, or an `Idempotency-Key` whose first request is still in flight (with `Retry-After: 1`) |
@@ -398,6 +406,8 @@ Every rule here has a named unit test. "Enforced by" says where the guarantee li
 14. Only the consultation's assigned doctor can write that record.
 15. Records are **append-only after 24 h**: before `locked_at` the assigned doctor may update in place (each update audited); after `locked_at` a `PATCH /records/:id` creates a `medical_record_amendments` row and the original is untouched — never a silent overwrite. Attachments cannot be deleted after the lock (`RecordLocked`).
 16. Patients read their own records and never write clinical fields.
+
+A record holds at most 20 live attachments (`AttachmentLimitReached`); adding is allowed before and after the 24 h lock, removing only before it.
 
 **Access**
 17. Patients access only their own consultations, records, and profile.

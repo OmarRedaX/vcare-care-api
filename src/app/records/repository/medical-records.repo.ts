@@ -3,7 +3,7 @@ import { timestampCursorSelect } from "../../../lib/http/pagination/timestamp-cu
 import { db } from "../../../lib/knex/knex";
 import { MedicalRecord } from "../entity/medical-record.entity";
 import type {
-    MedicalRecordListEntry, MedicalRecordRow, MedicalRecordTimelineRow, NewRecord, RecordAccessRow, RecordColumnChanges, TimelineFilter,
+    MedicalRecordListEntry, MedicalRecordRow, MedicalRecordTimelineRow, NewRecord, RecordAccessRow, RecordColumnChanges, RecordLockRow, TimelineFilter,
 } from "../types";
 
 export const MEDICAL_RECORD_COLUMNS = [
@@ -77,6 +77,16 @@ export async function findAccessRow(id: number, conn: Knex = db): Promise<Record
     const row: Pick<MedicalRecordRow, "id" | "patient_user_id" | "doctor_user_id"> | undefined = await conn<MedicalRecordRow>("medical_records")
         .select("id", "patient_user_id", "doctor_user_id").where("id", id).whereNull("deleted_at").first();
     return row === undefined ? undefined : { id: row.id, patientUserId: row.patient_user_id, doctorUserId: row.doctor_user_id };
+}
+
+/**
+ * The lock read of record-attachment writes: `FOR NO KEY UPDATE` (serializes attachment writes with `PATCH` and with each other without blocking
+ * a follow-up booking, whose foreign key takes `FOR KEY SHARE`) plus the verdict `locked_at <= NOW()` from the same statement. Ids only, no clinical column.
+ */
+export async function findLockRowForNoKeyUpdate(id: number, trx: Knex.Transaction): Promise<RecordLockRow | undefined> {
+    const row = (await trx("medical_records").select(["id", "patient_user_id", "doctor_user_id", trx.raw("(locked_at <= NOW()) AS is_locked")])
+        .where("id", id).whereNull("deleted_at").forNoKeyUpdate().first()) as Pick<MedicalRecordRow, "id" | "patient_user_id" | "doctor_user_id" | "is_locked"> | undefined;
+    return row === undefined ? undefined : { id: row.id, patientUserId: row.patient_user_id, doctorUserId: row.doctor_user_id, isLocked: row.is_locked };
 }
 
 /** The follow-up link check: a live record of this patient written by this doctor (primary-key access). */

@@ -10,7 +10,7 @@ describe("record clinical text in log objects (defence in depth; the code never 
     const full = recordEntity({ examinationNotes: NOTES, diagnosisText: DX_TEXT, diagnosisCode: "A00.1", treatmentPlan: PLAN, followUpInDays: 7, isLocked: true });
 
     it("should redact every clinical member of a record DTO that is logged by mistake", () => {
-        const dto = MedicalRecordResponseDto.from(full, [amendmentEntity({ treatmentPlan: PLAN })], doctorViewer);
+        const dto = MedicalRecordResponseDto.from(full, [amendmentEntity({ treatmentPlan: PLAN })], [], doctorViewer);
         const text = JSON.stringify(redact(dto));
         for (const marker of CLINICAL_MARKERS) expect(text).not.toContain(marker);
         expect(text).not.toContain("A00.1");
@@ -23,7 +23,7 @@ describe("record clinical text in log objects (defence in depth; the code never 
     });
 
     it("should redact the whole timeline DTO's clinical text", () => {
-        const timeline = PatientTimelineResponseDto.from(null, [{ record: full, amendments: [amendmentEntity()] }], doctorViewer);
+        const timeline = PatientTimelineResponseDto.from(null, [{ record: full, amendments: [amendmentEntity()], attachments: [] }], doctorViewer);
         const text = JSON.stringify(redact(timeline));
         for (const marker of CLINICAL_MARKERS) expect(text).not.toContain(marker);
     });

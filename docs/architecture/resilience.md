@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-15
+last_verified: 2026-10-20
 tags: [resilience, retries, timeouts, idempotency, alerting, durable-jobs, outbox, postgres, redis]
 related: [integration, runbook, scheduling-slots, infrastructure, deployment, foundation-spec, adr-0004-cross-service-failure-policies, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec]
 ---
@@ -151,4 +151,4 @@ action. Reminders are produced by a 1-minute worker scan over `consultations` (`
 | Postgres | service unavailable; health 503 |
 | Video provider | join/start answer `503 VideoUnavailable` (`video_provider_failed` warn, code only); consultations remain in a valid state, repeating `join` repairs it; complete, no-show and cancel still work |
 | Email provider | notifications delayed only (outbox retries) |
-| Object storage | direct uploads, `complete`, and downloads fail; no document or attachment row is created; records' text still readable |
+| Object storage | direct uploads, `complete`, and downloads can fail; records' text remains readable (reading a record, including its attachment metadata, makes no storage call; intent creation and `download-url` sign locally and do not touch storage). A storage failure before commit leaves the intent open for retry; a short-transaction rollback also retains its quarantine bytes (ADR 0023). A failed post-commit quarantine delete is logged and the response succeeds; the 24 h lifecycle cleans it up. |

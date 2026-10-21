@@ -133,7 +133,7 @@ describe("records contract", () => {
 describe("records schemas", () => {
     it("should require every MedicalRecord member the DTO emits and no other", () => {
         const required = inlineLists(schemaBlock("MedicalRecord"), "required")[0] ?? [];
-        const dto = MedicalRecordResponseDto.from(recordEntity(), [], { userId: 202, role: "doctor" });
+        const dto = MedicalRecordResponseDto.from(recordEntity(), [], [], { userId: 202, role: "doctor" });
         expect([...required].sort()).toEqual(Object.keys(dto).sort());
         expect(propertyNames(schemaBlock("MedicalRecord")).sort()).toEqual(Object.keys(dto).sort());
     });
@@ -154,9 +154,9 @@ describe("records schemas", () => {
         expect(propertyNames(block).sort()).toEqual(Object.keys(dto).sort());
     });
 
-    it("should state attachments as always empty in this unit and the lock flag as database time", () => {
+    it("should state attachments as live metadata without URLs and the lock flag as database time", () => {
         const block = schemaBlock("MedicalRecord");
-        expect(block).toContain("Always `[]` until the `record-attachments` module ships");
+        expect(block).toContain("Live attachments of the record, metadata only (no URL, no object key), oldest first (`id` order), `[]` when none; loaded with one batched query per page.");
         expect(block).toContain("Computed with database time at read");
     });
 

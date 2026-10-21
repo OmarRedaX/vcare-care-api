@@ -26,6 +26,8 @@ export const TOKENS = {
     IdentitySyncService: Symbol.for("IdentitySyncService"),
     /** Clock and randomness of the sync engine; tests bind a fake. */
     SyncTiming: Symbol.for("SyncTiming"),
+    /** Shared upload-intent lifecycle (verification documents, record attachments); registered before its callers (ADR 0022). */
+    UploadIntentsService: Symbol.for("UploadIntentsService"),
     VerificationService: Symbol.for("VerificationService"),
     VerificationController: Symbol.for("VerificationController"),
     AuditService: Symbol.for("AuditService"),
@@ -69,4 +71,8 @@ export const TOKENS = {
     RecordsService: Symbol.for("RecordsService"),
     RecordQueriesService: Symbol.for("RecordQueriesService"),
     RecordsController: Symbol.for("RecordsController"),
+    /** `record_attachments` metadata for the record views; depends only on the database, so it precedes the records services. */
+    RecordAttachmentLinksService: Symbol.for("RecordAttachmentLinksService"),
+    RecordAttachmentsService: Symbol.for("RecordAttachmentsService"),
+    RecordAttachmentsController: Symbol.for("RecordAttachmentsController"),
 } as const;

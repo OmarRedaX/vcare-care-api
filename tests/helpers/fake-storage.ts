@@ -14,6 +14,7 @@ export class InMemoryObjectStorage implements FakeStorage {
     private readonly headSizes = new Map<string, number>();
     private copyShouldFail = false;
     private replaceAfterHead: { key: string; bytes: Uint8Array } | null = null;
+    private beforePromote: (() => Promise<void>) | null = null;
 
     seed(key: string, bytes: Uint8Array): void {
         this.objects.set(key, bytes.slice());
@@ -32,6 +33,11 @@ export class InMemoryObjectStorage implements FakeStorage {
         this.replaceAfterHead = { key, bytes: bytes.slice() };
     }
 
+    /** Runs `hook` once at the start of the next `promote`, i.e. while a `complete` is between its checks and its short transaction. */
+    beforeNextPromote(hook: () => Promise<void>): void {
+        this.beforePromote = hook;
+    }
+
     failNextCopy(): void {
         this.copyShouldFail = true;
     }
@@ -42,6 +48,7 @@ export class InMemoryObjectStorage implements FakeStorage {
         this.calls.length = 0;
         this.copyShouldFail = false;
         this.replaceAfterHead = null;
+        this.beforePromote = null;
     }
 
     createUploadPolicy(key: string, maxBytes: number, ttlSeconds: number): Promise<UploadPolicy> {
@@ -66,16 +73,20 @@ export class InMemoryObjectStorage implements FakeStorage {
         return Promise.resolve(this.objects.get(key)?.slice(0, byteCount) ?? null);
     }
 
-    promote(fromKey: string, toKey: string, expected: PromoteExpectation): Promise<void> {
+    async promote(fromKey: string, toKey: string, expected: PromoteExpectation): Promise<void> {
         this.calls.push({ operation: "promote", args: [fromKey, toKey] });
+        if (this.beforePromote !== null) {
+            const hook = this.beforePromote;
+            this.beforePromote = null;
+            await hook();
+        }
         if (this.copyShouldFail) {
             this.copyShouldFail = false;
-            return Promise.reject(new StorageError("copy"));
+            throw new StorageError("copy");
         }
         const bytes = this.objects.get(fromKey);
-        if (bytes === undefined || etagOf(bytes) !== expected.etag) return Promise.reject(new StorageError("copy"));
+        if (bytes === undefined || etagOf(bytes) !== expected.etag) throw new StorageError("copy");
         this.objects.set(toKey, bytes.slice());
-        return Promise.resolve();
     }
 
     delete(key: string): Promise<void> {

@@ -3,6 +3,7 @@ import type { Knex } from "knex";
 import { PatientProfile } from "../../../../src/app/patients/entity/patient-profile.entity";
 import * as amendmentsRepo from "../../../../src/app/records/repository/medical-record-amendments.repo";
 import * as recordsRepo from "../../../../src/app/records/repository/medical-records.repo";
+import type { RecordAttachmentSummary } from "../../../../src/app/record-attachments/types";
 import { RecordQueriesService } from "../../../../src/app/records/service/record-queries.service";
 import type { AuditRecorder } from "../../../../src/lib/audit/audit";
 import { decodeTimestampCursor, encodeCursor } from "../../../../src/lib/http/pagination/cursor";
@@ -24,13 +25,14 @@ function setup() {
     const db = { id: "db", transaction } as unknown as Knex;
     const record = jest.fn().mockImplementation(() => { events.push("audit"); return Promise.resolve(); });
     const patients = { findProfile: jest.fn().mockImplementation(() => { events.push("profile"); return Promise.resolve(undefined); }) };
-    const service = new RecordQueriesService(db, { record } as unknown as AuditRecorder, patients as never);
+    const attachmentLinks = { listByRecordIds: jest.fn().mockImplementation(() => { events.push("attachments"); return Promise.resolve(new Map<number, RecordAttachmentSummary[]>()); }) };
+    const service = new RecordQueriesService(db, { record } as unknown as AuditRecorder, patients as never, attachmentLinks as never);
     const mocks = {
         findById: jest.spyOn(recordsRepo, "findById").mockImplementation(() => { events.push("record"); return Promise.resolve(recordEntity()); }),
         listTimeline: jest.spyOn(recordsRepo, "listTimeline").mockImplementation(() => { events.push("page"); return Promise.resolve([]); }),
         amendments: jest.spyOn(amendmentsRepo, "listByRecordIds").mockImplementation(() => { events.push("amendments"); return Promise.resolve(new Map()); }),
     };
-    return { service, transaction, events, record, patients, mocks };
+    return { service, transaction, events, record, patients, mocks, attachmentLinks };
 }
 
 afterEach(() => { jest.restoreAllMocks(); });
@@ -47,11 +49,29 @@ describe("RecordQueriesService.get", () => {
         const result = await service.get(doctor, 9);
         expect(result.record.id).toBe(9);
         expect(result.amendments.map((amendment) => amendment.id)).toEqual([1, 2]);
-        expect(events).toEqual(["begin", "record", "amendments", "audit", "commit"]);
+        expect(events).toEqual(["begin", "record", "amendments", "attachments", "audit", "commit"]);
         expect(mocks.findById).toHaveBeenCalledWith(9, trx);
         expect(mocks.amendments).toHaveBeenCalledWith([9], trx);
         expect(record).toHaveBeenCalledWith(trx, { actor: { kind: "user", userId: 202, role: "doctor" }, action: "record.read", entityType: "medical_record", entityId: 9,
             metadata: { consultationId: 7, patientUserId: 101, viewerRole: "doctor", viewerIsAuthor: true, amendmentCount: 2 } });
+    });
+
+    it("should read the live attachment metadata of the record in the same transaction and return it with the record", async () => {
+        const { service, attachmentLinks } = setup();
+        const attachment: RecordAttachmentSummary = { id: 5, recordId: 9, fileType: "application/pdf", sizeBytes: 10, attachmentDescription: null, createdAt: new Date(NOW) };
+        attachmentLinks.listByRecordIds.mockResolvedValue(new Map([[9, [attachment]]]));
+        const result = await service.get(patient, 9);
+        expect(result.attachments).toEqual([attachment]);
+        expect(attachmentLinks.listByRecordIds).toHaveBeenCalledTimes(1);
+        expect(attachmentLinks.listByRecordIds).toHaveBeenCalledWith([9], trx);
+    });
+
+    it("should fail the read and write no audit row when the attachments read fails", async () => {
+        const { service, attachmentLinks, record } = setup();
+        const failure = new Error("attachments unavailable");
+        attachmentLinks.listByRecordIds.mockRejectedValue(failure);
+        await expect(service.get(doctor, 9)).rejects.toBe(failure);
+        expect(record).not.toHaveBeenCalled();
     });
 
     it("should mark a consulted doctor who is not the author and a patient in the audit metadata", async () => {
@@ -97,7 +117,7 @@ describe("RecordQueriesService.get", () => {
         const failure = new Error("audit unavailable");
         record.mockRejectedValue(failure);
         await expect(service.get(doctor, 9)).rejects.toBe(failure);
-        expect(events).toEqual(["begin", "record", "amendments"]);
+        expect(events).toEqual(["begin", "record", "amendments", "attachments"]);
     });
 });
 
@@ -157,6 +177,23 @@ describe("RecordQueriesService.timeline", () => {
         expect(result.items.map((item) => item.amendments.map((amendment) => amendment.id))).toEqual([[1, 2], []]);
     });
 
+    it("should load the attachments of exactly the returned records in ONE call and group them under their record, none under the others", async () => {
+        const { service, mocks, attachmentLinks } = setup();
+        mocks.listTimeline.mockResolvedValue([entry(30), entry(20), entry(10)]);
+        const one: RecordAttachmentSummary = { id: 1, recordId: 30, fileType: "image/png", sizeBytes: 5, attachmentDescription: null, createdAt: new Date(NOW) };
+        attachmentLinks.listByRecordIds.mockResolvedValue(new Map([[30, [one]], [10, [{ ...one, id: 2, recordId: 10 }]]]));
+        const result = await service.timeline(doctor, 101, { cursor: undefined, limit: 2 });
+        expect(attachmentLinks.listByRecordIds).toHaveBeenCalledTimes(1);
+        expect(attachmentLinks.listByRecordIds).toHaveBeenCalledWith([30, 20], trx);
+        expect(result.items.map((item) => item.attachments.map((attachment) => attachment.id))).toEqual([[1], []]);
+    });
+
+    it("should pass an empty id list to the attachments read on an empty page (the helper then issues no query)", async () => {
+        const { service, attachmentLinks } = setup();
+        await service.timeline(patient, 101, { cursor: undefined, limit: undefined });
+        expect(attachmentLinks.listByRecordIds).toHaveBeenCalledWith([], trx);
+    });
+
     it("should return patient undefined-as-null when the patient has no profile and the profile otherwise", async () => {
         const { service, patients } = setup();
         expect((await service.timeline(doctor, 101, { cursor: undefined, limit: undefined })).patient).toBeNull();
@@ -178,7 +215,7 @@ describe("RecordQueriesService.timeline", () => {
         mocks.listTimeline.mockImplementation(() => { events.push("page"); return Promise.resolve([entry(30), entry(20), entry(10)]); });
         mocks.amendments.mockImplementation(() => { events.push("amendments"); return Promise.resolve(new Map([[30, [amendmentEntity({ recordId: 30 })]]])); });
         await service.timeline(doctor, 101, { cursor: undefined, limit: 2 });
-        expect(events).toEqual(["begin", "page", "amendments", "profile", "audit", "commit"]);
+        expect(events).toEqual(["begin", "page", "amendments", "attachments", "profile", "audit", "commit"]);
         expect(record).toHaveBeenCalledTimes(1);
         expect(record).toHaveBeenCalledWith(trx, { actor: { kind: "user", userId: 202, role: "doctor" }, action: "patient_records.listed", entityType: "patient_records", entityId: 101,
             metadata: { patientUserId: 101, viewerRole: "doctor", recordCount: 2, hasMore: true, firstPage: true } });

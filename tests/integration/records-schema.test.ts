@@ -3,6 +3,7 @@ import { db } from "../../src/lib/knex/knex";
 import * as medicalRecordsMigration from "../../src/migrations/20261017120000_create_medical_records";
 import * as medicalRecordAmendmentsMigration from "../../src/migrations/20261017120100_create_medical_record_amendments";
 import * as followUpFkMigration from "../../src/migrations/20261017120200_add_consultations_follow_up_fk";
+import * as recordAttachmentsMigration from "../../src/migrations/20261018120000_create_record_attachments";
 import { checkViolationConstraint } from "../../src/lib/knex/pg-errors";
 import { DOCTOR, PATIENT, useConsultationsHarness } from "../helpers/consultations-harness";
 import { ownerDb } from "../helpers/db";
@@ -266,6 +267,8 @@ describe("records schema (integration: real Postgres, owner care and app login c
                 fk: (await ownerDb.raw("SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_consultations_follow_up_of_record_id') AS ok")).rows[0].ok,
             });
             expect(await exists()).toEqual({ records: true, amendments: true, fn: true, fk: true });
+            // record_attachments references medical_records (ON DELETE RESTRICT): it goes first and comes back last.
+            await recordAttachmentsMigration.down(ownerDb);
             await followUpFkMigration.down(ownerDb);
             await medicalRecordAmendmentsMigration.down(ownerDb);
             await medicalRecordsMigration.down(ownerDb);
@@ -275,6 +278,7 @@ describe("records schema (integration: real Postgres, owner care and app login c
                 await medicalRecordsMigration.up(ownerDb);
                 await medicalRecordAmendmentsMigration.up(ownerDb);
                 await followUpFkMigration.up(ownerDb);
+                await recordAttachmentsMigration.up(ownerDb);
             }
             expect(await exists()).toEqual({ records: true, amendments: true, fn: true, fk: true });
             expect({ constraints: await names("medical_records", "constraints"), amendments: await names("medical_record_amendments", "constraints"),

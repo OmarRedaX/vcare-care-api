@@ -21,7 +21,7 @@ function isMissing(error: unknown): boolean {
     return error.name === "NotFound" || error.name === "NoSuchKey";
 }
 
-/** S3-backed implementation. promote copies only; the caller deletes quarantine after a successful copy. */
+/** S3-backed implementation. promote copies only; the caller deletes quarantine after its result transaction commits. */
 export class S3Adapter implements ObjectStorage {
     private readonly client: S3Client;
     private readonly now: () => Date;

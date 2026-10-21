@@ -1,8 +1,8 @@
 import type { Knex } from "knex";
 import { inject, injectable } from "tsyringe";
 import { TOKENS } from "../../../lib/di/tokens";
-import { findAccessRow, isFollowUpTarget, listConsultationIdsWithRecord } from "../repository/medical-records.repo";
-import type { RecordAccessRow } from "../types";
+import { findAccessRow, findLockRowForNoKeyUpdate, isFollowUpTarget, listConsultationIdsWithRecord } from "../repository/medical-records.repo";
+import type { RecordAccessRow, RecordLockRow } from "../types";
 
 /**
  * The one way other modules reach `medical_records` (`consultations` for `hasRecord` and the follow-up link, `sessions` for the calendar).
@@ -26,5 +26,13 @@ export class RecordLinksService {
     /** Ids and parties of a live record, no clinical text (ownership resolvers). */
     findAccessRow(recordId: number, conn: Knex = this.db): Promise<RecordAccessRow | undefined> {
         return findAccessRow(recordId, conn);
+    }
+
+    /**
+     * Ids, parties and the lock verdict (database time) of a live record, read `FOR NO KEY UPDATE` inside the caller's transaction
+     * (record-attachments writes). Reads no clinical text.
+     */
+    lockForNoKeyUpdate(recordId: number, trx: Knex.Transaction): Promise<RecordLockRow | undefined> {
+        return findLockRowForNoKeyUpdate(recordId, trx);
     }
 }

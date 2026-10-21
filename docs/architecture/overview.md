@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-18
+last_verified: 2026-10-20
 tags: [architecture, overview, modules, layering]
-related: [system-design, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
+related: [system-design, record-attachments-spec, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping]
 ---
 
 # Architecture Overview — care-service
@@ -81,15 +81,17 @@ flowchart LR
 |---|---|---|---|
 | `specialties` | specialty catalog | `specialties` | — |
 | `doctors` | **Built:** own-profile onboarding, languages and specialty links, accepting toggle, local suspension check. **Planned:** search | `doctor_profiles`, `doctor_specialties`, `doctor_languages` (built) | `SpecialtiesService` for linked specialty validation; identity-client (Case 2/3) and availability later |
-| `verification` | documents, application states, decisions | `verification_documents`, `upload_intents` (**built**, 2026-10-08; `identity_sync_jobs` is written through `identity-sync`) | identity-client (Cases 1, 2), storage (uploads, download URLs) |
+| `verification` | documents, application states, decisions | `verification_documents` (**built**, 2026-10-08; `upload_intents` is owned by `upload-intents` since 2026-10-19 and `identity_sync_jobs` by `identity-sync`) | identity-client (Cases 1, 2), `upload-intents` service, storage (download URLs) |
 | `admin-doctors` (built 2026-10-09) | admin suspend (Case 3) and reinstate (Case 4) of an approved doctor; writes `doctor_profiles.suspended_*` and the sync status they imply; consultation flag behind the `SuspensionImpactProvider` port (no-op until `consultations`) | none of its own (reuses `doctor_profiles`, `identity_sync_jobs`) | `identity-sync` service, `access` (`AuditRecorder`), `doctors` (profile mapper) |
+| `upload-intents` (built 2026-10-19, extracted from `verification`; ADR 0022) | the shared upload-intent lifecycle: intent creation, per-intent advisory lock (1101), the callback-based verify-and-promote `complete` flow, purge primitives and the `upload-intent-purge` worker loop (singleton lock 1103, every kind); no routes | `upload_intents` | storage; called by `verification`, `record-attachments` and the worker |
 | `identity-sync` (built 2026-10-09, extracted from `verification`; ADR 0021) | the Identity status-sync engine: durable jobs, per-doctor advisory lock, kind policies, the `identity-sync` worker loop; no routes | `identity_sync_jobs` | identity-client (Cases 1, 3, 4); called by `verification`, `admin-doctors` and the worker |
 | `schedules` (built 2026-10-09) | working hours, exceptions, consultation types, conflict detection (behind the `ScheduleImpactProvider` port; no-op until `consultations`) | `working_hours`, `schedule_exceptions`, `consultation_types` | `consultations` (conflict lookup), `availability` (cache invalidation) |
 | `availability` | slot computation and caches (no tables) | — (reads schedules + consultations) | `pkg/slots` |
 | `consultations` | booking, reschedule, cancel, no-show, lists, calendar; `hasRecord` and the follow-up link via `records` (2026-10-18) | `consultations` | `availability`, `doctors` (bookability), `records` (`RecordLinksService`), email, identity-client (Case 2) |
 | `sessions` | waiting room, calendar, join/start/complete/no-show, room tokens (built 2026-10-15) | `consultations` (session columns, via `ConsultationRowsService`) | video, notifications (`doctor_joined` outbox), identity-client (Case 2) |
 | `patients` (built: profile 2026-10-11, doctor read 2026-10-12; timeline route lives in `records`) | patient profile (`GET/PATCH /api/patients/me`, `GET /api/patients/{patientUserId}`); `PatientsService.findProfile` serves the records timeline | `patient_profiles` | `consultations` (relationship check) |
-| `records` (built 2026-10-18; attachments are the next module, `record-attachments`) | medical records, amendments, the patient timeline (`GET /api/patients/{patientUserId}/records`), `Consultation.hasRecord` and the follow-up link through `RecordLinksService`; attachments planned | `medical_records`, `medical_record_amendments` (built); `record_attachments` (planned) | `consultations` (parties lookup, relationship port), `doctors` (suspension), `patients` (profile), `audit`; storage for attachments later. No Identity call |
+| `records` (built 2026-10-18; attachment metadata plugged in 2026-10-20) | medical records, amendments, the patient timeline (`GET /api/patients/{patientUserId}/records`), `Consultation.hasRecord` and the follow-up link through `RecordLinksService`; reads `RecordAttachmentLinksService` for `MedicalRecord.attachments` | `medical_records`, `medical_record_amendments` | `consultations` (parties lookup, relationship port), `doctors` (suspension), `patients` (profile), `record-attachments` (metadata list), `audit`. No Identity call, no storage call |
+| `record-attachments` (built 2026-10-20) | files on a medical record: upload intent, verified `complete`, audited 60 s `download-url`, soft `DELETE` before the 24 h lock, the cap of 20; the record views' attachment metadata (`RecordAttachmentLinksService`, database only); author-only writes, admin denied | `record_attachments` (plus `upload_intents` rows of kind `record_attachment`, operated by `upload-intents`) | `upload-intents` (shared `complete` flow), `records` (`RecordLinksService.findAccessRow` / `lockForNoKeyUpdate`, the exported `record_reader` resolver), `doctors` (suspension, also re-checked inside `complete`), `patients` (relationship port), `audit`, storage (`presignDownload`). No Identity call |
 | `help-articles` | help center content | `help_articles` | — |
 | `audit` (read API built 2026-10-09) | append-only audit log (written through `lib/audit`) and `GET /api/audit-logs`: admin-only, time-bounded `[from, to)`, keyset page with a signed cursor; no table of its own beyond three read indexes, no audit row for the read | `audit_logs` | — (written by every module through `lib/audit`; the read module calls nothing) |
 | `identity-client` (lib) | outbound Identity calls and their policies | — | identity-service |

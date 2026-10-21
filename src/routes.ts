@@ -4,6 +4,7 @@ import { buildAuditRouter } from "./app/audit/routes";
 import { buildConsultationsRouter } from "./app/consultations/routes";
 import { buildDoctorsRouter } from "./app/doctors/routes";
 import { buildPatientsRouter } from "./app/patients/routes";
+import { buildRecordAttachmentsRouter } from "./app/record-attachments/routes";
 import { buildRecordsRouter } from "./app/records/routes";
 import { buildSchedulesRouter } from "./app/schedules/routes";
 import { buildSessionsRouter } from "./app/sessions/routes";
@@ -31,5 +32,7 @@ export function buildPublicRoutes(): Router {
     router.use(buildConsultationsRouter());
     // Records last: `/consultations/:id/record` and `/patients/:patientUserId/records` are distinct paths from the routers above.
     router.use(buildRecordsRouter());
+    // Attachments after the records router: longer paths under `/records/:id/attachments`, no collision with `/records/:id`.
+    router.use(buildRecordAttachmentsRouter());
     return router;
 }

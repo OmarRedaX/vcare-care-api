@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Express } from "express";
 import type { Knex } from "knex";
 import request from "supertest";
@@ -19,7 +21,8 @@ import { DoctorsController } from "../../src/app/doctors/controller/doctors.cont
 import { SYSTEM_SYNC_TIMING } from "../../src/app/identity-sync/constants";
 import { IdentitySyncService } from "../../src/app/identity-sync/service/identity-sync.service";
 import { buildIdentitySyncLoop } from "../../src/app/identity-sync/worker/identity-sync.loop";
-import { buildUploadIntentPurgeLoop } from "../../src/app/verification/worker/upload-intent-purge.loop";
+import { UploadIntentsService } from "../../src/app/upload-intents/service/upload-intents.service";
+import { buildUploadIntentPurgeLoop } from "../../src/app/upload-intents/worker/upload-intent-purge.loop";
 import { buildTestApps } from "../helpers/app";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 import { startFakeJwks, buildFakeJwksWiring } from "../helpers/fake-jwks";
@@ -47,6 +50,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
     let identityServer: FakeIdentityServer;
     let identity: IdentityClient;
     let service: VerificationService;
+    let uploadIntents: UploadIntentsService;
     let identitySync: IdentitySyncService;
     const storage = new InMemoryObjectStorage();
     const tokens: Record<string, string> = {};
@@ -90,7 +94,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         identity = new IdentityClient({ env: { ...getEnv(), IDENTITY_INTERNAL_URL: url }, redis, sleep: () => Promise.resolve() });
         identityServer.users.set(DOCTOR, { id: DOCTOR, fullName: "Synthetic Doctor 202", avatarUrl: null, status: "pending" });
         identityServer.users.set(OTHER, { id: OTHER, fullName: "Synthetic Doctor 204", avatarUrl: null, status: "pending" });
-        for (const token of [TOKENS.JwksCache, TOKENS.UserTokenVerifier, TOKENS.IDENTITY_CLIENT, TOKENS.STORAGE, TOKENS.VerificationService, TOKENS.VerificationController, TOKENS.DoctorsService, TOKENS.DoctorsController])
+        for (const token of [TOKENS.JwksCache, TOKENS.UserTokenVerifier, TOKENS.IDENTITY_CLIENT, TOKENS.STORAGE, TOKENS.UploadIntentsService, TOKENS.VerificationService, TOKENS.VerificationController, TOKENS.DoctorsService, TOKENS.DoctorsController])
             previous.push({ token, value: container.isRegistered(token) ? container.resolve(token) : undefined });
         container.registerInstance(TOKENS.JwksCache, wiring.cache);
         container.registerInstance(TOKENS.UserTokenVerifier, wiring.verifier);
@@ -99,6 +103,8 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         // The engine singleton may already hold the boot-time IdentityClient (resolved by the `previous` snapshot above): rebuild it on the test client.
         container.registerSingleton(TOKENS.IdentitySyncService, IdentitySyncService);
         identitySync = container.resolve<IdentitySyncService>(TOKENS.IdentitySyncService);
+        container.registerSingleton(TOKENS.UploadIntentsService, UploadIntentsService);
+        uploadIntents = container.resolve<UploadIntentsService>(TOKENS.UploadIntentsService);
         service = container.resolve(VerificationService);
         container.registerInstance(TOKENS.VerificationService, service);
         container.registerSingleton(TOKENS.VerificationController, VerificationController);
@@ -179,7 +185,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         expect((await call("post", path(`uploads/${upload.id}/complete`), "doctor", {})).status).toBe(201);
     });
 
-    it("auditFailureRollsBackVerificationWrite: should roll back completion and delete its promoted object", async () => {
+    it("auditFailureRollsBackVerificationWrite: should retain quarantine for a successful retry after the audit rollback", async () => {
         await profile(); const upload = await intent(); storage.seed(upload.key, PDF);
         await ownerDb.raw("ALTER TABLE audit_logs ADD CONSTRAINT chk_audit_verification_upload_test CHECK (action <> 'verification.document_uploaded')");
         try {
@@ -188,8 +194,18 @@ describe("verification routes (real Postgres, Redis and app)", () => {
             expect(await ownerDb("verification_documents")).toHaveLength(0);
             expect((await ownerDb("upload_intents").where("id", upload.id).first()).consumed_at).toBeNull();
             expect(storage.calls.filter((c) => c.operation === "promote")).toHaveLength(1);
-            expect(storage.calls.filter((c) => c.operation === "delete")).toHaveLength(2);
+            expect(storage.has(upload.key)).toBe(true);
+            const failedFinalKey = String(storage.calls.find((c) => c.operation === "promote")?.args[1]);
+            expect(storage.has(failedFinalKey)).toBe(false);
+            expect(storage.calls.filter((c) => c.operation === "delete").map((c) => c.args[0])).toEqual([failedFinalKey]);
         } finally { await ownerDb.raw("ALTER TABLE audit_logs DROP CONSTRAINT IF EXISTS chk_audit_verification_upload_test"); }
+        const retry = await call("post", path(`uploads/${upload.id}/complete`), "doctor", {});
+        expect(retry.status).toBe(201);
+        const documents = await ownerDb("verification_documents");
+        expect(documents).toHaveLength(1);
+        expect(storage.has(upload.key)).toBe(false);
+        expect(storage.has(String(documents[0]?.object_key))).toBe(true);
+        expect(storage.calls.filter((c) => c.operation === "promote")).toHaveLength(2);
     });
 
     it("should make one concurrent complete win and the other replay or report a conflict", async () => {
@@ -319,10 +335,40 @@ describe("verification routes (real Postgres, Redis and app)", () => {
     it("should purge expired quarantine objects and close intents with the real service", async () => {
         await profile(); const upload = await intent(); storage.seed(upload.key, PDF);
         await ownerDb("upload_intents").where("id", upload.id).update({ expires_at: new Date(Date.now() - 1000) });
-        const loop = buildUploadIntentPurgeLoop({ service, db, logger, intervalSeconds: 300 });
+        const loop = buildUploadIntentPurgeLoop({ service: uploadIntents, db, logger, intervalSeconds: 300 });
         await expect(loop.tick(new AbortController().signal)).resolves.toBe("done");
         expect(storage.has(upload.key)).toBe(false);
         expect((await ownerDb("upload_intents").where("id", upload.id).first()).consumed_at).not.toBeNull();
+    });
+
+    /** Golden statements (ADR 0022 / record-attachments spec section 2): the ordered SQL shapes and storage calls of the intent lifecycle, recorded on the pre-extraction code and compared unchanged after the move. */
+    it("goldenIntentStatements: should issue the recorded SQL and storage calls for create, complete, replay, expiry, false bytes and purge", async () => {
+        const maskUuid = (value: unknown): unknown => typeof value === "string" ? value.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<uuid>") : value;
+        async function recorded(run: () => Promise<unknown>, normalize: (sql: string) => string = (sql) => sql): Promise<{ sql: string[]; storage: Array<{ operation: string; args: unknown[] }> }> {
+            const sql: string[] = []; const listener = (data: { sql: string; bindings?: unknown[] }): void => { const shape = normalize(data.sql.replace(/\$\d+/g, "?")); sql.push(/advisory/.test(shape) ? `${shape} <${(data.bindings ?? []).join(",")}>` : shape); };
+            storage.calls.length = 0; db.on("query", listener);
+            try { await run(); } finally { db.removeListener("query", listener); }
+            return { sql, storage: storage.calls.map((c) => ({ operation: c.operation, args: c.args.map(maskUuid) })) };
+        }
+        await profile();
+        const golden: Record<string, Awaited<ReturnType<typeof recorded>>> = {};
+        let first: { id: number; key: string } | undefined;
+        golden.create = await recorded(async () => { first = await intent(); });
+        storage.seed(first?.key ?? "", PDF);
+        golden.complete = await recorded(async () => { expect((await call("post", path(`uploads/${first?.id}/complete`), "doctor", {})).status).toBe(201); });
+        golden.replay = await recorded(async () => { expect((await call("post", path(`uploads/${first?.id}/complete`), "doctor", {})).status).toBe(200); });
+        const expired = await intent("id"); storage.seed(expired.key, PDF);
+        await ownerDb("upload_intents").where("id", expired.id).update({ expires_at: new Date(Date.now() - 1000) });
+        golden.expired = await recorded(async () => { expect((await call("post", path(`uploads/${expired.id}/complete`), "doctor", {})).status).toBe(410); });
+        const invalid = await intent("id"); storage.seed(invalid.key, Buffer.from("fake PDF bytes"));
+        golden.falseBytes = await recorded(async () => { expect((await call("post", path(`uploads/${invalid.id}/complete`), "doctor", {})).status).toBe(400); });
+        const stale = await intent("id"); storage.seed(stale.key, PDF);
+        await ownerDb("upload_intents").where("id", stale.id).update({ expires_at: new Date(Date.now() - 1000) });
+        // The purge listing no longer filters on kind (ADR 0022, difference 3): that one predicate is the only intended statement change, so it is normalized away.
+        const purgeLoop = buildUploadIntentPurgeLoop({ service: uploadIntents, db, logger, intervalSeconds: 300 });
+        golden.purge = await recorded(async () => { await expect(purgeLoop.tick(new AbortController().signal)).resolves.toBe("done"); }, (sql) => sql.replace('"kind" = ? and ', ""));
+        const file = join(__dirname, "golden", "verification-intent-statements.json");
+        expect(golden).toEqual(JSON.parse(readFileSync(file, "utf8")));
     });
 
     it("should keep synthetic reviewer prose, object keys and tokens out of logs and reads", async () => {
@@ -467,7 +513,7 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         beforeEach(() => {
             pool = createKnex({ url: getEnv().DATABASE_URL, poolMax, statementTimeoutMs: 10_000, applicationName: "care-test" });
             smallSync = new IdentitySyncService(pool, container.resolve(TOKENS.AuditRecorder), identity, getEnv(), SYSTEM_SYNC_TIMING);
-            small = new VerificationService(pool, container.resolve(TOKENS.AuditRecorder), storage, identity, getEnv(), smallSync);
+            small = new VerificationService(pool, container.resolve(TOKENS.AuditRecorder), storage, identity, getEnv(), smallSync, new UploadIntentsService(pool, storage, getEnv()));
         });
         afterEach(async () => { await pool.destroy(); });
 

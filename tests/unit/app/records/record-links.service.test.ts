@@ -54,3 +54,15 @@ describe("RecordLinksService.findAccessRow", () => {
         expect(spy.mock.calls).toEqual([[9, db], [10, trx]]);
     });
 });
+
+describe("RecordLinksService.lockForNoKeyUpdate", () => {
+    const tx = trx as unknown as Knex.Transaction;
+    it("should delegate to the repository with the caller's transaction and return the lock row, or undefined for an absent record", async () => {
+        const row = { id: 9, patientUserId: 101, doctorUserId: 202, isLocked: false };
+        const spy = jest.spyOn(recordsRepo, "findLockRowForNoKeyUpdate").mockResolvedValueOnce(row).mockResolvedValueOnce(undefined);
+        const links = new RecordLinksService(db);
+        expect(await links.lockForNoKeyUpdate(9, tx)).toBe(row);
+        expect(await links.lockForNoKeyUpdate(10, tx)).toBeUndefined();
+        expect(spy.mock.calls).toEqual([[9, tx], [10, tx]]);
+    });
+});

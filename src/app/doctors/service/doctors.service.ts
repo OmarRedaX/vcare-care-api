@@ -50,7 +50,8 @@ export class DoctorsService {
 
     getOwnApplication(actor: AuthContext): Promise<VerificationApplicationView> { return this.verification.getOwnApplication(actor); }
 
-    async isLocallySuspended(userId: number): Promise<boolean> { return isUserLocallySuspended(userId, this.db); }
+    /** `conn` lets a caller that already holds a transaction read on it (a second pool connection inside a transaction can starve a small pool). */
+    async isLocallySuspended(userId: number, conn: Knex = this.db): Promise<boolean> { return isUserLocallySuspended(userId, conn); }
 
     /** For `schedules` (through `ScheduleOwnerResolver`): the live profile, never a locked read. */
     findProfileForSchedule(userId: number, conn: Knex): Promise<DoctorProfile | undefined> { return findProfileByUserId(userId, conn); }

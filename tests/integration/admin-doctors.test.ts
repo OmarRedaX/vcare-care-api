@@ -10,6 +10,7 @@ import { DoctorsService } from "../../src/app/doctors/service/doctors.service";
 import { IdentitySyncService } from "../../src/app/identity-sync/service/identity-sync.service";
 import { buildIdentitySyncLoop } from "../../src/app/identity-sync/worker/identity-sync.loop";
 import { VerificationController } from "../../src/app/verification/controller/verification.controller";
+import { UploadIntentsService } from "../../src/app/upload-intents/service/upload-intents.service";
 import { VerificationService } from "../../src/app/verification/service/verification.service";
 import { backoffMs } from "../../src/lib/async/backoff";
 import { getEnv } from "../../src/lib/config/env";
@@ -145,7 +146,7 @@ describe("admin-doctors (integration: real routes, Postgres, Redis and sync engi
         fake = await startFakeJwks(["admin-doctors"]); wiring = await buildFakeJwksWiring(fake);
         identityServer = new FakeIdentityServer(); const url = await identityServer.start();
         identity = new IdentityClient({ env: { ...getEnv(), IDENTITY_INTERNAL_URL: url }, redis, sleep: () => Promise.resolve() });
-        for (const token of [TOKENS.JwksCache, TOKENS.UserTokenVerifier, TOKENS.IDENTITY_CLIENT, TOKENS.STORAGE, TOKENS.SyncTiming, TOKENS.SuspensionImpactProvider, TOKENS.IdentitySyncService,
+        for (const token of [TOKENS.JwksCache, TOKENS.UserTokenVerifier, TOKENS.IDENTITY_CLIENT, TOKENS.STORAGE, TOKENS.SyncTiming, TOKENS.SuspensionImpactProvider, TOKENS.IdentitySyncService, TOKENS.UploadIntentsService,
             TOKENS.AdminDoctorsService, TOKENS.AdminDoctorsController, TOKENS.VerificationService, TOKENS.VerificationController, TOKENS.DoctorsService, TOKENS.DoctorsController])
             previous.push({ token, value: container.isRegistered(token) ? container.resolve(token) : undefined });
         container.registerInstance(TOKENS.JwksCache, wiring.cache);
@@ -159,6 +160,7 @@ describe("admin-doctors (integration: real routes, Postgres, Redis and sync engi
         identitySync = container.resolve<IdentitySyncService>(TOKENS.IdentitySyncService);
         container.registerSingleton(TOKENS.AdminDoctorsService, AdminDoctorsService);
         container.registerSingleton(TOKENS.AdminDoctorsController, AdminDoctorsController);
+        container.registerSingleton(TOKENS.UploadIntentsService, UploadIntentsService);
         container.registerInstance(TOKENS.VerificationService, container.resolve(VerificationService));
         container.registerSingleton(TOKENS.VerificationController, VerificationController);
         container.registerSingleton(TOKENS.DoctorsService, DoctorsService);

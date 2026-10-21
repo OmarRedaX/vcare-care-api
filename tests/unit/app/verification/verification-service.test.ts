@@ -2,6 +2,8 @@
 import type { Knex } from "knex";
 import { VerificationService } from "../../../../src/app/verification/service/verification.service";
 import * as repo from "../../../../src/app/verification/repository/verification.repo";
+import * as intentsRepo from "../../../../src/app/upload-intents/repository/upload-intents.repo";
+import { UploadIntentsService } from "../../../../src/app/upload-intents/service/upload-intents.service";
 import * as syncRepo from "../../../../src/app/identity-sync/repository/identity-sync.repo";
 import { IdentitySyncService } from "../../../../src/app/identity-sync/service/identity-sync.service";
 import * as locks from "../../../../src/lib/knex/session-advisory-lock";
@@ -35,7 +37,7 @@ describe("verification service rules", () => {
     const trx = Object.assign(jest.fn(() => ({ where, update })), { fn: { now: () => new Date() } });
     const db = Object.assign(jest.fn(() => ({ where, update })), { transaction: jest.fn(async (work: (t: Knex.Transaction) => Promise<unknown>) => work(trx as unknown as Knex.Transaction)) });
     const identitySync = new IdentitySyncService(db as unknown as Knex, audit, identity, getEnv(), { now: () => Date.now(), random: () => Math.random() });
-    const service = new VerificationService(db as unknown as Knex, audit, storage, identity, getEnv(), identitySync);
+    const service = new VerificationService(db as unknown as Knex, audit, storage, identity, getEnv(), identitySync, new UploadIntentsService(db as unknown as Knex, storage, getEnv()));
 
     beforeEach(() => { jest.restoreAllMocks(); jest.clearAllMocks(); });
 
@@ -46,9 +48,9 @@ describe("verification service rules", () => {
     });
 
     it("submitRejectsForeignPrincipal: should resolve intent ownership from the persisted owner", async () => {
-        jest.spyOn(repo, "findIntent").mockResolvedValue({ kind: "verification_document", owner_user_id: 204, target_id: 1 } as Awaited<ReturnType<typeof repo.findIntent>>);
+        jest.spyOn(intentsRepo, "findIntent").mockResolvedValue({ kind: "verification_document", owner_user_id: 204, target_id: 1 } as Awaited<ReturnType<typeof intentsRepo.findIntent>>);
         jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Draft));
-        const policy = buildVerificationPolicies().complete;
+        const policy = buildVerificationPolicies({ findIntent: intentsRepo.findIntent }).complete;
         if (policy.owner.kind !== "resolver") throw new Error("expected resolver policy");
         await expect(policy.owner.resolve({ auth: actor, params: { uploadId: "1" } })).resolves.toBe("deny-not-found");
     });
@@ -102,17 +104,17 @@ describe("verification service rules", () => {
 
     it("intentOwnerReplayAndExpiry: should reject foreign intent before storage access", async () => {
         jest.spyOn(locks, "withSessionAdvisoryLock").mockImplementation(async (_db, _namespace, _id, work) => work());
-        jest.spyOn(repo, "findIntent").mockResolvedValue({ id: 3, kind: "verification_document", owner_user_id: 204 } as Awaited<ReturnType<typeof repo.findIntent>>);
+        jest.spyOn(intentsRepo, "findIntent").mockResolvedValue({ id: 3, kind: "verification_document", owner_user_id: 204 } as Awaited<ReturnType<typeof intentsRepo.findIntent>>);
         await expect(service.complete(actor, 3)).rejects.toMatchObject({ code: "NotFound" });
         expect(storage.headObject).not.toHaveBeenCalled();
     });
 
     it("intentOwnerReplayAndExpiry: should close an expired intent before document creation", async () => {
         jest.spyOn(locks, "withSessionAdvisoryLock").mockImplementation(async (_db, _namespace, _id, work) => work());
-        jest.spyOn(repo, "findIntent").mockResolvedValue({ id: 3, kind: "verification_document", owner_user_id: 202, target_id: 1, result_id: null, consumed_at: null,
-            expires_at: new Date(Date.now() - 1000), quarantine_key: "quarantine/synthetic" } as Awaited<ReturnType<typeof repo.findIntent>>);
+        jest.spyOn(intentsRepo, "findIntent").mockResolvedValue({ id: 3, kind: "verification_document", owner_user_id: 202, target_id: 1, result_id: null, consumed_at: null,
+            expires_at: new Date(Date.now() - 1000), quarantine_key: "quarantine/synthetic" } as Awaited<ReturnType<typeof intentsRepo.findIntent>>);
         jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Draft));
-        const close = jest.spyOn(repo, "closeIntent").mockResolvedValue(undefined);
+        const close = jest.spyOn(intentsRepo, "closeIntent").mockResolvedValue(undefined);
         await expect(service.complete(actor, 3)).rejects.toMatchObject({ code: "UploadIntentExpired" });
         expect(storage.delete).toHaveBeenCalledWith("quarantine/synthetic");
         expect(close).toHaveBeenCalledWith(3, null, expect.anything());
@@ -120,12 +122,12 @@ describe("verification service rules", () => {
 
     it("completeRejectsFalsePdfAndWritesNoRow: should reject invalid stored bytes before inserting a document", async () => {
         jest.spyOn(locks, "withSessionAdvisoryLock").mockImplementation(async (_db, _namespace, _id, work) => work());
-        jest.spyOn(repo, "findIntent").mockResolvedValue({ id: 3, kind: "verification_document", owner_user_id: 202, target_id: 1, result_id: null, consumed_at: null,
-            expires_at: new Date(Date.now() + 60_000), quarantine_key: "quarantine/synthetic", max_bytes: 10_485_760 } as Awaited<ReturnType<typeof repo.findIntent>>);
+        jest.spyOn(intentsRepo, "findIntent").mockResolvedValue({ id: 3, kind: "verification_document", owner_user_id: 202, target_id: 1, result_id: null, consumed_at: null,
+            expires_at: new Date(Date.now() + 60_000), quarantine_key: "quarantine/synthetic", max_bytes: 10_485_760 } as Awaited<ReturnType<typeof intentsRepo.findIntent>>);
         jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Draft));
         jest.mocked(storage.headObject).mockResolvedValue({ sizeBytes: 18, etag: '"etag-1"' });
         jest.mocked(storage.readHead).mockResolvedValue(Buffer.from("synthetic false PDF"));
-        jest.spyOn(repo, "closeIntent").mockResolvedValue(undefined);
+        jest.spyOn(intentsRepo, "closeIntent").mockResolvedValue(undefined);
         const insert = jest.spyOn(repo, "insertDocument");
         await expect(service.complete(actor, 3)).rejects.toMatchObject({ code: "ValidationFailed" });
         expect(insert).not.toHaveBeenCalled();
@@ -220,10 +222,10 @@ describe("verification service rules", () => {
 
     describe("complete binds promotion to the verified object", () => {
         const openIntent = () => ({ id: 3, kind: "verification_document", owner_user_id: 202, target_id: 1, result_id: null, consumed_at: null, document_type: "license",
-            expires_at: new Date(Date.now() + 60_000), quarantine_key: "quarantine/synthetic", max_bytes: 10_485_760 }) as Awaited<ReturnType<typeof repo.findIntent>>;
+            expires_at: new Date(Date.now() + 60_000), quarantine_key: "quarantine/synthetic", max_bytes: 10_485_760 }) as Awaited<ReturnType<typeof intentsRepo.findIntent>>;
         beforeEach(() => {
             lockPassesThrough();
-            jest.spyOn(repo, "findIntent").mockResolvedValue(openIntent());
+            jest.spyOn(intentsRepo, "findIntent").mockResolvedValue(openIntent());
             jest.spyOn(repo, "findProfileById").mockResolvedValue(profile(VerificationStatus.Draft));
             jest.mocked(storage.headObject).mockResolvedValue({ sizeBytes: 12, etag: "\"etag-1\"" });
             jest.mocked(storage.readHead).mockResolvedValue(Buffer.from("%PDF-1.7 synthetic"));
@@ -231,9 +233,9 @@ describe("verification service rules", () => {
 
         it("should pass the inspected ETag and detected type to promote", async () => {
             jest.mocked(storage.promote).mockResolvedValue(undefined);
-            jest.spyOn(repo, "findIntentForUpdate").mockResolvedValue(openIntent());
+            jest.spyOn(intentsRepo, "findIntentForUpdate").mockResolvedValue(openIntent());
             jest.spyOn(repo, "insertDocument").mockResolvedValue(document(VerificationDocumentType.License));
-            jest.spyOn(repo, "closeIntent").mockResolvedValue(undefined);
+            jest.spyOn(intentsRepo, "closeIntent").mockResolvedValue(undefined);
             await service.complete(actor, 3);
             expect(storage.promote).toHaveBeenCalledWith("quarantine/synthetic", expect.stringMatching(/^verification-documents\//), { etag: "\"etag-1\"", contentType: "application/pdf" });
             expect(storage.readHead).toHaveBeenCalledTimes(1);
@@ -242,10 +244,28 @@ describe("verification service rules", () => {
         it("should create no document and keep the intent open when the quarantine object changed before the copy", async () => {
             jest.mocked(storage.promote).mockRejectedValue(new Error("synthetic precondition failure"));
             const insert = jest.spyOn(repo, "insertDocument");
-            const close = jest.spyOn(repo, "closeIntent");
+            const close = jest.spyOn(intentsRepo, "closeIntent");
             await expect(service.complete(actor, 3)).rejects.toThrow("synthetic precondition failure");
             expect(insert).not.toHaveBeenCalled();
             expect(close).not.toHaveBeenCalled();
+        });
+
+        it("should answer Conflict and insert no document when the locked intent carries an unknown document type", async () => {
+            jest.mocked(storage.promote).mockResolvedValue(undefined);
+            jest.spyOn(intentsRepo, "findIntentForUpdate").mockResolvedValue({ ...openIntent(), document_type: "synthetic-unknown" } as Awaited<ReturnType<typeof intentsRepo.findIntent>>);
+            const insert = jest.spyOn(repo, "insertDocument");
+            await expect(service.complete(actor, 3)).rejects.toMatchObject({ code: "Conflict" });
+            expect(insert).not.toHaveBeenCalled();
+            expect(audit.record).not.toHaveBeenCalled();
+        });
+
+        it("should answer Conflict and insert no document when the profile vanished before the short transaction", async () => {
+            jest.mocked(storage.promote).mockResolvedValue(undefined);
+            jest.spyOn(intentsRepo, "findIntentForUpdate").mockResolvedValue(openIntent());
+            jest.spyOn(repo, "findProfileById").mockResolvedValueOnce(profile(VerificationStatus.Draft)).mockResolvedValue(undefined);
+            const insert = jest.spyOn(repo, "insertDocument");
+            await expect(service.complete(actor, 3)).rejects.toMatchObject({ code: "Conflict" });
+            expect(insert).not.toHaveBeenCalled();
         });
     });
 });

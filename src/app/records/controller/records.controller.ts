@@ -28,7 +28,7 @@ export class RecordsController {
         const consultationId = pathId(req.params.id);
         const dto = await validateBody(MedicalRecordCreateDto, req.body);
         const record = await this.commands.create(auth, consultationId, dto.toInput());
-        sendSuccess(res, MedicalRecordResponseDto.from(record, [], { userId: auth.userId, role: auth.role }), { status: 201 });
+        sendSuccess(res, MedicalRecordResponseDto.from(record, [], [], { userId: auth.userId, role: auth.role }), { status: 201 });
     };
 
     get = async (req: Request, res: Response): Promise<void> => {
@@ -37,7 +37,7 @@ export class RecordsController {
         // The route takes no query; a property-less DTO cannot reject members, so the shared empty-input check is used.
         assertEmptyBody(req.query);
         const result = await this.queries.get(auth, id);
-        sendSuccess(res, MedicalRecordResponseDto.from(result.record, result.amendments, { userId: auth.userId, role: auth.role }));
+        sendSuccess(res, MedicalRecordResponseDto.from(result.record, result.amendments, result.attachments, { userId: auth.userId, role: auth.role }));
     };
 
     update = async (req: Request, res: Response): Promise<void> => {
@@ -52,8 +52,8 @@ export class RecordsController {
             sendSuccess(res, MedicalRecordAmendmentResponseDto.from(result.amendment, viewer), { status: 201 });
             return;
         }
-        // In place or the pre-lock no-op: the current record; a record cannot hold amendments before its lock.
-        sendSuccess(res, MedicalRecordResponseDto.from(result.record, [], viewer));
+        // In place or the pre-lock no-op: the current record with its live attachment metadata; a record cannot hold amendments before its lock.
+        sendSuccess(res, MedicalRecordResponseDto.from(result.record, [], result.attachments, viewer));
     };
 
     timeline = async (req: Request, res: Response): Promise<void> => {

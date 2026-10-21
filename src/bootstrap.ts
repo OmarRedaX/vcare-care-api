@@ -10,6 +10,9 @@ import { ConsultationsService } from "./app/consultations/service/consultations.
 import { NoopConsultationChangeListener } from "./app/consultations/service/noop-consultation-change.listener";
 import { buildScheduleImpactProvider } from "./app/consultations/service/schedule-impact.provider";
 import { ConsultationSuspensionImpactProvider } from "./app/consultations/service/suspension-impact.provider";
+import { RecordAttachmentsController } from "./app/record-attachments/controller/record-attachments.controller";
+import { RecordAttachmentLinksService } from "./app/record-attachments/service/record-attachment-links.service";
+import { RecordAttachmentsService } from "./app/record-attachments/service/record-attachments.service";
 import { RecordsController } from "./app/records/controller/records.controller";
 import { RecordLinksService } from "./app/records/service/record-links.service";
 import { RecordQueriesService } from "./app/records/service/record-queries.service";
@@ -32,6 +35,7 @@ import { SpecialtiesController } from "./app/specialties/controller/specialties.
 import { SpecialtiesService } from "./app/specialties/service/specialties.service";
 import { SYSTEM_SYNC_TIMING } from "./app/identity-sync/constants";
 import { IdentitySyncService } from "./app/identity-sync/service/identity-sync.service";
+import { UploadIntentsService } from "./app/upload-intents/service/upload-intents.service";
 import { VerificationController } from "./app/verification/controller/verification.controller";
 import { VerificationService } from "./app/verification/service/verification.service";
 import { IdentityClient } from "./lib/identity-client/identity-client";
@@ -72,6 +76,7 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.DoctorsController, DoctorsController);
     container.registerInstance(TOKENS.SyncTiming, SYSTEM_SYNC_TIMING);
     container.registerSingleton(TOKENS.IdentitySyncService, IdentitySyncService);
+    container.registerSingleton(TOKENS.UploadIntentsService, UploadIntentsService);
     container.registerSingleton(TOKENS.VerificationService, VerificationService);
     container.registerSingleton(TOKENS.VerificationController, VerificationController);
     // Case 3/4 seam: the real flagging port from `consultations`; the service needs the sync engine registered above.
@@ -87,9 +92,14 @@ export function registerDependencies(env: Env): void {
     // Records: the links service reads only the database, so it is registered before `consultations` and `sessions` (which inject it) and
     // before the records services (which inject ConsultationRowsService and PatientsService, both registered above).
     container.registerSingleton(TOKENS.RecordLinksService, RecordLinksService);
+    // Record attachments: the links service (database only) precedes the records services that inject it; the commands need the links
+    // service, `UploadIntentsService` (registered above) and the storage port, none of which depends on a records service.
+    container.registerSingleton(TOKENS.RecordAttachmentLinksService, RecordAttachmentLinksService);
+    container.registerSingleton(TOKENS.RecordAttachmentsService, RecordAttachmentsService);
     container.registerSingleton(TOKENS.RecordsService, RecordsService);
     container.registerSingleton(TOKENS.RecordQueriesService, RecordQueriesService);
     container.registerSingleton(TOKENS.RecordsController, RecordsController);
+    container.registerSingleton(TOKENS.RecordAttachmentsController, RecordAttachmentsController);
     container.registerSingleton(TOKENS.ConsultationsService, ConsultationsService);
     container.registerSingleton(TOKENS.ConsultationQueriesService, ConsultationQueriesService);
     container.registerSingleton(TOKENS.ConsultationsController, ConsultationsController);
