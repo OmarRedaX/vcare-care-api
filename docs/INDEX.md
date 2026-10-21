@@ -77,6 +77,7 @@ spec, tasks, manual-qa; `reviews/` exists only while a review has open findings)
 
 | Doc | Read it when you need to… | Lens |
 |---|---|---|
+| [availability/brainstorm.md](./availability/brainstorm.md) | see the agreed scope of `availability` (doctor search, public profile, slots; delivered slice by slice: slots and listeners, search and profile, name filter), its roles, business rules, success criteria and open questions; the architecture itself is in architecture/availability.md | explanation |
 | [foundation/brainstorm.md](./foundation/brainstorm.md) | see the agreed scope of the runnable skeleton (what is in and out of the foundation) | explanation |
 | [foundation/spec.md](./foundation/spec.md) | build or change the skeleton: entrypoints, `lib/` APIs (errors, logger, idempotency, rate limit, health, shutdown, worker runner), env, tooling, Docker, CI, test plan; its As-built notes list the known latent gaps (#5–#17) | reference |
 | [foundation/tasks.md](./foundation/tasks.md) | see what the foundation build did, its fix-review rounds, and what is still open | — |
