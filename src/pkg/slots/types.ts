@@ -42,3 +42,16 @@ export interface OpenDay {
 
 /** Which end of an interval a wall time is: a start rounds to the earlier instant, an end to the later one. */
 export type InstantEdge = "start" | "end";
+
+export interface SlotRange { startMs: number; endMs: number }
+export interface FreeSegment { anchorMs: number; startMs: number; endMs: number }
+export interface StartBounds { fromMs: number; toMs: number }
+export interface ClippedWindow { fromMs: number; toMs: number; empty: boolean }
+export interface ComputeSlotsInput {
+    timezone: string;
+    weekly: readonly WeeklyHoursRule[];
+    exceptions: readonly ExceptionRule[];
+    busy: readonly UtcInterval[];
+    durationMinutes: number;
+    bounds: StartBounds;
+}

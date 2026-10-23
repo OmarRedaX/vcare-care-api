@@ -53,6 +53,7 @@ describe("lib/config/env parseEnv", () => {
             OUTBOX_PURGE_SECONDS: 3600,
             REMINDER_SCAN_SECONDS: 60,
             BOOKING_HORIZON_DAYS: 60,
+            SLOT_CACHE_TTL_SECONDS: 60,
             CANCELLATION_POLICY_MINUTES: 120,
             NO_SHOW_GRACE_MINUTES: 10,
             WAITING_ROOM_OPEN_MINUTES: 10,
@@ -75,6 +76,12 @@ describe("lib/config/env parseEnv", () => {
 
     it("should throw naming REDIS_URL when it is missing (F2: no default on secrets)", () => {
         expect(captureInvalid({ DATABASE_URL: SECRET_DB, IDENTITY_JWKS_URL: JWKS_URL }).keys).toEqual(["REDIS_URL"]);
+    });
+
+    it("should bound the availability slot cache TTL to 1..60 seconds", () => {
+        expect(parseEnv({ ...secretsOnly(), SLOT_CACHE_TTL_SECONDS: "1" }).SLOT_CACHE_TTL_SECONDS).toBe(1);
+        expect(captureInvalid({ ...secretsOnly(), SLOT_CACHE_TTL_SECONDS: "0" }).keys).toEqual(["SLOT_CACHE_TTL_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), SLOT_CACHE_TTL_SECONDS: "61" }).keys).toEqual(["SLOT_CACHE_TTL_SECONDS"]);
     });
 
     it("should never include a value in the error message when parsing fails (F1)", () => {
