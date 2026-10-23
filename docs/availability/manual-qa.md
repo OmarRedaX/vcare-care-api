@@ -1,28 +1,28 @@
 ---
-title: availability — Manual QA (CURL), slices 1 and 2
+title: availability — Manual QA (CURL), slices 1 to 3
 owner: care-team
 service: care-service
 module: availability
 status: verified
 diataxis: how-to
 last_verified: 2026-10-23
-tags: [availability, slots, search, profile, worker, manual-qa, curl]
+tags: [availability, slots, search, profile, worker, name-index, manual-qa, curl]
 related: [availability-spec, availability-tasks, availability-brainstorm]
 ---
 
 # availability — Manual QA (CURL)
 
-_Run: 2026-10-23 • Servers: http://127.0.0.1:3031 (Redis up) and http://127.0.0.1:3032 (Redis down) • Result, slice 1 + slice 2 together: Redis-up run 193 pass / 0 fail / 1 skipped; Redis-down run 163 pass / 0 fail / 1 skipped (final clean runs of `scripts/curl-test-availability.sh`)_
+_Run: 2026-10-23 • Servers: http://127.0.0.1:3031 (Redis up) and http://127.0.0.1:3032 (Redis down) • Result, slice 1 + slice 2 + slice 3 together: Redis-up run 254 pass / 0 fail / 1 skipped; Redis-down run 167 pass / 0 fail / 1 skipped (final clean runs of `scripts/curl-test-availability.sh`); slice 3 added 61 assertions with Redis up and 3 with Redis down (0 fail), and re-based 6 slice 2 name rows_
 
-Scope: slice 1 `GET /api/doctors/{doctorUserId}/slots` (summary below) and slice 2 `GET /api/doctors` (`searchDoctors`), `GET /api/doctors/{doctorUserId}` (`getDoctor`) and the `care-worker` loops `availability-refresh` and `availability-sweep` (spec sections 3.2, 3.3, 4.2, 7, 9.2, 12.2.7). The name filter is index-backed only from slice 3, so `name` is exercised in its documented headline-only fallback (`meta.degraded:["nameFilter"]`).
+Scope: slice 1 `GET /api/doctors/{doctorUserId}/slots` (summary below) and slice 2 `GET /api/doctors` (`searchDoctors`), `GET /api/doctors/{doctorUserId}` (`getDoctor`) and the `care-worker` loops `availability-refresh` and `availability-sweep` (spec sections 3.2, 3.3, 4.2, 7, 9.2, 12.2.7). Slice 3 (AV-R27..AV-R29, section "Slice 3" below) makes `name` index-backed: before the first sweep (index absent) and while Redis is unusable the filter is headline-only and `meta.degraded` carries `nameFilter`; once `availability-sweep` has built `name-index` the display-name prefix matches with no `meta.degraded`. The slice 2 cases that encoded "always degraded" (rows 66, 69, 70, 79 below) now assert the index-absent / Redis-down fallback only.
 
 ## Environment
 
 - Care API from source with `node --import tsx src/server.ts` (equivalent to `npx tsx`, one process), `NODE_ENV=development`, Postgres 5499 `care_test` (migrated, app connected as `care_app`), dummy `STORAGE_*` and `VIDEO_*` values, `AVAILABILITY_INLINE_MISS_CAP` at its default 20.
 - **Run A, Redis up:** public port 3031, `REDIS_URL=redis://127.0.0.1:6380/14`. Boot logged `redis_recovered`.
 - **Run B, Redis down:** a second server on 3032 with `REDIS_URL=redis://127.0.0.1:6399/14` (nothing listens). Boot logged `redis_unavailable`; `/api/health/ready` stayed 200. Only one Care server ran at a time.
-- Identity: `scripts/availability-qa-fake-identity.mjs` on 3021 (new in slice 2). It serves the JWKS, `/mint` (patient, admin, `doctor-NNNN`, `patient-NNNN`, `expired`, a pending patient), the client-credentials token, and the batch `GET /internal/users?ids=` with synthetic names `Synthetic QA Doctor <id>` and `https://avatars.example.test/qa/<id>.png`, plus a loopback control surface (`/control/mode?users=up|down|slow`, `/control/user`, `/control/stats`, `/control/reset`) so the script can flip Identity down or slow and count batch calls. The schedules fake used in slice 1 has no `/internal/users`; slice 2 needs this one.
-- Worker: `node --import tsx src/worker.ts --once availability-refresh|availability-sweep` and one long-running `node --import tsx src/worker.ts` (stopped with `taskkill /F`, see notes).
+- Identity: `scripts/availability-qa-fake-identity.mjs` on 3021 (new in slice 2; slice 3 adds `/control/user?id=&name=` to rename a user and `/control/reset` restores names). It serves the JWKS, `/mint` (patient, admin, `doctor-NNNN`, `patient-NNNN`, `expired`, a pending patient), the client-credentials token, and the batch `GET /internal/users?ids=` with synthetic names `Synthetic QA Doctor <id>` and `https://avatars.example.test/qa/<id>.png`, plus a loopback control surface (`/control/mode?users=up|down|slow`, `/control/user`, `/control/stats`, `/control/reset`) so the script can flip Identity down or slow and count batch calls. The schedules fake used in slice 1 has no `/internal/users`; slice 2 needs this one.
+- Worker: `node --import tsx src/worker.ts --once availability-refresh|availability-sweep` (slice 3 runs the sweep about ten times to build and rebuild the name index) and one long-running `node --import tsx src/worker.ts` (stopped with `taskkill /F`, see notes).
 - Fixture (all synthetic; slice 1 doctor 208, slice 2 doctors 8201-8208, 8240-8243 and 8210-8234, patient profile 8301, specialties `qa-avail-a|b|c`): 8201 fee 300, 08:00-12:00; 8202 fee 100, 14:00-18:00; 8203 and 8204 identical 20:00-22:00 hours (ties on earliest, fee 200); 8205 bookable with no working hours (known-none); 8206 not accepting; 8207 suspended; 8208 10:00-11:00; 8203 also has a 60-minute, a 30-minute and an inactive 15-minute type; 8240 sync pending, 8241 no active type, 8242 soft-deleted, 8243 application submitted; 8210-8234 are 25 cold doctors for the inline-miss cap. Expected orders are derived by an independent oracle (the slice 1 `/slots` route plus the fixture fees and years), never read back from the search itself.
 - Every call sent a fresh UUID `X-Request-Id`; the echoed header (and `error.requestId` on errors) was compared on every response. No token, cursor, email or personal data is recorded here.
 
@@ -139,11 +139,11 @@ Every row is one assertion of the script (status, error envelope or `success:tru
 | 63 | minFee=abc -> 400 | PASS 400 | PASS 400 |
 | 64 | maxFee above int range -> 400 | PASS 400 | PASS 400 |
 | 65 | combined: spec a + language ar + fee 100..150 -> 8202, 8208, 8205 | PASS 200 | PASS 200 |
-| 66 | name=QA Alpha (headline prefix, case-insensitive) -> 8201 with meta.degraded nameFilter | PASS 200 | PASS 200 |
+| 66 | name=QA Alpha (headline prefix, case-insensitive) -> 8201; slice 3: Redis up with the index absent (before any sweep; the script deletes `name-index*` first and asserts the key is absent) or Redis down: headline-only, `meta.degraded` contains `nameFilter` | PASS 200 | PASS 200 |
 | 67 | name with repeated and surrounding spaces is trimmed and collapsed -> 8201 | PASS 200 | PASS 200 |
 | 68 | name=QA%20ALPHA upper case -> 8201 | PASS 200 | PASS 200 |
-| 69 | name=QA Cardiology is not a prefix -> empty, still degraded nameFilter | PASS 200 | PASS 200 |
-| 70 | name on the Identity display name does not match yet (headline-only, S3 pending) -> empty + nameFilter | PASS 200 | PASS 200 |
+| 69 | name=cardiology is not a prefix of any headline -> empty; the headline-only fallback keeps `meta.degraded:["nameFilter"]` (index absent / Redis down) | PASS 200 | PASS 200 |
+| 70 | name = an Identity display-name prefix (`synthetic qa doctor`) before any sweep / with Redis down: headline-only fallback -> empty + `nameFilter` (index-backed match is S3 rows below) | PASS 200 | PASS 200 |
 | 71 | name of one character -> 400 | PASS 400 | PASS 400 |
 | 72 | name with a control character -> 400 | PASS 400 | PASS 400 |
 | 73 | name of 101 characters -> 400 | PASS 400 | PASS 400 |
@@ -152,7 +152,7 @@ Every row is one assertion of the script (status, error envelope or `success:tru
 | 76 | search: duplicate language parameter -> 400 | PASS 400 | PASS 400 |
 | 77 | search: cursor longer than 1024 characters -> 400 | PASS 400 | PASS 400 |
 | 78 | search: SQL metacharacters in specialty are bound, not executed -> empty 200 | PASS 200 | PASS 200 |
-| 79 | search: non-ASCII name prefix (2 code points) -> empty 200 with nameFilter marker | PASS 200 | PASS 200 |
+| 79 | search: non-ASCII name prefix (2 code points) -> empty 200 with the headline-only `nameFilter` marker (index absent / Redis down) | PASS 200 | PASS 200 |
 | 80 | search: candidate parity -- sync pending, no active type, soft-deleted, submitted doctors (8240-8243, spec a) are absent | PASS 200 | PASS 200 |
 
 ### Slice 2: availableFrom / availableTo
@@ -268,7 +268,7 @@ Every row is one assertion of the script (status, error envelope or `success:tru
 | 172 | long-running worker: refresh loop recomputed 8202 with no search | PASS 819 | n/a (not applicable in this mode) |
 | 173 | search after the worker refresh: order matches the oracle | PASS 200 | n/a (not applicable in this mode) |
 | 174 | worker log carries availability_refresh_done | PASS | n/a (not applicable in this mode) |
-| 175 | no name-index key exists (slice 3 not built) | PASS | n/a (not applicable in this mode) |
+| 175 | slice 3: the name index is absent before the first sweep (no `name-index*` key; replaces the slice 2 "no name-index key exists" check) | PASS | n/a (not applicable in this mode) |
 
 ### Slice 2: write-through (booking and accepting toggle reach search and profile)
 
@@ -292,10 +292,10 @@ Every row is one assertion of the script (status, error envelope or `success:tru
 
 | # | Scenario | Redis-up run | Redis-down run |
 |---|----------|--------------|----------------|
-| 189 | server log: no hydrated display name, avatar URL or name-filter value | PASS | PASS |
+| 189 | server log: no hydrated display name, avatar URL or name-filter value (also the lower-case prefix `qa doctor 82` and the renamed value) | PASS | PASS |
 | 190 | server log: no error-level or 5xx entries | PASS | PASS |
 | 191 | server log: no bearer token material | PASS | PASS |
-| 192 | worker logs: no display names or avatar URLs | PASS | PASS |
+| 192 | worker logs: no display names, avatar URLs or renamed values (all slice 3 sweep logs included; Redis-down run has no worker logs) | PASS | PASS |
 
 ### Slice 2: rate limit (profile route, per IP, runs last)
 
@@ -340,6 +340,65 @@ Every row is one assertion of the script (status, error envelope or `success:tru
 | 214 | Redis down: admin profile of a non-bookable doctor 200 | n/a (not applicable in this mode) | PASS 200 |
 
 
+## Slice 3: name index and name filter (AV-R27..AV-R29)
+
+Redis-up run unless the last column says otherwise. The fixture display names come from the fake Identity (`Synthetic QA Doctor <id>`); every name query below is a prefix of those or of the fixture headlines. `sweep` = `node --import tsx src/worker.ts --once availability-sweep` with the server's env and `LOG_LEVEL=info`. "No degraded" = `meta.degraded` absent. Cases that read `name-index` state use `ZCARD`, `ZLEXCOUNT`, `TTL` and `GET name-index:built-at` through the script's ioredis helper. Case ids S3-nn are for this document; the script numbers its assertions sequentially.
+
+| # | Scenario | Redis-up run | Redis-down run |
+|---|----------|--------------|----------------|
+| S3-01 | before any sweep no `name-index*` key exists (checked at the slice 2 name cases, row 175, and again at the start of the slice 3 section) | PASS (2 assertions) | n/a |
+| S3-02 | index absent: a display-name prefix (`synthetic qa doctor 8203`) finds nothing, `meta.degraded=["nameFilter"]` | PASS 200 | PASS 200 (row 70, 79) |
+| S3-03 | index absent: the headline prefix (`qa alpha`) still matches 8201, `meta.degraded=["nameFilter"]` | PASS 200 | PASS 200 (row 66) |
+| S3-04 | first sweep: exit 0, `name-index` has 31 members (= the 31 bookable fixture doctors, counted by SQL), TTL 899 s (<= 900), `name-index:built-at` stamped, no leftover `name-index:building`, `availability_name_index_built` logged | PASS | n/a |
+| S3-05 | prefix `synthetic qa doctor 82` within spec a: all six bookable doctors in price order, 6 distinct ids, no degraded | PASS 200 | n/a |
+| S3-06 | same prefix, default sort (earliest): the six doctors in oracle order, no degraded | PASS 200 | n/a |
+| S3-07 | narrower prefix `synthetic qa doctor 8203` -> 8203 only | PASS 200 | n/a |
+| S3-08 | case-insensitive: `SYNTHETIC QA DOCTOR 8203` -> 8203 | PASS 200 | n/a |
+| S3-09 | whitespace trimmed and collapsed: `  Synthetic   QA Doctor 8203 ` -> 8203 | PASS 200 | n/a |
+| S3-10 | not a prefix (`qa doctor 8203`) -> empty, still no degraded | PASS 200 | n/a |
+| S3-11 | headline prefix with the index present (`qa alpha` -> 8201), no degraded | PASS 200 | n/a |
+| S3-12 | admin sees the same index-backed match | PASS 200 | n/a |
+| S3-13 | union: 8203 matches by display name, 8204 by headline only (headline set by SQL to start with `Synthetic QA Doctor 8203`) -> both, price order, count 2 | PASS 200 | n/a |
+| S3-14 | union without duplicates: 8202 matches by both display name and headline -> listed once, count 1 | PASS 200 | n/a |
+| S3-15 | union over the whole prefix `synthetic qa doctor 82` -> six distinct doctors (headlines restored afterwards) | PASS 200 | n/a |
+| S3-16 | intersection: 8208 stays in the index after SQL sets `is_accepting_patients=false` (`ZLEXCOUNT` = 1) | PASS | n/a |
+| S3-17 | intersection: name `synthetic qa doctor 8208` -> empty (index member, not a candidate), no degraded | PASS 200 | n/a |
+| S3-18 | intersection: broad prefix -> the five remaining candidates, 8208 absent | PASS 200 | n/a |
+| S3-19 | intersection: accepting again -> 8208 matches again with no rebuild | PASS 200 | n/a |
+| S3-20 | 8206 (not accepting) and 8207 (suspended) were never indexed (`ZLEXCOUNT` = 0) | PASS | n/a |
+| S3-21 | a non-bookable doctor whose Identity name matches (8206) is absent | PASS 200 | n/a |
+| S3-22 | name + `specialty=qa-avail-b` -> 8203, 8204 | PASS 200 | n/a |
+| S3-23 | name + `specialty=qa-avail-b`, prefix `...8204` -> 8204 | PASS 200 | n/a |
+| S3-24 | name matches doctors outside the specialty (cap doctors are in qa-avail-c) -> empty | PASS 200 | n/a |
+| S3-25 | name + specialty + `language=ar` + fee 100..150 -> 8202, 8208, 8205 | PASS 200 | n/a |
+| S3-26 | page 2 of a name search, `sort=price&limit=4` over `synthetic qa doctor 821` (qa-avail-c): 3 pages, ids 8210..8219, `hasMore`/`nextCursor` exact, request id echoed | PASS | n/a |
+| S3-27 | same set, default sort (earliest), `limit=4`: 3 pages, ids 8210..8219 | PASS | n/a |
+| S3-28 | a name-search cursor replayed with another name is accepted as a position (200, never 5xx) | PASS 200 | n/a |
+| S3-29 | name of 1 character -> 400, `details[].field = name` (index present) | PASS 400 (2 assertions) | rows 71, 72, 73, 74 |
+| S3-30 | name with a control character -> 400 (index present) | PASS 400 | row 72 |
+| S3-31 | raw name probes: `[a`, `((`, `%%`, `++`, `..`, `**`, two U+10FFFF, lone surrogates, invalid UTF-8 (`%C0%AF`), NUL, bidi override: every one a handled 200 or 400 with the request id echoed, never 5xx | PASS | PASS |
+| S3-32 | rename at Identity (`/control/user?id=8203&name=...`): before the next due rebuild the OLD name still matches | PASS 200 | n/a |
+| S3-33 | rename: the NEW name does not match yet | PASS 200 | n/a |
+| S3-34 | a sweep inside the refresh period (built-at fresh) does not rebuild: exit 0, no `availability_name_index_built` | PASS | n/a |
+| S3-35 | after that sweep the old name still matches | PASS 200 | n/a |
+| S3-36 | due rebuild (`name-index:built-at` and `identity:user:8203` deleted, because the builder reads through the 300 s cache): exit 0, `availability_name_index_built` | PASS | n/a |
+| S3-37 | after the rebuild the NEW name matches 8203 (hydrated `displayName` is the new name), no degraded | PASS 200 | n/a |
+| S3-38 | after the rebuild the OLD name no longer matches | PASS 200 | n/a |
+| S3-39 | Identity down (control mode down) + due rebuild: sweep still exit 0, `availability_name_index_stale` logged, previous build kept (TTL 899 s -> 894 s, not extended), `built-at` not re-stamped | PASS | n/a |
+| S3-40 | Identity down: the previous build is still served (renamed name -> 8203), no degraded | PASS 200 | n/a |
+| S3-41 | Identity back up: next sweep rebuilds and re-stamps | PASS | n/a |
+| S3-42 | after recovery the original name matches and the renamed value is gone | PASS 200 (2 assertions) | n/a |
+| S3-43 | an Identity-`suspended` user (8205) is not indexed on rebuild (`ZLEXCOUNT` 0, others present); indexed again after reactivation | PASS (2 assertions) | n/a |
+| S3-44 | Unicode: names `José QA Physician` (accented) and an Arabic name are indexed; NFC prefix, NFD query (e + combining acute) and upper-case `JOSÉ` all match 8204; the unaccented `jose qa` does not; the Arabic prefix matches 8201; restore after the next rebuild | PASS (7 assertions) | n/a |
+| S3-45 | index expired (`PEXPIRE name-index 1`): display-name prefix -> empty with `["nameFilter"]`; headline prefix still matches with `["nameFilter"]` | PASS 200 (2 assertions) | n/a |
+| S3-46 | next sweep (built-at deleted) rebuilds the expired index; name matches again, no degraded | PASS 200 | n/a |
+| S3-47 | `name-index` and `name-index:built-at` deleted: headline-only again, `["nameFilter"]`; a search without `name` never reports `nameFilter` | PASS 200 (4 assertions) | n/a |
+| S3-48 | Redis-down server: display-name prefix -> 200 empty, `meta.degraded` is exactly `["nameFilter"]` (`sort=price`) | n/a | PASS 200 |
+| S3-49 | Redis-down server: headline prefix `qa alpha` -> 200, 8201, `["nameFilter"]` exactly | n/a | PASS 200 |
+| S3-50 | Redis-down server: window + name + default sort -> `["sort","availabilityFilter","nameFilter"]` in the documented order (slice 2 row 206, unchanged) | n/a | PASS 200 |
+| S3-51 | privacy: the server log has no hydrated display name, avatar URL, `qa alpha`, `qa doctor 82` or renamed value; every sweep worker log has no display name, avatar URL or renamed value | PASS | PASS (server log) |
+| S3-52 | privacy (AV-R29): a full `pg_dump --data-only` of the test database contains no Identity display name, renamed value or avatar URL | PASS | PASS |
+
 Skipped (both runs): the AV-R16 span rule (`availableTo - availableFrom > 14 days`) is unreachable over HTTP because both bounds must already lie in `[now, now + 14 d]`; its exactly-14-day boundary is covered by the unit tests. Without the `CURSOR_FILE` hand-off the cross-mode cursor cases report as skipped; the final runs had both cursors.
 
 ## Manual probes outside the script
@@ -349,14 +408,17 @@ Skipped (both runs): the AV-R16 span rule (`availableTo - availableFrom > 14 day
 
 ## Failures / notes
 
-- **No failing case in the final runs** (193/0/1 with Redis up, 163/0/1 with Redis down). Two script defects were found and fixed while building it, neither a product bug: (1) the profile `nextAvailableAt` comparison read a response body that the oracle fetch had overwritten; (2) the "lock held" case first used `pg_advisory_lock(1104, 0)`, but the sweep takes `pg_try_advisory_lock(hashtextextended('0', 1104))` (`src/lib/knex/session-advisory-lock.ts:19`), so the held lock was a different key and the sweep rightly ran.
+- **No failing case in the final runs** (254/0/1 with Redis up, 167/0/1 with Redis down; slices 1 to 3 together). Slice 2 alone was 193/0/1 and 163/0/1. Two script defects were found and fixed while building it, neither a product bug: (1) the profile `nextAvailableAt` comparison read a response body that the oracle fetch had overwritten; (2) the "lock held" case first used `pg_advisory_lock(1104, 0)`, but the sweep takes `pg_try_advisory_lock(hashtextextended('0', 1104))` (`src/lib/knex/session-advisory-lock.ts:19`), so the held lock was a different key and the sweep rightly ran.
+- **Slice 3 script defect found and fixed (not a product bug).** The first full Redis-up run of the extended script was 243 pass / 1 fail / 2 skipped: case "long-running worker: the boot sweep filled the index with no search request" failed. Cause: the "sweep singleton" case holds the sweep advisory lock with a background `psql ... pg_sleep(45)` and released it with `kill`; on Git Bash for Windows `kill` ends only the wrapper, the native `psql` keeps the session and the lock for the full 45 s, so the long-running worker's boot sweep (run a few seconds later) found the lock taken, returned `incomplete` and waited for its next 120 s tick. Latent since slice 2 (timing dependent). The script now ends the holder with `pg_terminate_backend` (`release_lock` in `scripts/curl-test-availability.sh`); the next runs were clean. Verified by hand that after a plain `kill` the lock session stayed `active` in `pg_stat_activity`.
 - Observations, not defects:
   - `minFee=1.5`, `1e3`, a blank value and `abc` are correctly `400`, but `details[0].issue` reads "minFee must not be greater than 2147483647" (the `@Max` message is the one reported for a value that failed `ToInt`; `SearchDoctorsQueryDto.minFee`/`maxFee` in `src/app/availability/dto/availability.request.dto.ts`, `ToInt` in `src/lib/validation/transforms.ts:13`). Cosmetic: the field and status are right, the message is misleading.
   - Identity slow (4 s per call, above the 2 s client timeout): the search stays `200` with `profileHydrated:false` but takes about 4.5 s (two attempts of the Case 2 policy: 2 s timeout plus one retry). That is the documented Case 2 policy, yet it is more than ten times the 400 ms search budget whenever Identity is slow; the budget only holds with a healthy or fast-failing Identity.
   - `--once availability-refresh` with Redis unreachable exits 1; the spec states the exit-1 rule only for the sweep. The sweep exits 1 for both Redis unreachable and lock held, and neither stamps `next-available:swept-at`.
   - With Redis down the in-memory limiter allows 30 requests per minute per route (limit 60 divided by 2); the 429 case tripped after 29 more requests because earlier profile calls already counted.
   - Responses carry `Cache-Control: no-store` (the application default); the spec only says these routes are not in `NO_STORE_PREFIXES`.
+  - Slice 3: a doctor who stops being a candidate (here via SQL, so no listener) stays in `name-index` until the next due rebuild, and a name search still hides it because the match is intersected with the SQL candidate set (S3-16..S3-19). A rename at Identity is visible only after the next due rebuild AND after the `identity:user:<id>` cache entry (300 s) has expired or been deleted, because the builder reads through that cache; so the worst-case lag is the refresh period (300 s) plus the cache TTL (300 s), within the 15-minute bound of AV-R29. The hydrated `displayName` in search results can therefore show the old name for a moment while the index already matches the new one, or the reverse; both are bounded by the same two TTLs.
+  - Slice 3: with Identity down the rebuild is attempted on every sweep (every 120 s) because `built-at` is left absent; each attempt costs the Case 2 client policy (2 s timeout, retries) inside the sweep tick after `swept-at` is stamped, so it does not make the sweep `incomplete`. The previous build keeps serving for at most its remaining TTL (900 s from the last successful build) and is then replaced by the headline-only fallback with `nameFilter`.
   - A doctor whose Identity `status` is not `active` is dropped from search and the page is shorter than `limit` (`meta.count` 5 of 6) while `hasMore` and `nextCursor` come from the fetched page, as specified.
-- **Not verifiable here:** the graceful SIGTERM shutdown of the worker (it closing its own Redis client); the long-running worker was stopped with `taskkill /F`, and the integration suite skips that case on win32. The `availability_sweep_age_s` and `availability_refresh_queue_depth` metrics (emitted at most every 30 s) were not asserted. The 400 ms / 2,500-doctor search budget is the benchmark's job (`npm run test:bench`), not a CURL case. A real Identity (suspension, reinstatement) was not available; their fan-in to the index is covered by the integration suite, and here by the accepting-patients toggle and by booking.
-- Cleanup done by the script on exit, verified after the final Redis-up run (zero fixture rows in Postgres, zero keys in Redis db 14): Postgres rows for doctors 208 and 8201-8299, their consultations and outbox rows (marked `sent` before deletion), specialties `qa-avail-*` and patient profile 8301; Redis `slots:`, `slots-ver:`, `free-map:` and `identity:user:` keys of the fixture, their members of `next-available:index` and `next-available:refresh`, the `rl:doctors-*` and fixture-user write-limiter counters, the `idem:*` keys of its own booking and cancel calls, and `next-available:swept-at` when the run created it. `audit_logs` rows written by the booking, cancel and doctor API calls (ids and statuses only) stay by design (append-only table).
+- **Not verifiable here:** the 15-minute expiry of `name-index` by elapsed time (`PEXPIRE name-index 1` stands in for it; the 900 s TTL itself is asserted at 899 s after a build); `NAME_MATCH_LIMIT` (5,000) and the 500-member write chunks at scale (the fixture indexes 31 members; the integration suite and unit tests cover chunking); a Redis failure between the `EXISTS` and the `ZRANGEBYLEX` of one request (a single `MULTI`, unit-tested); a real Identity. From slices 1 and 2: the graceful SIGTERM shutdown of the worker (it closing its own Redis client); the long-running worker was stopped with `taskkill /F`, and the integration suite skips that case on win32. The `availability_sweep_age_s` and `availability_refresh_queue_depth` metrics (emitted at most every 30 s) were not asserted. The 400 ms / 2,500-doctor search budget is the benchmark's job (`npm run test:bench`), not a CURL case. A real Identity (suspension, reinstatement) was not available; their fan-in to the index is covered by the integration suite, and here by the accepting-patients toggle and by booking.
+- Cleanup done by the script on exit, verified after the final runs of slice 3 (zero keys in Redis db 14, zero fixture rows, no advisory lock held; the slice 3 cleanup also deletes `name-index*`, `identity:user:82*` and `identity:user:208`), and earlier after the final Redis-up run (zero fixture rows in Postgres, zero keys in Redis db 14): Postgres rows for doctors 208 and 8201-8299, their consultations and outbox rows (marked `sent` before deletion), specialties `qa-avail-*` and patient profile 8301; Redis `slots:`, `slots-ver:`, `free-map:` and `identity:user:` keys of the fixture, their members of `next-available:index` and `next-available:refresh`, the `rl:doctors-*` and fixture-user write-limiter counters, the `idem:*` keys of its own booking and cancel calls, and `next-available:swept-at` when the run created it. `audit_logs` rows written by the booking, cancel and doctor API calls (ids and statuses only) stay by design (append-only table).
 - Privacy: the Care server log of each final run contained no `Synthetic QA Doctor` name, no avatar URL, no name-filter value, no JWT material, no `error`-level entry and no 5xx status; worker logs contained no names or avatars. Log events seen: `request_completed`, `metric` (`availability_index_miss`, `availability_inline_compute_ms`, `availability_degraded` by reason, `identity_hydration_degraded`, `rate_limiter_degraded`), `availability_cache_unavailable`, `rate_limited`, `access_denied`.
