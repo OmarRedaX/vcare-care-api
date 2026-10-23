@@ -3,14 +3,16 @@ import { inject, injectable } from "tsyringe";
 import type { Env } from "../../../lib/config/types";
 import { TOKENS } from "../../../lib/di/tokens";
 import type { Logger } from "../../../lib/logger/logger";
+import { prefixRange } from "../../../lib/redis/lex";
 import { isRedisUsable } from "../../../lib/redis/redis";
 import { tryRedis } from "../../../lib/redis/try-redis";
 import { FREE_MAP_BYTES, FREE_MAP_VERSION } from "../../../pkg/slots/free-map";
 import type { SlotRange } from "../../../pkg/slots/types";
 import {
-    FREE_MAP_TTL_SECONDS, LOG_CACHE_UNAVAILABLE, LOG_FREEMAP_INVALID, LOG_LISTENER_SKIPPED, MAP_READ_CHUNK, SLOT_VERSION_TTL_SECONDS,
+    FREE_MAP_TTL_SECONDS, LOG_CACHE_UNAVAILABLE, LOG_FREEMAP_INVALID, LOG_LISTENER_SKIPPED, MAP_READ_CHUNK, NAME_ADD_CHUNK, NAME_BUILDING_TTL_SECONDS,
+    NAME_INDEX_TTL_SECONDS, NAME_MATCH_LIMIT, NAME_MEMBER_SEPARATOR, SLOT_VERSION_TTL_SECONDS,
 } from "../constants";
-import { freeMapKey, INDEX_KEY, REFRESH_KEY, SWEPT_AT_KEY, versionKey } from "../keys";
+import { freeMapKey, INDEX_KEY, NAME_INDEX_BUILDING_KEY, NAME_INDEX_BUILT_AT_KEY, NAME_INDEX_KEY, REFRESH_KEY, SWEPT_AT_KEY, versionKey } from "../keys";
 import { WRITE_NEXT_AVAILABLE_LUA } from "../lua";
 import type { ComputedEntry, GuardedWriteCommands, IndexWriteVerdict, SlotCacheVersion } from "../types";
 
@@ -187,6 +189,61 @@ export class NextAvailableIndex {
     /** Epoch ms of the last full sweep, `null` when never stamped, `undefined` when Redis failed. */
     async readSweptAt(): Promise<number | null | undefined> {
         const result = await tryRedis(this.redis, () => this.redis.get(SWEPT_AT_KEY));
+        if (!result.ok) return undefined;
+        const value = result.value === null ? Number.NaN : Number(result.value);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    // ── name index (slice 3, ADR 0025) ───────────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * User ids of the doctors whose normalised display name starts with `prefix` (already normalised), at most `NAME_MATCH_LIMIT`. `undefined` when the
+     * index does not exist (never built, expired, or built empty) or Redis failed: the caller falls back to headlines and says so. One `MULTI`, so a key
+     * that expires between the existence check and the read cannot look like "no match".
+     */
+    async readNameMatches(prefix: string): Promise<number[] | undefined> {
+        const [min, max] = prefixRange(prefix);
+        const result = await tryRedis(this.redis, () => this.redis.multi().exists(NAME_INDEX_KEY)
+            .zrangebylex(NAME_INDEX_KEY, min, max, "LIMIT", 0, NAME_MATCH_LIMIT).exec());
+        if (!result.ok || result.value === null) { this.warn(LOG_CACHE_UNAVAILABLE); return undefined; }
+        const [existsReply, rangeReply] = result.value;
+        if (existsReply === undefined || rangeReply === undefined || existsReply[0] !== null || rangeReply[0] !== null) { this.warn(LOG_CACHE_UNAVAILABLE); return undefined; }
+        if (existsReply[1] !== 1 || !Array.isArray(rangeReply[1])) return undefined;
+        const userIds: number[] = [];
+        for (const member of rangeReply[1] as string[]) {
+            const userId = Number(member.slice(member.lastIndexOf(NAME_MEMBER_SEPARATOR) + 1));
+            if (Number.isSafeInteger(userId) && userId > 0) userIds.push(userId);
+        }
+        return userIds;
+    }
+
+    /**
+     * Swaps in a new name index built from `members` (`<normalised name>, NUL, <userId>`, score 0): the set is written to the building key (chunks of
+     * 500), then `RENAME`d over the live key in one `MULTI` together with its 900 s TTL and the build stamp, so readers see the old or the new index,
+     * never a half-built one. An empty list deletes the index (reads then fall back to headlines) and still stamps the build. Returns false when Redis failed.
+     */
+    async replaceNameIndex(members: readonly string[], builtAtMs: number): Promise<boolean> {
+        const result = await tryRedis(this.redis, async () => {
+            if (members.length === 0) {
+                return this.redis.multi().del(NAME_INDEX_BUILDING_KEY).del(NAME_INDEX_KEY).set(NAME_INDEX_BUILT_AT_KEY, String(builtAtMs), "EX", NAME_INDEX_TTL_SECONDS).exec();
+            }
+            await this.redis.del(NAME_INDEX_BUILDING_KEY);
+            for (let offset = 0; offset < members.length; offset += NAME_ADD_CHUNK) {
+                const args: Array<string | number> = [];
+                for (const member of members.slice(offset, offset + NAME_ADD_CHUNK)) args.push(0, member);
+                await this.redis.zadd(NAME_INDEX_BUILDING_KEY, ...args);
+            }
+            await this.redis.expire(NAME_INDEX_BUILDING_KEY, NAME_BUILDING_TTL_SECONDS);
+            return this.redis.multi().rename(NAME_INDEX_BUILDING_KEY, NAME_INDEX_KEY).expire(NAME_INDEX_KEY, NAME_INDEX_TTL_SECONDS)
+                .set(NAME_INDEX_BUILT_AT_KEY, String(builtAtMs), "EX", NAME_INDEX_TTL_SECONDS).exec();
+        });
+        if (!result.ok || result.value === null || result.value.some((entry) => entry[0] !== null)) { this.warn(LOG_CACHE_UNAVAILABLE); return false; }
+        return true;
+    }
+
+    /** Epoch ms of the last name-index build, `null` when absent (never built or expired), `undefined` when Redis failed. */
+    async readNameBuiltAt(): Promise<number | null | undefined> {
+        const result = await tryRedis(this.redis, () => this.redis.get(NAME_INDEX_BUILT_AT_KEY));
         if (!result.ok) return undefined;
         const value = result.value === null ? Number.NaN : Number(result.value);
         return Number.isFinite(value) ? value : null;

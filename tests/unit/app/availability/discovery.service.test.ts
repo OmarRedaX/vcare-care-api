@@ -1,5 +1,5 @@
 // Rules covered: AV-R15 (filters), AV-R16 (window), AV-R17 (order, cursor), AV-R18 (misses, cap, exclusion), AV-R20 (degradation),
-// AV-R21 (profile), AV-R22 (hydration), AV-R29 (no names logged).
+// AV-R21 (profile), AV-R22 (hydration), AV-R27 (name filter: index union, fallback flag), AV-R29 (no names logged).
 import { NONE_SCORE } from "../../../../src/app/availability/constants";
 import { decodeDiscoveryCursor, encodeDiscoveryCursor } from "../../../../src/app/availability/discovery-cursor";
 import { DegradedPart, DiscoveryCursorKind, SearchSortKind } from "../../../../src/app/availability/enums";
@@ -43,6 +43,8 @@ const validEmptyMap = (): Uint8Array => { const map = new Uint8Array(FREE_MAP_BY
 function setup(candidates: Candidate[], options: { usable?: boolean; cap?: number } = {}) {
     const scoreTable = new Map<number, number | null>();
     const mapTable = new Map<number, Uint8Array | null>();
+    // `undefined` = the name index is missing or expired; an array = the user ids it matched.
+    const nameState: { matches: number[] | undefined } = { matches: undefined };
     const logged: unknown[][] = [];
     const record = (...args: unknown[]): void => { logged.push(args); };
     const logger = { warn: jest.fn(record), info: jest.fn(record), debug: jest.fn(record), error: jest.fn(record), metric: jest.fn(record) };
@@ -59,6 +61,7 @@ function setup(candidates: Candidate[], options: { usable?: boolean; cap?: numbe
     };
     const index = {
         isUsable: jest.fn(() => options.usable ?? true),
+        readNameMatches: jest.fn(() => Promise.resolve((options.usable ?? true) ? nameState.matches : undefined)),
         scores: jest.fn((ids: readonly number[]) => Promise.resolve<Map<number, number | null> | undefined>(new Map(ids.map((id) => [id, scoreTable.get(id) ?? null])))),
         maps: jest.fn((ids: readonly number[]) => Promise.resolve<Map<number, Uint8Array | null> | undefined>(new Map(ids.map((id) => [id, mapTable.get(id) ?? null])))),
     };
@@ -73,7 +76,7 @@ function setup(candidates: Candidate[], options: { usable?: boolean; cap?: numbe
     const service = new DiscoveryService(reader as unknown as DoctorDiscoveryReader, doctors as unknown as DoctorsService, availability as unknown as AvailabilityService,
         index as unknown as NextAvailableIndex, computer as unknown as NextAvailableComputer, identity as unknown as IdentityClient, logger as unknown as Logger,
         { SERVICE_CLIENT_SECRET: SECRET, AVAILABILITY_INLINE_MISS_CAP: options.cap ?? 20 } as Env, { now: () => NOW });
-    return { service, reader, index, computer, doctors, availability, identity, logger, logged, scoreTable, mapTable };
+    return { service, reader, index, computer, doctors, availability, identity, logger, logged, scoreTable, mapTable, nameState };
 }
 
 const ids = (result: { items: Array<{ view: PublicDoctorView }> }): number[] => result.items.map((item) => item.view.profile.id);
@@ -161,10 +164,81 @@ describe("DiscoveryService.search with a usable index (AV-R17, AV-R18)", () => {
         expect(ids(result)).toEqual([2, 3, 1]);
     });
 
-    it("should pass the whitelisted filters and the normalised name prefix to the candidate read", async () => {
+    it("should pass the whitelisted filters, the normalised name prefix and the name-index matches to the candidate read", async () => {
         const s = setup([cand(1)], { cap: 0 });
+        s.nameState.matches = [1001];
         await s.service.search(query({ specialty: "cardiology", language: "ar", minFee: 10, maxFee: 500, name: "  DR   Anna " }));
-        expect(s.reader.listCandidates).toHaveBeenCalledWith({ specialty: "cardiology", language: "ar", minFee: 10, maxFee: 500, namePrefix: "dr anna" });
+        expect(s.index.readNameMatches).toHaveBeenCalledWith("dr anna");
+        expect(s.reader.listCandidates).toHaveBeenCalledWith({ specialty: "cardiology", language: "ar", minFee: 10, maxFee: 500, namePrefix: "dr anna", nameMatchedUserIds: [1001] });
+    });
+});
+
+describe("DiscoveryService.search name filter (AV-R27)", () => {
+    it("should read the index once with the normalised prefix, union its ids with the headline term and report no degradation", async () => {
+        const s = setup([cand(1), cand(2)], { cap: 0 });
+        s.nameState.matches = [1002];
+        const result = await s.service.search(query({ name: "  ANNA  Smith ", limit: 10 }));
+        expect(s.index.readNameMatches).toHaveBeenCalledTimes(1);
+        expect(s.index.readNameMatches).toHaveBeenCalledWith("anna smith");
+        expect(s.reader.listCandidates).toHaveBeenCalledWith(expect.objectContaining({ namePrefix: "anna smith", nameMatchedUserIds: [1002] }));
+        expect(result.meta.degraded).toBeUndefined();
+        expect(s.logger.metric).not.toHaveBeenCalledWith("availability_degraded", 1, { reason: "nameFilter" });
+    });
+
+    it("should treat an index that matched nobody as a working filter, not a fallback", async () => {
+        const s = setup([cand(1)], { cap: 0 });
+        s.nameState.matches = [];
+        const result = await s.service.search(query({ name: "zz" }));
+        expect(s.reader.listCandidates).toHaveBeenCalledWith(expect.objectContaining({ namePrefix: "zz", nameMatchedUserIds: [] }));
+        expect(result.meta.degraded).toBeUndefined();
+    });
+
+    it("should match headlines only and report nameFilter when the index is missing or expired", async () => {
+        const s = setup([cand(1)], { cap: 0 });
+        s.nameState.matches = undefined;
+        const result = await s.service.search(query({ name: SEARCH_NAME }));
+        expect(s.reader.listCandidates).toHaveBeenCalledWith(expect.objectContaining({ namePrefix: "synthetic-search-name", nameMatchedUserIds: undefined }));
+        expect(result.meta.degraded).toEqual([DegradedPart.NameFilter]);
+        expect(s.logger.metric).toHaveBeenCalledWith("availability_degraded", 1, { reason: "nameFilter" });
+    });
+
+    it("should not read the index nor report anything when no name is supplied", async () => {
+        const s = setup([cand(1)], { cap: 0 });
+        const result = await s.service.search(query());
+        expect(s.index.readNameMatches).not.toHaveBeenCalled();
+        expect(result.meta.degraded).toBeUndefined();
+    });
+
+    it("should hand the matched ids to the price and experience keyset pages (path A) as well", async () => {
+        const s = setup([cand(1), cand(2)], { cap: 0 });
+        s.nameState.matches = [1001, 1002];
+        await s.service.search(query({ sort: SearchSortKind.Price, name: "an" }));
+        expect(s.reader.pageCandidates).toHaveBeenCalledWith(expect.objectContaining({ namePrefix: "an", nameMatchedUserIds: [1001, 1002] }), expect.anything());
+        await s.service.search(query({ sort: SearchSortKind.Experience, name: "an" }));
+        expect(s.reader.pageCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ nameMatchedUserIds: [1001, 1002] }), expect.anything());
+    });
+
+    it("should keep the matched ids when an index command fails mid-request and the degraded plan reruns, without adding nameFilter", async () => {
+        const s = setup([cand(1, 300), cand(2, 100)], { cap: 0 });
+        s.nameState.matches = [1002];
+        s.index.scores.mockResolvedValue(undefined);
+        const result = await s.service.search(query({ name: "an", limit: 10 }));
+        expect(s.reader.pageCandidates).toHaveBeenCalledWith(expect.objectContaining({ nameMatchedUserIds: [1002] }), expect.anything());
+        expect(result.meta.degraded).toEqual([DegradedPart.Sort]);
+    });
+
+    it("should fall back to headlines and report nameFilter, in order after sort, when Redis is unusable", async () => {
+        const s = setup([cand(1)], { usable: false, cap: 0 });
+        s.nameState.matches = [1001];
+        const result = await s.service.search(query({ name: "an" }));
+        expect(s.reader.pageCandidates).toHaveBeenCalledWith(expect.objectContaining({ namePrefix: "an", nameMatchedUserIds: undefined }), expect.anything());
+        expect(result.meta.degraded).toEqual([DegradedPart.Sort, DegradedPart.NameFilter]);
+    });
+
+    it("should reject a one-character name before reading the index", async () => {
+        const s = setup([cand(1)]);
+        await expect(s.service.search(query({ name: " x " }))).rejects.toMatchObject({ code: "ValidationFailed", details: [{ field: "name" }] });
+        expect(s.index.readNameMatches).not.toHaveBeenCalled();
     });
 });
 
@@ -257,10 +331,11 @@ describe("DiscoveryService.search degradation (AV-R20)", () => {
         expect((await healthy.service.search(query())).meta.degraded).toBeUndefined();
     });
 
-    it("should report nameFilter whenever a name is supplied (slice 2 has no name index)", async () => {
+    it("should not report nameFilter for a name filter the index served", async () => {
         const s = setup([cand(1)], { cap: 0 });
         s.scoreTable.set(1001, NOW + HOUR);
-        expect((await s.service.search(query({ name: SEARCH_NAME }))).meta.degraded).toEqual([DegradedPart.NameFilter]);
+        s.nameState.matches = [1001];
+        expect((await s.service.search(query({ name: SEARCH_NAME }))).meta.degraded).toBeUndefined();
     });
 
     it("should page the degraded price order and issue degraded cursors that only a degraded request accepts", async () => {

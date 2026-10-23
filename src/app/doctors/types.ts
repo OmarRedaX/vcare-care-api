@@ -49,8 +49,11 @@ export interface Candidate { profileId: number; userId: number; fee: number; yea
 export interface IndexDoctorRow { id: number; user_id: number; timezone: string }
 /** A bookable doctor as the rank index and free-map computation need it. */
 export interface IndexDoctor { profileId: number; userId: number; timezone: string }
-/** Search filters of the candidate statements; `namePrefix` is already normalised (lower-case). */
-export interface CandidateFilters { specialty?: string; language?: string; minFee?: number; maxFee?: number; namePrefix?: string }
+/**
+ * Search filters of the candidate statements; `namePrefix` is already normalised (lower-case) and matches the headline. `nameMatchedUserIds` are the
+ * doctors whose display name matched in the derived name index; they match in addition to the headline term (intersected with the candidates by the SQL).
+ */
+export interface CandidateFilters { specialty?: string; language?: string; minFee?: number; maxFee?: number; namePrefix?: string; nameMatchedUserIds?: readonly number[] }
 export interface CandidateAfter { value: number; id: number }
 export interface CandidatePageParams { order: CandidateOrder; after: CandidateAfter | null; fetch: number }
 /** A read capped at `CANDIDATE_HARD_CAP` rows: `truncated` says the cap was hit. */

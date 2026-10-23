@@ -1,7 +1,7 @@
 import Redis from "ioredis";
 import { redis } from "../../src/lib/redis/redis";
 
-export const DERIVED_AVAILABILITY_PREFIXES = ["slots-ver:", "slots:", "next-available:", "free-map:"] as const;
+export const DERIVED_AVAILABILITY_PREFIXES = ["slots-ver:", "slots:", "next-available:", "free-map:", "name-index"] as const;
 
 /** Connects the app's lazy client (the server does this at boot) and waits until it reports `ready`. */
 export async function ensureRedisReady(client: Redis = redis): Promise<void> {
