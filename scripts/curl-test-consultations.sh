@@ -101,7 +101,9 @@ outbox_n() { sql "SELECT count(*) FROM notification_outbox WHERE consultation_id
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$FAKE_IDENTITY_URL/.well-known/jwks.json")" = 200 ] || { echo 'Fake Identity unavailable' >&2; exit 2; }
 
 reset() {
-  sql "DELETE FROM notification_outbox WHERE consultation_id IN (SELECT id FROM consultations WHERE doctor_user_id BETWEEN 600 AND 699 OR patient_user_id BETWEEN 500 AND 599);
+  # trg_notification_outbox_delete_sent_only refuses deleting pending rows: mark this fixture's rows sent first.
+  sql "UPDATE notification_outbox SET status='sent', sent_at=now() WHERE status<>'sent' AND consultation_id IN (SELECT id FROM consultations WHERE doctor_user_id BETWEEN 600 AND 699 OR patient_user_id BETWEEN 500 AND 599);
+       DELETE FROM notification_outbox WHERE consultation_id IN (SELECT id FROM consultations WHERE doctor_user_id BETWEEN 600 AND 699 OR patient_user_id BETWEEN 500 AND 599);
        DELETE FROM consultations WHERE doctor_user_id BETWEEN 600 AND 699 OR patient_user_id BETWEEN 500 AND 599;
        DELETE FROM identity_sync_jobs WHERE doctor_user_id BETWEEN 600 AND 699;
        DELETE FROM schedule_exceptions WHERE doctor_profile_id IN (SELECT id FROM doctor_profiles WHERE user_id BETWEEN 600 AND 699);
@@ -601,7 +603,7 @@ sql "UPDATE consultations SET status='cancelled', cancelled_at=now(), cancelled_
 expect GET /api/patients/590 doctor "$D602" patient-profile-only-cancelled-after-booked-cancelled '404 NotFound'
 rel waiting 200 2300
 rel in_progress 200 2400
-sql "DELETE FROM notification_outbox WHERE consultation_id IN (SELECT id FROM consultations WHERE patient_user_id=590); DELETE FROM consultations WHERE patient_user_id=590" >/dev/null
+sql "UPDATE notification_outbox SET status='sent', sent_at=now() WHERE status<>'sent' AND consultation_id IN (SELECT id FROM consultations WHERE patient_user_id=590); DELETE FROM notification_outbox WHERE consultation_id IN (SELECT id FROM consultations WHERE patient_user_id=590); DELETE FROM consultations WHERE patient_user_id=590" >/dev/null
 rel completed 200 -2000
 expect GET /api/patients/590 patient-self "$(pt 590)" patient-profile-self-590 200 'b.data.userId===590'
 
