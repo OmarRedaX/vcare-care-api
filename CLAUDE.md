@@ -10,9 +10,9 @@ not need another repo's CLAUDE.md to follow it.
 - **Citing this file:** always cite sections **by name** (e.g. "CLAUDE.md → Domain rules"), never by number.
 - **Architect trigger:** when the user says **"let's system design"** (or runs `/system-design <topic>`), run the `/system-design` command inline — see "Architect mode — /system-design".
 
-> Status: **in build** (as of 2026-10-20). Built modules: `specialties`, `doctors`, `verification`, `admin-doctors`,
+> Status: **in build** (as of 2026-10-21). Built modules: `specialties`, `doctors`, `verification`, `admin-doctors`,
 > `identity-sync`, `upload-intents`, `schedules`, `consultations`, `sessions`, `patients`, `records`, `record-attachments`,
-> `notifications`, `audit`, `health`. Not built yet: `availability` (doctor search and the slots endpoint) and `help-articles`.
+> `notifications`, `audit`, `health`. Not built yet: `availability` (slots built; search and profile in progress) and `help-articles`.
 > Modules are created through the workflow (`/system-design` → `/brainstorm` → … → `/update-docs`). Do not scaffold `src/`
 > outside that workflow. `docs/architecture/overview.md` carries the live module map.
 
@@ -441,7 +441,7 @@ A record holds at most 20 live attachments (`AttachmentLimitReached`); adding is
 2. Every query backed by an index; `EXPLAIN` search, slots, booking, and calendar queries before merging.
 3. Never `SELECT *`.
 4. **Budgets (p95):** doctor search < **400 ms** · slot computation for a 14-day window < **300 ms** · booking write < 200 ms · calendar/day view < 200 ms.
-5. **Slot computation** loads inputs with a fixed number of queries (hours, exceptions, types, consultations in range — one each), computes in `pkg/slots` in memory, and caches the computed window in Redis (`slots:<doctorId>:<typeId>:<fromDate>:<toDate>`, TTL ≤ 60 s, invalidated on any booking/exception/hours/type change). Use the `timezone-slot-computation` skill.
+5. **Slot computation** loads inputs with a fixed number of queries (hours, exceptions, types, consultations in range — one each), computes in `pkg/slots` in memory, and caches the computed window in Redis (`slots:<doctorId>:<ver>:<typeId>:<fromDate>:<toDate>`, `ver` from `slots-ver:<doctorId>`, TTL ≤ 60 s, invalidated on any booking/exception/hours/type change). Use the `timezone-slot-computation` skill.
 6. **Search** filters on indexed columns (specialty, language, fee range, accepting, bookable) and sorts by earliest availability using a cached per-doctor `next_available_at` in Redis (derived, TTL-bound), never by computing slots for every row.
 7. Read replicas serve discovery reads when introduced; writes and booking re-validation always hit the primary.
 8. Notifications and retries run outside the request. Upload and download bytes never pass through `care-api`; `complete` reads at most 16 bytes of the object.

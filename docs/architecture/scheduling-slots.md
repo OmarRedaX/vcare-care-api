@@ -58,7 +58,7 @@ viewer's timezone.
 ## As built: `pkg/slots` after `schedules` (2026-10-09)
 The `schedules` module ships only the **open-interval resolution** part of the algorithm (steps 2-4 above) in `src/pkg/slots`
 (pure; imports only `luxon` and `pkg/utils`; no clock, no I/O). It does **not** subtract busy consultations or slice by duration:
-both stay with `availability` (steps 1, 5-7) and `consultations` (booking re-validation).
+both stay with `availability` (steps 1, 5-7) and `consultations` (booking re-validation). **Update 2026-10-21:** `availability` slice 1 added those steps to `pkg/slots` as pure functions: `clipWindow`, `subtractBusy`, `sliceSlots`, `firstFreeStart`, `computeSlots` (plus `toFreeMap`, `testFreeMap`, `baseBucketOf`, which have no caller until slice 2). The slot list reuses the booking grid rules, and a property test books every listed slot. See [availability spec](../availability/spec.md) 12.1.2 and section 14.
 
 | Function | Role |
 |---|---|
@@ -82,7 +82,7 @@ Implemented by `ConsultationsService` ([spec](../consultations/spec.md) sections
 - Days are resolved for `[localDate - 1, localDate + 1]` (`resolveOpenDays`: two queries, hours and exceptions in range, then `resolveOpenIntervals`); the timezone is the doctor's.
 - Reschedule re-validates the same way using the **stored** interval length (a later type edit never changes an existing row) and the same lock order (profile, then consultation).
 - `toIsoInZone(ms, timezone)` in `pkg/utils/time.ts` renders `startsAtLocal`/`endsAtLocal` (ISO with offset in the viewer zone).
-- Cache invalidation after commit goes through the `ConsultationChangeListener` seam, a no-op until `availability`/discovery fills it.
+- Cache invalidation after commit goes through the `ConsultationChangeListener` seam, bound since 2026-10-21 (`availability` slice 1) to `AvailabilityChangeListener`; the no-op default remains for tests.
 
 ## Booking re-validation
 The slot list shows what *looked* free. `POST /api/consultations` re-proves it in one transaction:
@@ -114,7 +114,7 @@ Then in-memory computation, O(days × intervals + busy). Always the primary for 
 reads may use a replica when one is introduced.
 
 ## Caching and invalidation (derived data only)
-**Redesigned 2026-10-21** ([availability.md](./availability.md), [ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md),
+**Redesigned 2026-10-21; the `slots:` / `slots-ver:` part is built (`availability` slice 1), the rank index and free-map are slice 2** ([availability.md](./availability.md), [ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md),
 which supersedes ADR 0010). Summary; the key table, flows and failure handling live in the shard:
 
 | Key | Value | Lifetime |
@@ -133,7 +133,7 @@ Redis-down degradation, are in [availability.md](./availability.md).
 ## Budgets (p95)
 | Path | Budget |
 |---|---|
-| Slot computation, 14-day window | < 300 ms (in-memory part < 5 ms for 14 days, 3 shifts/day, 150 busy) |
+| Slot computation, 14-day window | < 300 ms (in-memory part < 5 ms for 14 days, 3 shifts/day, 150 busy). Measured 2026-10-21 for `GET .../slots` with 150 busy consultations: p95 about 19 ms on a cache miss, about 11 ms on a hit, pure `computeSlots` about 4 ms (opt-in `npm run test:bench`) |
 | Doctor search | < 400 ms |
 | Booking write | < 200 ms |
 | Calendar/day view | < 200 ms |

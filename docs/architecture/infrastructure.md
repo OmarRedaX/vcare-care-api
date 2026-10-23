@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -62,13 +62,13 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `OUTBOX_PURGE_SECONDS` | `3600` | | 1-86400; `notification-outbox-purge` loop interval |
 | `REMINDER_SCAN_SECONDS` | `60` | | 1-86400; `consultation-reminders` loop interval |
 | `ALLOWED_CURRENCIES` | `EGP` | | comma-separated uppercase currency allowlist for doctor consultation fees; empty entries and malformed codes are rejected |
+| `SLOT_CACHE_TTL_SECONDS` | `60` | | 1–60 (integer); TTL of a cached `slots:` list; `availability` slice 1 (built 2026-10-21). Values above 60 fail boot (derived data never outlives one minute, [availability.md](./availability.md)) |
 
 ### Planned (declared by the module that first uses them)
 | Variable | Default (local) | Secret | Purpose |
 |---|---|---|---|
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
-| `SLOT_CACHE_TTL_SECONDS` | `60` | | must be ≤ 60 |
 | `NEXT_AVAILABLE_CACHE_TTL_SECONDS` | `300` | | |
 | `UPLOAD_MAX_BYTES` | `10485760` | | 10 MB cap |
 | `VIDEO_PROVIDER_URL` | provider base URL | | room provider behind `lib/video`; declared by the real adapter's unit (sessions ships the fake adapter only) |

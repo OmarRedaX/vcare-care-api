@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [runbook, operations, on-call, care]
-related: [resilience, integration, records-spec, record-attachments-spec, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
+related: [availability-spec, resilience, integration, records-spec, record-attachments-spec, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
 
 # Runbook — care-service
@@ -15,7 +15,7 @@ Task-oriented doc for on-call. The foundation is built (2026-09-28): health prob
 under "Boot and shutdown log lines" are live. The access base is built (2026-10-02): user-token verification against
 Identity's JWKS, `authorize`, the boot route assertion, `audit_logs` with the `audit-partitions` worker loop, and the
 owner/app database roles — their alerts (`IdentityJwksStale`, `AuditPartitionMissing`, `AuditWriteFailures`) and
-tasks below are live. Verification is built (2026-10-08): the `identity-sync` and `upload-intent-purge` worker loops, the Case 1 alerts (`IdentityApprovalSyncPending`, `IdentitySyncTransitionRejected`), `UploadVerificationFailureSpike`, and the sync-job and upload-intent queries below are live. Admin doctors is built (2026-10-09): suspension (Case 3) and reinstatement (Case 4) run through the same `identity-sync` loop, with the `IdentitySuspensionSyncFailing` and `IdentityReinstatementSyncPending` alerts; the declared `503 IdentityUnavailable` is logged as `warn handled_error` (not an `unhandled_error`). Record attachments are built (2026-10-20): the tasks "Investigate a failed upload" and "A record attachment answers 409 or 500" below are live and add no alert or metric; the purge now covers both intent kinds. Other business alerts and the SQL for module tables are the intended shape once those modules exist.
+tasks below are live. Verification is built (2026-10-08): the `identity-sync` and `upload-intent-purge` worker loops, the Case 1 alerts (`IdentityApprovalSyncPending`, `IdentitySyncTransitionRejected`), `UploadVerificationFailureSpike`, and the sync-job and upload-intent queries below are live. Admin doctors is built (2026-10-09): suspension (Case 3) and reinstatement (Case 4) run through the same `identity-sync` loop, with the `IdentitySuspensionSyncFailing` and `IdentityReinstatementSyncPending` alerts; the declared `503 IdentityUnavailable` is logged as `warn handled_error` (not an `unhandled_error`). Record attachments are built (2026-10-20): the tasks "Investigate a failed upload" and "A record attachment answers 409 or 500" below are live and add no alert or metric; the purge now covers both intent kinds. Availability slice 1 is built (2026-10-21): `GET /api/doctors/{doctorUserId}/slots` and the `slots:` cache add no alert or metric; the task "Slots with Redis down" below is live. Other business alerts and the SQL for module tables are the intended shape once those modules exist.
 
 > **Clinical data never leaves the system.** Tickets, chat, and incident notes carry **ids, statuses, and
 > request ids only** — never complaint text, record contents, names, object keys, presigned URLs, or tokens. Admin DB access
@@ -223,6 +223,13 @@ No new alert, metric or log event beyond `upload_verification_failed{kind=record
 - **`409 RecordLocked` on `DELETE /api/records/{id}/attachments/{attachmentId}`.** Expected after the record's `locked_at`: attachments can be added at any time but removed only before the lock; the remedy is an amendment that explains the mistake (`PATCH /api/records/{id}`). The verdict is decided with database time under the record row lock and repeated by the trigger `trg_record_attachments_forbid_delete_after_lock`; both read the transaction-start `NOW()`, so a delete that waited on a concurrent write of the same record across `locked_at` can still be accepted (spec 14.2 K2). A stored file is never deleted by the API; erasure of a soft-deleted object is an owner-run procedure.
 - **`409 Conflict` on `complete`.** With `Retry-After: 1`: another request holds the intent lock; retry. Without it: the intent was consumed without a result, closed or expired by the purge between steps, or a replayed intent's attachment was since removed.
 - **`500` on `POST …/download-url`.** The `attachment.url_issued` audit row could not be written; by design no URL is issued (look for `audit_write_failed`, as for record reads). A storage failure in `complete` is also `500` and leaves the intent open.
+
+### Slots with Redis down, and cache invalidation log lines
+`GET /api/doctors/{doctorUserId}/slots` (availability slice 1, 2026-10-21) is served from Postgres when Redis is down: five queries on a miss, no error, same answer, only slower (budget p95 < 300 ms; measured about 19 ms on a miss). Nothing to restart. The `slots:` cache lives at most `SLOT_CACHE_TTL_SECONDS` (default and maximum 60 s), so a flushed or lost Redis is harmless; booking never reads the cache and re-validates against Postgres every time.
+- `warn availability_cache_unavailable` (at most once a minute per process): a slots cache read or write was skipped because Redis is unusable. No user impact. See `RateLimiterDegraded` for the Redis side.
+- `warn availability_listener_skipped` (at most once a minute per process): after a booking, cancel, schedule or doctor change, the cache invalidation (the `slots-ver` bump) could not run. A cached slot list may then be served for up to 60 s after the change. The write itself succeeded; a patient who books a stale slot still gets the correct `409 SlotUnavailable` or `422` from the booking transaction.
+- `error doctor_change_listener_failed` (`requestId`, `kind`; also `schedule_change_listener_failed`, `consultation_change_listener_failed`): the change listener itself threw after the commit. The write is unaffected; the same 60 s staleness bound applies. Persistent occurrences point at a code regression in `AvailabilityChangeListener`; find the request with [trace a request](#trace-a-request-by-x-request-id).
+- A slot list that looks stale for longer than 60 s is not a cache problem: check the doctor's working hours, exceptions and active consultation type, and that the doctor is bookable ([check why a doctor is not bookable](#check-why-a-doctor-is-not-bookable)). A non-bookable doctor, or a consultation type that is inactive or another doctor's, is `404` by design.
 
 ### Trace a request by `X-Request-Id`
 1. Get the id from the client's response header or the error body's `error.requestId`.
