@@ -5,7 +5,7 @@ service: care-service
 module: consultations
 status: verified
 diataxis: how-to
-last_verified: 2026-10-12
+last_verified: 2026-10-23
 tags: [consultations, manual-qa, curl, booking, reschedule, cancel, exclusion-constraint, idempotency, case-2, follow-up, outbox, rbac, no-store, rate-limit, clinical-privacy]
 related: [consultations-spec, consultations-tasks, consultations-brainstorm, patients-manual-qa, schedules-manual-qa, admin-doctors-manual-qa, api, rbac, quickstart]
 ---
@@ -13,6 +13,12 @@ related: [consultations-spec, consultations-tasks, consultations-brainstorm, pat
 # consultations — Manual QA (CURL)
 
 _Run: 2026-10-12 • Server: http://127.0.0.1:3043 • Result: 384 pass / 0 fail_ (the final full run was 383 pass / 1 fail; the single failure was a QA-script expectation, not a product defect, see Failures / notes; the corrected line was re-checked by hand and is shown as row 383)
+
+**Re-run 2026-10-23 (script maintenance, Postgres 5499 `care_test`, Redis 6380/15): 387 pass / 0 fail.** The case table below is the 2026-10-12 record; the re-run differs in three places and the script is the source of truth:
+- Cleanup: `reset()` and the mid-run delete for patient 590 mark fixture `notification_outbox` rows `sent` before deleting them, because `trg_notification_outbox_delete_sent_only` refuses to delete pending rows (the trigger is unchanged).
+- Case 96 is now `followUpOfRecordId-unknown-record` (404 `NotFound`: follow-up bookings exist, and a missing or foreign record is indistinguishable), plus three new 400 cases (`followUpOfRecordId-string`, `-zero`, `-fraction`); later case numbers shift by three.
+- The `notification_outbox` grants case expects `select,insert,delete` yes and `update` no (`true true false true`): migration `20261012120000` grants DELETE, limited to sent rows by the trigger.
+- The script needs one active row in `specialties` (the integration suites truncate it); seed a synthetic one before the run and remove it afterwards.
 
 ## Environment
 
