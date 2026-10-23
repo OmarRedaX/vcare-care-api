@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [architecture, runtime, scaling, slo, disaster-recovery, bottlenecks, observability, worker]
 related: [capacity, infrastructure, resilience, runbook, adr-0005-availability-and-recovery-targets, adr-0006-health-split-redis-tier-2, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0018-db-role-split-explicit-grants-partition-function, adr-0024-next-available-rank-index-free-map-and-sweep, availability, hub-deployment]
 ---
@@ -26,7 +26,7 @@ Sizing: [capacity.md](./capacity.md). Env vars: [infrastructure.md](./infrastruc
 All reach own Postgres and Redis; `care-api` and `care-worker` reach Identity's internal LB, and `care-api` its
 public JWKS. Only `care-migrate` holds the owner credential ([ADR 0018](../adr/0018-db-role-split-explicit-grants-partition-function.md);
 hub `deployment.md` → Release pipeline step 3).
-`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1, 3 and 4 retrier, suspension jobs first, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **built 2026-10-12 (notifications):** `notification-outbox` (claim, contacts lookup, send; every `OUTBOX_POLL_SECONDS`, 5 s), `consultation-reminders` (24 h / 1 h scan, every `REMINDER_SCAN_SECONDS`, 60 s) and `notification-outbox-purge` (`sent` rows past `OUTBOX_RETENTION_DAYS`, hourly); **designed 2026-10-21 ([availability.md](./availability.md), ADR 0024), not built:** `availability-refresh` (drains the refresh set, ~2 s) and `availability-sweep` (120 s, singleton lock; also rebuilds `name-index` every 300 s). Upload-intent purge (5 min) is described in [file-handling.md](./file-handling.md), ADR 0013.
+`care-worker` loops ([ADR 0008](../adr/0008-care-worker-component.md)); **built:** `audit-partitions` (daily), `identity-sync` (Case 1, 3 and 4 retrier, suspension jobs first, polls every `IDENTITY_SYNC_POLL_SECONDS`, 10 s) and `upload-intent-purge` (5 min), each runnable once with `node dist/worker.js --once <loop>`; **built 2026-10-12 (notifications):** `notification-outbox` (claim, contacts lookup, send; every `OUTBOX_POLL_SECONDS`, 5 s), `consultation-reminders` (24 h / 1 h scan, every `REMINDER_SCAN_SECONDS`, 60 s) and `notification-outbox-purge` (`sent` rows past `OUTBOX_RETENTION_DAYS`, hourly); **built 2026-10-23 (availability slice 2, [availability.md](./availability.md), ADR 0024):** `availability-refresh` (drains the refresh set every 2 s) and `availability-sweep` (every `AVAILABILITY_SWEEP_INTERVAL_SECONDS`, 120 s, plus once at boot; singleton by session advisory lock 1104), each runnable once with `--once` (exit 1 when the lock is held or Redis is unreachable); the worker now holds its own Redis connection (the sweep and refresh write the rank index; its `IdentityClient` shares it for the `identity:user:*` cache). **Planned (slice 3):** the sweep also rebuilds `name-index` every `AVAILABILITY_NAME_REFRESH_SECONDS` (300 s). Upload-intent purge (5 min) is described in [file-handling.md](./file-handling.md), ADR 0013.
 
 ## 2. Availability and recovery ([ADR 0005](../adr/0005-availability-and-recovery-targets.md))
 | Target | Value | Mechanism |
@@ -64,7 +64,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 |---|---|---|
 | `http_requests`, `http_latency_ms`, `http_errors` | `route`, `status`, `code` | RED dashboards, latency alerts, budget burn |
 | `slot_computation_ms`, `search_cache_miss_ratio` | — | bottlenecks 1–2 |
-| `availability_index_miss`, `availability_inline_compute_ms`, `availability_degraded` (`reason`), `availability_sweep_duration_ms`, `availability_sweep_age_s`, `availability_refresh_queue_depth` (designed, not emitted yet) | `reason` | `AvailabilitySweepStale`, `AvailabilityDegradedHigh` |
+| `availability_index_miss`, `availability_inline_compute_ms`, `availability_degraded` (`reason`), `availability_sweep_duration_ms`, `availability_sweep_age_s`, `availability_refresh_queue_depth` (emitted since 2026-10-23: the first three per request or inline batch, the sweep duration per full pass, the age and queue-depth gauges by the refresh loop at most every 30 s) | `reason` | `AvailabilitySweepStale`, `AvailabilityDegradedHigh` |
 | `identity_hydration_degraded`, `identity_call_failed` | `case` | Case 2 / sync alerts |
 | `identity_sync_job_consecutive_failures`, `identity_sync_job_pending_age_s` | `kind` | Cases 1, 3, 4 alerts |
 | `notification_outbox_lag_seconds` (gauge per outbox tick: age of the oldest due `pending` row, 0 when none; rows in backoff are not due) | none | `OutboxLagHigh` |
@@ -90,7 +90,7 @@ The pipeline is platform-wide (hub `deployment.md` → Release pipeline). Care's
 (`audit_partition_missing = 1`, next month missing, or `audit_default_partition_rows > 0`, ticket) ·
 `IdentityJwksStale` (`jwks_cache_age_s` > 1 800, page — cached keys are distrusted at 3 600, after which every
 authenticated Care request is 401; the platform alert row lives in hub `architecture/deployment.md` → Observability) · `IdentityReinstatementSyncPending` (Case 4 job > 15 min, ticket) ·
-`AvailabilitySweepStale` (`availability_sweep_age_s` > 600, ticket; designed) · `AvailabilityDegradedHigh` (> 5 % of searches degraded for 5 min, ticket; designed) · `RateLimiterDegraded` (any for 2 min, ticket) · `UploadVerificationFailureSpike` (> 20 in 10 min, ticket) · `AvailabilityBudgetBurn` (5xx + readiness failures burning 99.9 % at
+`AvailabilitySweepStale` (`availability_sweep_age_s` > 600, ticket; metric emitted, alert rule is the operator's) · `AvailabilityDegradedHigh` (`availability_degraded` events > 5 % of `GET /api/doctors` requests for 5 min, ticket; metric emitted, alert rule is the operator's; [runbook](../runbook.md)) · `RateLimiterDegraded` (any for 2 min, ticket) · `UploadVerificationFailureSpike` (> 20 in 10 min, ticket) · `AvailabilityBudgetBurn` (5xx + readiness failures burning 99.9 % at
 > 2× over 1 h, page). `HealthCheckFailing` now probes readiness.
 
 ## 6. Contract changes required (land via `/construct-spec` + `/develop`)

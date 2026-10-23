@@ -27,7 +27,7 @@ slots = slice( WorkingHours − ScheduleExceptions − booked Consultations , by
 | `consultations` | `starts_at, ends_at TIMESTAMPTZ`, status | UTC instants |
 | Request | `from`, `to` (dates or instants), `typeId`, viewer `timezone` | patient tz for rendering |
 
-Only non-terminal consultations block time: `status IN ('booked','waiting','in_progress')` and `deleted_at IS NULL` — exactly the set the exclusion constraint considers.
+Every consultation except `cancelled` and `no_show` blocks time: `status NOT IN ('cancelled','no_show')` and `deleted_at IS NULL` (`booked`, `waiting`, `in_progress` and `completed`) — exactly the set the exclusion constraint considers. A completed consultation keeps its planned `ends_at`, so it stays busy.
 
 ## The algorithm (pure — lives in `pkg/slots`, no DB, no env, `now` passed in)
 
@@ -115,17 +115,17 @@ COMMIT
 3. exceptions in `[fromDate−1, toDate+1]` — `uq_schedule_exceptions_doctor_profile_id_date` (partial, live rows)
 4. consultation type — PK lookup (scoped to doctor)
 5. busy consultations overlapping the UTC window — served by the GiST index of `excl_consultations_doctor_no_overlap`:
-   `WHERE doctor_user_id = $1 AND tstzrange(starts_at, ends_at, '[)') && tstzrange($2, $3, '[)') AND status IN ('booked','waiting','in_progress') AND deleted_at IS NULL`
+   `WHERE doctor_user_id = $1 AND tstzrange(starts_at, ends_at, '[)') && tstzrange($2, $3, '[)') AND status NOT IN ('cancelled','no_show') AND deleted_at IS NULL` (the exclusion constraint's set: a `completed` consultation keeps its planned interval busy)
 
 Then pure in-memory computation: O(days × intervals + busy) — microseconds to low milliseconds.
 
 **Caching (derived data only, never a source of truth):**
-- `slots:<doctorId>:<typeId>:<fromDoctorDate>:<toDoctorDate>` → the UTC slot list (not viewer-rendered), TTL ≤ 60 s. Render per viewer after the cache.
-- `next-available:<doctorId>` → earliest free slot start over the next 14 days, TTL ≤ 5 min, used for search sorting.
-- **Invalidate** both on: booking, reschedule, cancel, no-show, working-hours change, exception change, type change, suspension, accepting toggle. Invalidation is by doctor prefix after commit.
+- `slots:<doctorId>:<ver>:<typeId>:<fromDoctorDate>:<toDoctorDate>` → the UTC slot list (not viewer-rendered), TTL ≤ 60 s; `ver` is `slots-ver:<doctorId>`, bumped on every input change instead of deleting by prefix. Render per viewer after the cache.
+- `next-available:index` (ZSET, member = doctor id, score = epoch ms of the earliest free slot start over the next 14 days for the doctor's shortest active type, `1e15` = known none) and `free-map:<doctorId>` (173-byte bitmap of 15-minute buckets, for the availability window filter) → used for search sorting and filtering; kept fresh by remove-on-change, the `next-available:refresh` set drained by `availability-refresh`, and the `availability-sweep` (ADR 0024).
+- **Invalidate** on: booking, reschedule, cancel, no-show, completion, working-hours change, exception change, type change, timezone change, suspension, reinstatement, accepting toggle. After commit, one `MULTI`: bump `slots-ver`, `ZREM` the index member, `DEL free-map`, `SADD next-available:refresh`.
 - A cache miss must still meet the budget — the cache smooths peaks, it does not hide slow queries.
 
-**Search** never computes full slots for every result row: filter/sort in SQL on indexed columns, use `next-available:<doctorId>` for "earliest availability" ordering (compute lazily for the page only on misses), and hydrate names with one batched Identity call.
+**Search** never computes full slots for every result row: filter/sort in SQL on indexed columns, rank "earliest availability" from `next-available:index` (one `ZMSCORE` over the candidates; compute only a capped number of misses inline, `AVAILABILITY_INLINE_MISS_CAP`), and hydrate names with one batched Identity call. With Redis down, serve price order and say so in `meta.degraded`.
 
 ## Edge cases that must have tests (pure unit tests in `pkg/slots`)
 - Split shift (09:00–12:00 + 14:00–18:00) → no slots in the gap
@@ -151,5 +151,5 @@ Then pure in-memory computation: O(days × intervals + busy) — microseconds to
 | Checking availability then inserting without a DB guarantee | Exclusion constraint + map `23P01` to 409 |
 | Querying consultations per day in a loop | One overlap query for the whole window |
 | Rendering in patient tz before caching | Cache UTC, render per viewer |
-| Treating `cancelled`/`no_show` as busy | Only `booked`/`waiting`/`in_progress` are busy |
+| Treating `cancelled`/`no_show` as busy, or `completed` as free | Only `cancelled`/`no_show` release the interval; `booked`/`waiting`/`in_progress`/`completed` are busy |
 | Closed intervals | Half-open `[start, end)` everywhere |

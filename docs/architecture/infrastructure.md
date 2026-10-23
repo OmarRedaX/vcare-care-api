@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -63,20 +63,22 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `REMINDER_SCAN_SECONDS` | `60` | | 1-86400; `consultation-reminders` loop interval |
 | `ALLOWED_CURRENCIES` | `EGP` | | comma-separated uppercase currency allowlist for doctor consultation fees; empty entries and malformed codes are rejected |
 | `SLOT_CACHE_TTL_SECONDS` | `60` | | 1–60 (integer); TTL of a cached `slots:` list; `availability` slice 1 (built 2026-10-21). Values above 60 fail boot (derived data never outlives one minute, [availability.md](./availability.md)) |
+| `AVAILABILITY_SWEEP_INTERVAL_SECONDS` | `120` | | positive integer seconds; interval of the `availability-sweep` loop (full rank-index recomputation, singleton by advisory lock); `availability` slice 2 (built 2026-10-23) |
+| `AVAILABILITY_NAME_REFRESH_SECONDS` | `300` | | positive integer seconds; how often the sweep rebuilds `name-index`. Declared in slice 2, **read from slice 3** (name index, not built) |
+| `AVAILABILITY_INLINE_MISS_CAP` | `20` | | 0–100; most doctors a single search request computes inline on a rank-index miss (the rest rank last with `nextAvailableAt: null`); `0` disables inline computation |
+
+Discovery rate limits (60/min per IP, 120/min per user, per route) are module constants in `availability/constants.ts`, not env; the earlier planned `NEXT_AVAILABLE_CACHE_TTL_SECONDS` and `RATE_LIMIT_SEARCH_*` variables were dropped (the rank index has no TTL, ADR 0024).
 
 ### Planned (declared by the module that first uses them)
 | Variable | Default (local) | Secret | Purpose |
 |---|---|---|---|
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
-| `NEXT_AVAILABLE_CACHE_TTL_SECONDS` | `300` | | |
 | `UPLOAD_MAX_BYTES` | `10485760` | | 10 MB cap |
 | `VIDEO_PROVIDER_URL` | provider base URL | | room provider behind `lib/video`; declared by the real adapter's unit (sessions ships the fake adapter only) |
 | `EMAIL_PROVIDER_URL` | provider base URL | | behind `lib/email` |
 | `EMAIL_PROVIDER_KEY` | — | **yes, no default** | |
 | `EMAIL_FROM` | `no-reply@vcare.example.test` | | |
-| `RATE_LIMIT_SEARCH_PER_IP_PER_MIN` | `60` | | |
-| `RATE_LIMIT_SEARCH_PER_USER_PER_MIN` | `120` | | |
 | `RATE_LIMIT_BOOKING_PER_USER_PER_MIN` | `10` | | |
 | `RATE_LIMIT_UPLOADS_PER_USER_PER_HOUR` | `20` | | |
 
@@ -140,7 +142,8 @@ owner-defined `SECURITY DEFINER` function `audit_logs_ensure_partitions(int)`.
   primary. Replica lag is acceptable for discovery because booking re-proves availability on the primary.
 
 ## Redis connection
-`lib/redis/redis.ts` (ioredis): `lazyConnect`, connected in the background at boot and never awaited;
+`lib/redis/redis.ts` (ioredis): `lazyConnect`, connected in the background at boot and never awaited by `care-api`
+(`care-worker` waits at most 3 s through `connectWithin` before its first tick, then carries on either way);
 `enableOfflineQueue: false` (commands fail fast while disconnected, so Tier 2 fallbacks engage at once);
 `maxRetriesPerRequest: 1`; connect timeout 2 s; **command timeout 500 ms**; reconnect backoff `min(n × 200, 2000)` ms,
 forever; `autoResendUnfulfilledCommands: false` (a command on the wire when the connection dropped is never replayed
@@ -280,7 +283,7 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
   both bounded by `SHUTDOWN_TIMEOUT_MS` (`worker_stop_timeout` and exit 1 on overrun). `node dist/worker.js --once
   <loop>` runs exactly one tick of that loop, closes the pool, and exits 0 (`worker_loop_unknown` / `worker_tick_failed`
   / `worker_once_incomplete` — the tick ran but did not reach its goal, e.g. partitions not ensured or the lock held
-  elsewhere — → exit 1). Loops: `audit-partitions`, `identity-sync`, `upload-intent-purge`, `notification-outbox`, `consultation-reminders`, `notification-outbox-purge` (the last three from `notifications`, built in `src/worker-loops.ts`). The worker pool has 6 connections (session advisory locks pin some; each notification loop holds at most one at a time; raised from 4 on 2026-10-12); it also constructs its own Identity and storage clients, closed on stop and on `--once`.
+  elsewhere — → exit 1). Loops: `audit-partitions`, `identity-sync`, `upload-intent-purge`, `notification-outbox`, `consultation-reminders`, `notification-outbox-purge` (the last three from `notifications`), `availability-refresh` and `availability-sweep` (from `availability`, 2026-10-23), all built in `src/worker-loops.ts`. The worker pool has 6 connections (session advisory locks pin some, the sweep one for its whole pass; each notification loop and each availability batch holds at most one at a time, which is why the batch reads run sequentially; raised from 4 on 2026-10-12); it also constructs its own Redis, Identity and storage clients, closed on stop and on `--once`. A `--once availability-*` run exits 1 when Redis is unreachable within the 3 s connect bound or (sweep) the lock is held elsewhere.
 
 ## Local stack (compose)
 `docker-compose.yml` (`name: vcare-care`): Postgres 17 on `127.0.0.1:5433` and Redis 7 on `127.0.0.1:6380`, both on
