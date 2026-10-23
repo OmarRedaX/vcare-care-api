@@ -1,3 +1,5 @@
+import { NAME_INDEX_TTL_SECONDS } from "../../lib/config/env";
+
 export const DISCOVERY_IP_LIMIT = 60;
 export const DISCOVERY_USER_LIMIT = 120;
 export const DISCOVERY_RATE_WINDOW_MS = 60_000;
@@ -30,12 +32,24 @@ export const GAUGE_EVERY_MS = 30_000;
 
 export const SEARCH_NAME_MIN_CODE_POINTS = 2;
 
+/** Name index (ADR 0025): member `<normalised name>, NUL, <userId>`, at most 5,000 matches per query, built in a side key and swapped in. */
+export const NAME_MEMBER_SEPARATOR = "\u0000";
+export const NAME_MATCH_LIMIT = 5000;
+export const NAME_ADD_CHUNK = 500;
+export const NAME_BUILDING_TTL_SECONDS = 600;
+export { NAME_INDEX_TTL_SECONDS };
+export const NAME_HYDRATE_CHUNK = 100;
+
 export const LOG_CACHE_UNAVAILABLE = "availability_cache_unavailable";
 export const LOG_LISTENER_SKIPPED = "availability_listener_skipped";
 export const LOG_FREEMAP_INVALID = "availability_freemap_invalid";
 export const LOG_SWEEP_DONE = "availability_sweep_done";
 export const LOG_SWEEP_SKIPPED = "availability_sweep_skipped";
 export const LOG_REFRESH_DONE = "availability_refresh_done";
+export const LOG_NAME_INDEX_BUILT = "availability_name_index_built";
+export const LOG_NAME_INDEX_STALE = "availability_name_index_stale";
+export const LOG_NAME_INDEX_FAILED = "availability_name_index_failed";
+export const LOG_NAME_INDEX_TRUNCATED = "availability_name_index_truncated";
 export const LOG_CANDIDATES_TRUNCATED = "availability_candidates_truncated";
 export const METRIC_INDEX_MISS = "availability_index_miss";
 export const METRIC_INLINE_COMPUTE_MS = "availability_inline_compute_ms";

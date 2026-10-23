@@ -10,6 +10,11 @@ export class InvalidEnvError extends Error {
     }
 }
 
+/** TTL of the availability name index and its build stamp (ADR 0025). Owned here so the env bound below and `availability/constants.ts` share one value. */
+export const NAME_INDEX_TTL_SECONDS = 900;
+/** Spare seconds the rebuild cadence must leave before the name index expires (one slow sweep tick). */
+const NAME_INDEX_REBUILD_MARGIN_SECONDS = 60;
+
 const port = z.coerce.number().int().min(1).max(65535);
 const positiveSeconds = z.coerce.number().int().min(1).max(86400);
 const strictBoolean = z.enum(["true", "false"]).transform((value) => value === "true");
@@ -131,7 +136,7 @@ export const envSchema = z
         /** Furthest bookable start, in days from now (Domain rule 3). */
         BOOKING_HORIZON_DAYS: z.coerce.number().int().min(1).max(365).default(60),
         SLOT_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(60).default(60),
-        /** Availability worker (ADR 0024): full rank-index sweep cadence, name-index rebuild cadence (used from slice 3), and doctors computed inline per search request when the index misses. */
+        /** Availability worker (ADR 0024): full rank-index sweep cadence, name-index rebuild cadence (used from slice 3; refresh + sweep interval + 60 s must stay below the 900 s name-index TTL, see the superRefine), and doctors computed inline per search request when the index misses. */
         AVAILABILITY_SWEEP_INTERVAL_SECONDS: positiveSeconds.default(120),
         AVAILABILITY_NAME_REFRESH_SECONDS: positiveSeconds.default(300),
         AVAILABILITY_INLINE_MISS_CAP: z.coerce.number().int().min(0).max(100).default(20),
@@ -176,6 +181,13 @@ export const envSchema = z
         if (value.NODE_ENV !== "test") {
             for (const [key, expected] of [["UPLOAD_POLICY_TTL_SECONDS", 300], ["UPLOAD_INTENT_TTL_SECONDS", 900], ["DOWNLOAD_URL_TTL_SECONDS", 60]] as const) {
                 if (value[key] !== expected) ctx.addIssue({ code: "custom", path: [key], message: "security TTL is fixed outside tests" });
+            }
+        }
+        // A rebuild is due NAME_REFRESH after the last one but only runs on a sweep tick, so the worst gap is refresh + sweep interval;
+        // it must stay below the index TTL or the name filter goes headline-only between builds.
+        if (value.AVAILABILITY_NAME_REFRESH_SECONDS + value.AVAILABILITY_SWEEP_INTERVAL_SECONDS + NAME_INDEX_REBUILD_MARGIN_SECONDS >= NAME_INDEX_TTL_SECONDS) {
+            for (const key of ["AVAILABILITY_NAME_REFRESH_SECONDS", "AVAILABILITY_SWEEP_INTERVAL_SECONDS"] as const) {
+                ctx.addIssue({ code: "custom", path: [key], message: `name refresh + sweep interval + ${NAME_INDEX_REBUILD_MARGIN_SECONDS} s must be below the ${NAME_INDEX_TTL_SECONDS} s name-index TTL` });
             }
         }
         if (value.INTERNAL_PORT === value.PORT) {

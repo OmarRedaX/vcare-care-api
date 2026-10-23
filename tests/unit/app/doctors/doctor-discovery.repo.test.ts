@@ -46,6 +46,28 @@ describe("candidate statements", () => {
         expect(bindings).toEqual([10, 500, "x'; DROP TABLE a;--", "ar", "dr%", 10_001]);
     });
 
+    it("should add the name-index ids next to the headline term as one bound array, never as text (AV-R27)", () => {
+        const { sql, bindings } = sqlOf(listCandidatesQuery({ namePrefix: "ann", nameMatchedUserIds: [1001, 1002] }, dry));
+        expect(sql).toContain("(starts_with(lower(dp.headline), ?) OR dp.user_id = ANY(?::bigint[]))");
+        expect(bindings).toEqual(["ann", [1001, 1002], 10_001]);
+        expect(sql).not.toContain("1001");
+    });
+
+    it("should keep the headline term alone when the index is unavailable or matched nobody", () => {
+        for (const nameMatchedUserIds of [undefined, []]) {
+            const { sql, bindings } = sqlOf(pageCandidatesQuery({ namePrefix: "ann", nameMatchedUserIds }, { order: CandidateOrder.Price, after: null, fetch: 5 }, dry));
+            expect(sql).toContain("starts_with(lower(dp.headline), ?)");
+            expect(sql).not.toContain("ANY(");
+            expect(bindings).toEqual(["ann", 5]);
+        }
+    });
+
+    it("should ignore matched ids when there is no name prefix", () => {
+        const { sql } = sqlOf(listCandidatesQuery({ nameMatchedUserIds: [1001] }, dry));
+        expect(sql).not.toContain("starts_with");
+        expect(sql).not.toContain("ANY(");
+    });
+
     it("should add no filter terms when the filters are empty", () => {
         const { sql } = sqlOf(listCandidatesQuery({}, dry));
         for (const term of ["consultation_fee >=", "consultation_fee <=", "slug", "language_code", "starts_with"]) expect(sql).not.toContain(term);

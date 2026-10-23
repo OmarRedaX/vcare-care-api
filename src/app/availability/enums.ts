@@ -12,3 +12,6 @@ export enum DoctorBookability { Bookable = "bookable", NotBookable = "not_bookab
 
 /** Whether a doctor's rank-index score settles a window filter, or the free-map must be read. */
 export enum WindowMatchVerdict { Match = "match", NoMatch = "no_match", NeedsMap = "needs_map" }
+
+/** How a name-index rebuild ended: swapped in, kept the previous build (Identity degraded or aborted), or could not be written. */
+export enum NameIndexOutcome { Built = "built", Stale = "stale", Failed = "failed" }

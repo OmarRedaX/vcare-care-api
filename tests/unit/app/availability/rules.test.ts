@@ -2,9 +2,10 @@
 import { NONE_SCORE } from "../../../../src/app/availability/constants";
 import { DiscoveryCursorKind, SearchSortKind, WindowMatchVerdict } from "../../../../src/app/availability/enums";
 import {
-    applyCursor, assertFeeRange, cursorValueOf, effectiveKind, matchBySchedule, orderCandidates, resolveNamePrefix, resolveSearchWindow,
+    applyCursor, assertFeeRange, assertNamePrefix, cursorValueOf, effectiveKind, matchBySchedule, orderCandidates, resolveSearchWindow,
 } from "../../../../src/app/availability/rules";
 import type { Candidate } from "../../../../src/app/doctors/types";
+import { normalizeName } from "../../../../src/pkg/utils/name";
 import { baseBucketOf, FREE_MAP_BUCKET_MS, FREE_MAP_BUCKETS, testFreeMap, toFreeMap } from "../../../../src/pkg/slots/free-map";
 
 const NOW = Date.UTC(2027, 0, 4, 8, 0, 0);
@@ -68,20 +69,19 @@ describe("assertFeeRange (AV-R15)", () => {
     });
 });
 
-describe("resolveNamePrefix (AV-R15, AV-R27 headline term)", () => {
-    it("should be undefined when no name is supplied", () => {
-        expect(resolveNamePrefix(undefined)).toBeUndefined();
-    });
+describe("assertNamePrefix over normalizeName (AV-R15, AV-R27)", () => {
+    const resolve = (name: string): string => assertNamePrefix(normalizeName(name));
 
-    it("should trim, collapse whitespace, normalise to NFC and lower-case", () => {
-        expect(resolveNamePrefix("  Dr.   ANNA \t Smith ")).toBe("dr. anna smith");
-        expect(resolveNamePrefix("Café")).toBe("café");
+    it("should keep the normalised prefix: trimmed, whitespace collapsed, NFC, lower-case", () => {
+        expect(resolve("  Dr.   ANNA \t Smith ")).toBe("dr. anna smith");
+        expect(resolve("Café")).toBe("café");
     });
 
     it("should reject a name shorter than two code points after normalisation, but count an astral character once", () => {
-        expect(detailsOf(() => resolveNamePrefix("  a  "))[0]?.field).toBe("name");
-        expect(detailsOf(() => resolveNamePrefix("ا"))[0]?.field).toBe("name");
-        expect(resolveNamePrefix("\u{1F600}\u{1F600}")).toBe("\u{1F600}\u{1F600}");
+        expect(detailsOf(() => resolve("  a  "))[0]?.field).toBe("name");
+        expect(detailsOf(() => resolve("ا"))[0]?.field).toBe("name");
+        expect(detailsOf(() => resolve("   "))[0]?.field).toBe("name");
+        expect(resolve("\u{1F600}\u{1F600}")).toBe("\u{1F600}\u{1F600}");
     });
 });
 
