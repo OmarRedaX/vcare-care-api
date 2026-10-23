@@ -8,5 +8,7 @@ module.exports = {
         "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.json" }],
     },
     setupFiles: ["<rootDir>/tests/setup-env.ts"],
+    setupFilesAfterEnv: ["<rootDir>/tests/setup.ts"],
+    globalSetup: "<rootDir>/tests/integration/global-setup.ts",
     clearMocks: true,
 };
