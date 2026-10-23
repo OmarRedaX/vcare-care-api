@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import type { Knex } from "knex";
 import { DoctorProfile } from "../../../../src/app/doctors/entity/doctor-profile.entity";
-import { IdentitySyncStatus, VerificationStatus } from "../../../../src/app/doctors/enums";
+import { DoctorChangeKind, IdentitySyncStatus, VerificationStatus } from "../../../../src/app/doctors/enums";
 import * as languageRepo from "../../../../src/app/doctors/repository/doctor-languages.repo";
 import * as profileRepo from "../../../../src/app/doctors/repository/doctor-profiles.repo";
 import * as linkRepo from "../../../../src/app/doctors/repository/doctor-specialties.repo";
@@ -39,8 +39,10 @@ function setup() {
     const findByIds = jest.fn().mockResolvedValue(specialties());
     const verification = { submitInTransaction: jest.fn().mockResolvedValue({ jobId: null }), finishSubmit: jest.fn(), getOwnApplication: jest.fn() };
     const hasActiveConsultationType = jest.fn().mockResolvedValue(true);
+    const onDoctorChanged = jest.fn().mockResolvedValue(undefined);
     const service = new DoctorsService(db, audit, { ALLOWED_CURRENCIES: ["EGP"] } as unknown as Env, { findByIds } as unknown as SpecialtiesService,
-        verification as unknown as VerificationService, { hasActiveConsultationType } as unknown as SchedulesService);
+        verification as unknown as VerificationService, { hasActiveConsultationType } as unknown as SchedulesService,
+        { onDoctorChanged });
     const mocks = {
         find: jest.spyOn(profileRepo, "findProfileByUserId").mockResolvedValue(profile()),
         locked: jest.spyOn(profileRepo, "findProfileByUserIdForUpdate").mockResolvedValue(undefined),
@@ -56,7 +58,7 @@ function setup() {
         clearPrimary: jest.spyOn(linkRepo, "clearPrimaryExcept").mockResolvedValue(),
         markPrimary: jest.spyOn(linkRepo, "markPrimary").mockResolvedValue(),
     };
-    return { service, trx, db, transaction, record, findByIds, mocks, verification, hasActiveConsultationType };
+    return { service, trx, db, transaction, record, findByIds, mocks, verification, hasActiveConsultationType, onDoctorChanged };
 }
 
 afterEach(() => jest.restoreAllMocks());
@@ -212,6 +214,29 @@ describe("DoctorsService", () => {
         const { service, trx, mocks } = setup();
         await service.isLocallySuspended(202, trx);
         expect(mocks.suspended).toHaveBeenCalledWith(202, trx);
+    });
+
+    it("should fire timezone and accepting changes only after the update transaction commits", async () => {
+        const { service, mocks, onDoctorChanged, transaction } = setup();
+        mocks.locked.mockResolvedValue(profile());
+        mocks.update.mockResolvedValue(profile({ timezone: "UTC", isAcceptingPatients: false }));
+        await service.update(actor, { timezone: "UTC", isAcceptingPatients: false });
+        expect(onDoctorChanged).toHaveBeenCalledWith({ kind: DoctorChangeKind.TimezoneChanged, doctorUserId: 202 });
+        expect(onDoctorChanged).toHaveBeenCalledWith({ kind: DoctorChangeKind.AcceptingChanged, doctorUserId: 202 });
+        expect(transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("should send no doctor change event when timezone and accepting values are unchanged", async () => {
+        const { service, mocks, onDoctorChanged } = setup();
+        mocks.locked.mockResolvedValue(profile());
+        await service.update(actor, { timezone: "Africa/Cairo", isAcceptingPatients: true });
+        expect(onDoctorChanged).not.toHaveBeenCalled();
+    });
+
+    it("should swallow and log a failed doctor change listener", async () => {
+        const { service, onDoctorChanged } = setup();
+        onDoctorChanged.mockRejectedValueOnce(new Error("synthetic failure"));
+        await expect(service.notifyDoctorChanged(DoctorChangeKind.Suspended, 202)).resolves.toBeUndefined();
     });
 
     it.each([false, true])("should report local suspension as %s", async (value) => {

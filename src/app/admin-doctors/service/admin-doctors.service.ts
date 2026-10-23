@@ -7,7 +7,8 @@ import { NotFound } from "../../../lib/error/errors";
 import { logger } from "../../../lib/logger/logger";
 import { currentRequestId } from "../../../lib/logger/request-context";
 import type { AuthContext } from "../../../lib/types/types";
-import { IdentitySyncStatus, VerificationStatus } from "../../doctors/enums";
+import { DoctorChangeKind, IdentitySyncStatus, VerificationStatus } from "../../doctors/enums";
+import type { DoctorsService } from "../../doctors/service/doctors.service";
 import type { DoctorProfile } from "../../doctors/entity/doctor-profile.entity";
 import { IdentitySyncJobKind } from "../../identity-sync/enums";
 import { IdentitySyncService } from "../../identity-sync/service/identity-sync.service";
@@ -31,6 +32,7 @@ export class AdminDoctorsService {
         @inject(TOKENS.IdentitySyncService) private readonly identitySync: IdentitySyncService,
         @inject(TOKENS.SuspensionImpactProvider) private readonly impact: SuspensionImpactProvider,
         @inject(TOKENS.SyncTiming) private readonly timing: SyncTiming,
+        @inject(TOKENS.DoctorsService) private readonly doctors: DoctorsService,
     ) {}
 
     private requestId(): string { return currentRequestId() ?? randomUUID(); }
@@ -62,6 +64,7 @@ export class AdminDoctorsService {
             logger.metric("doctor_suspension_total", 1, { outcome: "noop" });
             return decision.outcome;
         }
+        await this.doctors.notifyDoctorChanged(DoctorChangeKind.Suspended, doctorUserId);
         // A crash after the commit is safe: the pending job already exists and the worker picks it up within one poll.
         const report = await this.identitySync.syncNow(decision.jobId, actor, SUSPEND_INLINE_ATTEMPTS);
         const confirmed = report.profile.identitySyncStatus === IdentitySyncStatus.Synced && report.status === 200;
@@ -87,6 +90,7 @@ export class AdminDoctorsService {
             logger.metric("doctor_reinstatement_total", 1, { outcome: "noop" });
             return decision.outcome;
         }
+        await this.doctors.notifyDoctorChanged(DoctorChangeKind.Reinstated, doctorUserId);
         const report = await this.identitySync.syncNow(decision.jobId, actor, REINSTATE_INLINE_ATTEMPTS);
         const status = report.profile.identitySyncStatus;
         const synced = status === IdentitySyncStatus.Synced && report.status === 200;

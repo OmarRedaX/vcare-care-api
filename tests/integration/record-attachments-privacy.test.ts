@@ -5,6 +5,7 @@ import { contractNoStoreValue } from "../helpers/contract";
 import { PATIENT } from "../helpers/consultations-harness";
 import { ownerDb } from "../helpers/db";
 import { captureLogs } from "../helpers/log-capture";
+import { DERIVED_AVAILABILITY_PREFIXES } from "../helpers/redis";
 import {
     ATTACH_DESC, ATTACH_DESC_2, ATTACH_MARKERS, attachmentRows, FALSE_PDF, intentRows, PNG, storageCalls, useAttachmentsHarness,
 } from "../helpers/record-attachments-fixtures";
@@ -147,7 +148,7 @@ describe("record attachments privacy: logs, audit metadata, Redis, error bodies 
         const redisText = JSON.stringify(redisEntries);
         for (const secret of [...ATTACH_MARKERS, ...MARKERS, ...keys, ...uuids]) expect([secret, redisText.includes(secret)]).toEqual([secret, false]);
         for (const shape of STORAGE_SHAPES) expect([String(shape), shape.test(redisText)]).toEqual([String(shape), false]);
-        expect(redisEntries.every((entry) => entry.key.startsWith("rl:"))).toBe(true);
+        expect(redisEntries.every((entry) => ["rl:", ...DERIVED_AVAILABILITY_PREFIXES].some((prefix) => entry.key.startsWith(prefix)))).toBe(true);
         expect(redisEntries.filter((entry) => entry.key.startsWith("idem:"))).toEqual([]);
 
         // 4. Error bodies of every rejected request: no description, no clinical text, no key, no URL.

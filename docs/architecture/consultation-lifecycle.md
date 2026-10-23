@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-18
+last_verified: 2026-10-21
 tags: [consultations, lifecycle, state-machine, reschedule, cancellation, sessions]
 related: [consultations-spec, sessions-spec, scheduling-slots, clinical-records, records-spec, rbac, data-model, api]
 ---
@@ -74,7 +74,7 @@ is generic so `sessions` reuses it.
 - **Cancel** from `booked`/`waiting`; assigned doctor and admin need a `reason`; a locally suspended doctor gets `403`. A retry with a new key after the first success is
   `409 InvalidTransition` (cancel's idempotency is Redis-only).
 - Every write enqueues `notification_outbox` rows in its transaction (`rescheduled`, `cancelled` to both parties); delivery is the `notifications` unit (built 2026-10-12: `care-worker` claims, looks up contacts and sends through the log-only email port; the 24 h and 1 h reminders for patient and doctor come from a 1-minute scan of `booked` consultations, dropped at claim time if the consultation was cancelled, rescheduled or has started; a reschedule resets both reminder stamps; suspension also queues a neutral `doctor_suspended` notice to each affected patient, once per flag; a delayed `rescheduled` notice is dropped at claim time if the consultation is now terminal or moved again, a delayed `doctor_suspended` notice if it is now terminal, `cancelled` is always sent, and a patient whose consultation is `in_progress` gets an in-progress wording; spec N-D14). Slot and `next-available`
-  cache invalidation goes through the `ConsultationChangeListener` seam after commit, a no-op until discovery fills it; a listener failure is logged without data, never thrown.
+  cache invalidation goes through the `ConsultationChangeListener` seam after commit, bound since 2026-10-21 (`availability` slice 1) to `AvailabilityChangeListener` (the no-op default remains for tests); a listener failure is logged without data, never thrown.
 - **List scopes** (decision D-R8): `upcoming` = `endsAt > now`, `past` = `endsAt <= now`, `all` ascending; an `in_progress` row past its `endsAt` matches neither scope; `sessions` (2026-10-15) left this unchanged and adds no exit for a stale `in_progress` row (follow-up).
 - **Follow-up flags** (`needs_admin_followup`) are set by the filled ports for future `booked`/`waiting`/`in_progress` rows: `schedule_blocked` (only rows not already flagged with that
   reason, so the patient is notified once; the `409` body still lists every stranded id) and `doctor_suspended` (all rows). Nothing is auto-cancelled; reschedule clears the flag, cancel ends the row.

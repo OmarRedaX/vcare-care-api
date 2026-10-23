@@ -11,8 +11,14 @@ related: [scheduling-slots, capacity, deployment, resilience, integration, infra
 
 # Availability — Doctor Discovery and Slots
 
-Design of the `availability` module (not built yet): `GET /api/doctors`, `GET /api/doctors/{doctorUserId}` and
-`GET /api/doctors/{doctorUserId}/slots`. Decided in `/system-design` on 2026-10-21. The slot algorithm and booking
+Design of the `availability` module: `GET /api/doctors`, `GET /api/doctors/{doctorUserId}` and
+`GET /api/doctors/{doctorUserId}/slots`. Decided in `/system-design` on 2026-10-21.
+
+> **Build status (2026-10-21).** Slice 1 is built: `GET /api/doctors/{doctorUserId}/slots`, the `slots:` cache with `slots-ver`,
+> the real after-commit invalidation (`AvailabilityChangeListener` bound to the schedule, consultation and doctor change ports),
+> and `SLOT_CACHE_TTL_SECONDS`. Everything else on this page (rank index, free-map, `next-available:index`, search, the profile
+> preview, the `availability-refresh` / `availability-sweep` loops, the name index) is still design and is built by slices 2 and 3.
+> As-built detail: [availability spec](../availability/spec.md) section 14. The slot algorithm and booking
 re-validation are in [scheduling-slots.md](./scheduling-slots.md); this page is the discovery layer on top of them.
 The API source of truth stays `contracts/openapi.yaml`. Scope: service. Platform inputs (traffic, Identity load) are in the
 hub (`../vcare-hub/architecture/capacity.md`); the derivation is in [capacity.md](./capacity.md).
@@ -114,9 +120,15 @@ Window rules: `availableFrom` / `availableTo` must lie inside `[now, now + 14 da
 ## Invalidation (after commit, never fails the write)
 | Source | Port | Today |
 |---|---|---|
-| hours, exceptions, types | `ScheduleChangeListener` (`schedules`) | no-op default; `availability` rebinds it |
-| book, reschedule, cancel, no-show, complete | `ConsultationChangeListener` (`consultations`) | no-op default; `availability` rebinds it |
-| timezone change, accepting toggle, suspension, reinstatement | new `DoctorChangeListener` port in `doctors`, fired also by `admin-doctors` | to be added with the module |
+| hours, exceptions, types | `ScheduleChangeListener` (`schedules`) | **bound** (slice 1) to `AvailabilityChangeListener`; the no-op default stays for unit tests |
+| book, reschedule, cancel, no-show, complete | `ConsultationChangeListener` (`consultations`) | **bound** (slice 1), as above |
+| timezone change, accepting toggle, suspension, reinstatement | `DoctorChangeListener` port in `doctors` (`DoctorsService.notifyDoctorChanged`), fired also by `admin-doctors` | **added and bound** (slice 1), as above |
+
+As built in slice 1, the one invalidation is a single Redis `MULTI` (`INCR slots-ver`, `EXPIRE` 7 days, `ZREM next-available:index`,
+`DEL free-map`, `SADD next-available:refresh`). Until slice 2 nothing writes the index or the free-map and nothing drains the refresh
+set, so only the `slots-ver` bump has an effect. A Redis failure logs `availability_listener_skipped` (warn, throttled to once a
+minute); a listener rejection is also swallowed by the listener and logged by the caller (`doctor_change_listener_failed`,
+`schedule_change_listener_failed`, `consultation_change_listener_failed`). The write is never affected.
 
 Every event does the same four things: bump `slots-ver`, `ZREM` the member, delete the `free-map`, `SADD` the refresh set.
 Only the timezone change is needed for correctness: the other doctor events are already excluded by the SQL candidate
@@ -161,7 +173,7 @@ IP and 120/min per user. `timezone` is validated with luxon; the cursor is the e
 3. `name-index` and the name filter.
 
 ## Contract changes (provider: care-service; no Identity change)
-Not applied here; they land through `/construct-spec` + `/develop`.
+Slice 1 applied the slots part (C1 to C3: 404 for a non-bookable doctor or a foreign/inactive type, window clipping, IANA validation); the rest land with slices 2 and 3 through `/develop`.
 1. `searchDoctors` `meta.degraded`: optional array of `sort | availabilityFilter | nameFilter`.
 2. `AvailableFrom` / `AvailableTo`: window inside `[now, now + 14 d]`, at most 14 days, defaults, 15-minute granularity,
    `400` outside.
@@ -171,7 +183,7 @@ Not applied here; they land through `/construct-spec` + `/develop`.
 6. A cursor whose sort kind no longer matches (issued in degraded mode) is `400 ValidationFailed`.
 New env vars (declared in `lib/config/env.ts` with the module): `AVAILABILITY_SWEEP_INTERVAL_SECONDS` (120),
 `AVAILABILITY_NAME_REFRESH_SECONDS` (300), `AVAILABILITY_INLINE_MISS_CAP` (20). Doc edits for `/update-docs` when built:
-`CLAUDE.md` (the `slots:` key gains `<ver>`; status line), `docs/architecture/infrastructure.md` (env table).
+`CLAUDE.md` (the `slots:` key gains `<ver>` and the status line: both done for slice 1 on 2026-10-21), `docs/architecture/infrastructure.md` (env table: `SLOT_CACHE_TTL_SECONDS` moved to implemented on 2026-10-21; the `AVAILABILITY_*` variables follow with slice 2).
 
 ## Accepted trade-offs
 - A page of the earliest sort can skip or repeat a doctor whose value changes between page requests.

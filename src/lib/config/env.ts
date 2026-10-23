@@ -130,6 +130,7 @@ export const envSchema = z
         REMINDER_SCAN_SECONDS: positiveSeconds.default(60),
         /** Furthest bookable start, in days from now (Domain rule 3). */
         BOOKING_HORIZON_DAYS: z.coerce.number().int().min(1).max(365).default(60),
+        SLOT_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(60).default(60),
         /** A patient may not cancel or reschedule within this many minutes of the start (Domain rule 10). */
         CANCELLATION_POLICY_MINUTES: z.coerce.number().int().min(0).max(10080).default(120),
         /** Session window and no-show grace (Domain rules 11 and 12): minutes before the start the room opens, after the end it stays open, and after the start before a no-show may be marked. */

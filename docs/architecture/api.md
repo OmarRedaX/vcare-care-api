@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 tags: [api, reference, routes, rbac]
 related: [rbac, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec]
 ---
@@ -78,9 +78,9 @@ stored in Redis, and each issued URL gets its own audit row). All responses are 
 ## doctors-discovery
 | Method | Path | Roles | Ownership | Case | Notes |
 |---|---|---|---|---|---|
-| GET | `/api/doctors` | patient, admin | none | 2 degrade | filters `specialty, language, name, minFee, maxFee, availableFrom, availableTo`; `sort=earliest_availability\|price\|experience`; bookable doctors only; p95 < 400 ms |
-| GET | `/api/doctors/{doctorUserId}` | patient, admin | none (non-bookable → 404 for patients) | 2 degrade | includes `nextAvailableSlots` |
-| GET | `/api/doctors/{doctorUserId}/slots` | patient, admin | none | — | `typeId, from, to` (≤ 14 days), `timezone`; p95 < 300 ms |
+| GET | `/api/doctors` (planned, availability slice 2) | patient, admin | none | 2 degrade | filters `specialty, language, name, minFee, maxFee, availableFrom, availableTo`; `sort=earliest_availability\|price\|experience`; bookable doctors only; p95 < 400 ms |
+| GET | `/api/doctors/{doctorUserId}` (planned, availability slice 2) | patient, admin | none (non-bookable → 404 for patients) | 2 degrade | includes `nextAvailableSlots` |
+| GET | `/api/doctors/{doctorUserId}/slots` (**live**, 2026-10-21) | patient, admin | none (non-bookable doctor, unknown doctor, or a `typeId` that is unknown, inactive or another doctor's → 404 for both roles) | — | `typeId, from, to` (≤ 14 days, else 400), `timezone` (IANA, ≤ 64, else 400); window clipped to `[now, now + 60 days]` (an empty window is 200 with `data: []`); `meta: { from, to, timezone, doctorTimezone, count }`; rate limit 60/min per IP and 120/min per user; no audit, no `Idempotency-Key`; p95 < 300 ms (measured about 19 ms on a miss with 150 busy consultations) |
 
 ## schedules (live, schedules module, 2026-10-09; account `status` active, not locally suspended)
 All eight routes: doctor, token status `active`, not locally suspended (`doctor_not_suspended`, re-checked under the profile lock on writes), ownership `self` (every row scoped by the caller's live profile; no id in a path or body can name another doctor). A caller with no live profile gets `404`. Rate limits: writes 30/min per user, reads 120/min per user (`429` + `Retry-After`). A path `id` that is not a positive integer is `404`. [Spec](../schedules/spec.md).

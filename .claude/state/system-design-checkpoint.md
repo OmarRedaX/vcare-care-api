@@ -1,14 +1,22 @@
-# Resume checkpoint — availability system design (updated 2026-10-21)
+# Resume checkpoint — availability (updated 2026-10-23)
 
-record-attachments is merged (care PR #45, hub PR #25). New work branches: care `feature/availability-design`, hub `docs/availability-design` (both from updated main, NOT committed or pushed yet).
+## State
+- Design merged to main (care PR #46, hub PR #26): ADRs 0024-0026, docs/architecture/availability.md.
+- Branch `feature/availability`: brainstorm (7b320b9), spec v0.1.0 (0c545ab), then **slice 1 (slots + listeners) committed, pushed, care PR opened (not merged)**.
+- Hub branch `chore/sync-care-availability-slice1`: card + contract re-synced for slice 1, hub PR opened (not merged).
+- Slice 1 gate met (2026-10-23): typecheck + eslint clean; `npm test` 180 suites / 3367 tests; availability integration 3 suites / 28 tests; `npm run test:bench` passes (14 days / 150 consultations: miss p95 ~19 ms, hit p95 ~11 ms); manual QA Redis up 14/14, Redis down 8/8.
+- Full integration run in batches: 58 files, 56 pass. Only failures: db-roles (4 password cases) and storage-adapter (3 MinIO cases), both environment-only. consultations-rules, record-attachments-rules and sessions-rbac failed once under batch load and pass alone.
+- If the card or contract changes again: `cd ../vcare-hub && bash scripts/sync-from-spoke.sh care-service ../vcare-care-api`.
 
-## Done (/system-design availability, 2026-10-21)
-Decisions D1–D5 made and written: ADR 0024 (Redis rank index `next-available:index` + `free-map:*` 15-min bitmap, remove-on-change + refresh + 120 s sweep, versioned `slots:` keys; supersedes 0010), ADR 0025 (derived `name-index`), ADR 0026 (Redis-down degradation, `meta.degraded`).
-Shard: docs/architecture/availability.md. Updated: scheduling-slots, capacity (§9, 10x rows, triggers), deployment, resilience, overview, system-design router, INDEX, service-card, ADR 0010 (superseded).
-Hub: data-ownership (2 rows), capacity (name-index refresh line), deployment (worker loops), glossary. check-freshness OK; no `service: platform` doc under care docs/.
-Not changed: contracts/openapi.yaml (changes listed in availability.md "Contract changes"), CLAUDE.md (slots key `<ver>`, status; for /update-docs), Identity docs (+7 % on its ~100 k/day figure, within rounding).
+## Env
+Postgres 18 on 5499 (trust auth; data dir C:/Users/power tech/AppData/Local/Temp/care-pg/data; start with `pg_ctl -o "-p 5499"`, backgrounded: pg_ctl hangs the foreground shell).
+Redis: Memurai service is Stopped and needs admin. Start a user process: `"/c/Program Files/Memurai/memurai.exe" --port 6380 --save "" --appendonly no` (background).
+Always: MIGRATION_DATABASE_URL=postgres://care:care@127.0.0.1:5499/care_test DATABASE_URL=postgres://care_app:care_app@127.0.0.1:5499/care_test REDIS_URL=redis://127.0.0.1:6380/14. Use `npm test` / `npm run test:integration` (never bare npx jest, never port 5432).
+Memory is tight: run integration suites in batches of about 10 files, never two jest processes at once, no QA servers at the same time.
+Codex (`codex:codex-rescue`) was denied by the auto-mode classifier in this session ("Create Unsafe Agents" for a `task --write` run); do the work inline unless the user adds a permission rule.
+
+## Open follow-up (not blocking)
+`scripts/curl-test-consultations.sh` may hit the same pending-outbox delete trigger (`trg_notification_outbox_delete_sent_only`) that the availability script hit during cleanup. Not checked.
 
 ## ▶ NEXT STEP
-1. Owner reviews and commits both doc branches (care + hub), opens PRs.
-2. `/brainstorm availability` -> `/construct-spec availability` (3 build slices: slots+listeners, index+search, name index) -> `/develop` ...
-3. Help-articles module is independent and can run in parallel after the spec.
+Slice 2 as its own `/develop availability` pass (do not start until the slice 1 PRs are reviewed): rank index, free-map, `availability-refresh` and `availability-sweep` worker loops, search (`GET /doctors`), `getDoctor` profile preview, candidate-index migration, Redis for the worker. Contract edits C4-C8 apply then. Slice 3 (name index) follows as another pass.

@@ -12,3 +12,4 @@ export interface RedisBreakerOptions {
     openMs?: number;
     now?: () => number;
 }
+export type RedisOutcome<T> = { ok: true; value: T } | { ok: false };

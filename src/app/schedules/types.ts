@@ -2,11 +2,16 @@ import type { Knex } from "knex";
 import type { StringCursorPosition } from "../../lib/http/pagination/types";
 import type { UserPolicy } from "../../lib/rbac/types";
 import type { LocalInterval } from "../../pkg/slots/types";
+import type { ExceptionRule, WeeklyHoursRule } from "../../pkg/slots/types";
 import type { ScheduleException } from "./entity/schedule-exception.entity";
 import type { ConsultationTypeField, ScheduleChangeKind, ScheduleExceptionType } from "./enums";
 
 /** pg returns `TIME` as `HH:MM:SS` text and `DATE` as `YYYY-MM-DD` text (type parser overrides). */
 export interface WorkingHoursRow { id: number; weekday: number; start_time: string; end_time: string }
+export interface SlotHourRow { doctor_profile_id: number; weekday: number; start_time: string; end_time: string }
+export interface SlotExceptionRow { doctor_profile_id: number; date: string; type: ScheduleExceptionType; start_time: string | null; end_time: string | null }
+export interface ShortestTypeRow { id: number; doctor_profile_id: number; duration_minutes: number }
+export interface SlotScheduleInputs { weekly: WeeklyHoursRule[]; exceptions: ExceptionRule[]; shortestType: { id: number; durationMinutes: number } | null }
 export interface ScheduleExceptionRow {
     id: number; date: string; type: ScheduleExceptionType; start_time: string | null; end_time: string | null;
     reason: string | null; created_at: Date;

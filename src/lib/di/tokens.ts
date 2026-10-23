@@ -22,6 +22,15 @@ export const TOKENS = {
     SpecialtiesController: Symbol.for("SpecialtiesController"),
     DoctorsService: Symbol.for("DoctorsService"),
     DoctorsController: Symbol.for("DoctorsController"),
+    DoctorChangeListener: Symbol.for("DoctorChangeListener"),
+    DoctorDiscoveryReader: Symbol.for("DoctorDiscoveryReader"),
+    SlotInputsReader: Symbol.for("SlotInputsReader"),
+    BusyIntervalsReader: Symbol.for("BusyIntervalsReader"),
+    SlotInputsLoader: Symbol.for("SlotInputsLoader"),
+    NextAvailableIndex: Symbol.for("NextAvailableIndex"),
+    AvailabilityChangeListener: Symbol.for("AvailabilityChangeListener"),
+    AvailabilityService: Symbol.for("AvailabilityService"),
+    AvailabilityController: Symbol.for("AvailabilityController"),
     /** Shared Identity-sync engine (verification, suspension, reinstatement jobs); registered before its callers. */
     IdentitySyncService: Symbol.for("IdentitySyncService"),
     /** Clock and randomness of the sync engine; tests bind a fake. */

@@ -1,6 +1,11 @@
 import type { UserPolicy } from "../../lib/rbac/types";
 import type { DoctorProfile } from "./entity/doctor-profile.entity";
-import type { IdentitySyncStatus, VerificationStatus, DoctorProfileField } from "./enums";
+import type { IdentitySyncStatus, VerificationStatus, DoctorProfileField, DoctorChangeKind } from "./enums";
+
+export interface SlotDoctor { profileId: number; userId: number; timezone: string; bookableBase: boolean }
+export interface SlotDoctorRow { id: number; user_id: number; timezone: string; verification_status: VerificationStatus; identity_sync_status: IdentitySyncStatus; suspended_at: Date | null; is_accepting_patients: boolean }
+export interface DoctorChangedEvent { doctorUserId: number; kind: DoctorChangeKind }
+export interface DoctorChangeListener { onDoctorChanged(event: DoctorChangedEvent): Promise<void> }
 
 export interface DoctorProfileRow {
     id: number; user_id: number; headline: string; bio: string | null; years_experience: number;

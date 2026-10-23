@@ -38,6 +38,7 @@ export interface Env {
     OUTBOX_PURGE_SECONDS: number;
     REMINDER_SCAN_SECONDS: number;
     BOOKING_HORIZON_DAYS: number;
+    SLOT_CACHE_TTL_SECONDS: number;
     CANCELLATION_POLICY_MINUTES: number;
     NO_SHOW_GRACE_MINUTES: number;
     WAITING_ROOM_OPEN_MINUTES: number;

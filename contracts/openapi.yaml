@@ -1163,6 +1163,12 @@ paths:
         duration, evaluated in the doctor's timezone, clipped to `[now, now + 60 days]`, returned in UTC and rendered in
         `timezone`. Window at most 14 days (else `400 ValidationFailed`). Budget: p95 < 300 ms for 14 days.
         Rate limit 60/min per IP and 120/min per user.
+        A non-bookable doctor, an unknown doctor, and a `typeId` that is unknown, inactive, deleted or belongs to another
+        doctor all return `404 NotFound` for every role. `to` must be after `from` and at most 14 days after it, else
+        `400 ValidationFailed`. The effective window is clipped to `[now, now + 60 days]`; a window entirely in the past
+        or beyond the horizon returns `200` with `data: []` and the clipped `meta.from` / `meta.to`. A slot is listed when
+        its start lies in the effective window; a slot's end may fall after `to`. `timezone` is validated as an IANA zone
+        (`400` otherwise).
       security:
         - bearerUser: []
       x-roles: [patient, admin]
@@ -3325,7 +3331,7 @@ components:
       name: typeId
       in: query
       required: true
-      description: Consultation type id; must belong to the doctor and be active.
+      description: Consultation type id; must belong to the doctor and be active. A type that is unknown, inactive, deleted or another doctor's is `404 NotFound`.
       schema:
         type: integer
         format: int64
@@ -4384,11 +4390,11 @@ components:
         from:
           type: string
           format: date-time
-          description: Effective window start after clipping to now.
+          description: Effective window start/end after clipping to `[now, now + 60 days]`; for a window entirely outside that range both equal the nearest bound and `count` is 0.
         to:
           type: string
           format: date-time
-          description: Effective window end after clipping to the horizon.
+          description: Effective window start/end after clipping to `[now, now + 60 days]`; for a window entirely outside that range both equal the nearest bound and `count` is 0.
         timezone:
           type: string
           description: Rendering timezone of the `*Local` fields.

@@ -3,6 +3,7 @@ import { contractNoStoreValue } from "../helpers/contract";
 import { PATIENT, useConsultationsHarness } from "../helpers/consultations-harness";
 import { ownerDb } from "../helpers/db";
 import { captureLogs } from "../helpers/log-capture";
+import { DERIVED_AVAILABILITY_PREFIXES } from "../helpers/redis";
 import {
     AMEND_REASON, CHIEF, createRecord, DX_CODE, DX_TEXT, getRecord, lockNow, MARKERS, NOTES, patchRecord, PLAN, postRecord, PROFILE_ALLERGEN, PROFILE_CONDITION, recordBody,
     scanRedis, seedCompleted, seedProfile, STRANGER_DOCTOR, timeline, withFailingAudit,
@@ -129,7 +130,7 @@ describe("records privacy: logs, audit metadata, Redis and error bodies (integra
         expect(entries.length).toBeGreaterThan(0);
         for (const entry of entries) {
             for (const secret of [...MARKERS, "changed"]) expect([entry.key, entry.value.includes(secret) || entry.key.includes(secret)]).toEqual([entry.key, false]);
-            expect(entry.key.startsWith("rl:")).toBe(true);
+            expect(["rl:", ...DERIVED_AVAILABILITY_PREFIXES].some((prefix) => entry.key.startsWith(prefix))).toBe(true);
         }
     });
 });

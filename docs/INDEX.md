@@ -19,8 +19,8 @@ Diátaxis type — a label, not a folder tree.
 |---|---|---|
 | [service-card.md](./service-card.md) | get the 30-second summary (owner, deps, endpoints, data) — synced to the hub | — |
 | [system-design.md](./system-design.md) | find the architecture shard for a concern | explanation |
-| [quickstart.md](./quickstart.md) | run the service locally for the first time (compose stack, migrate, health checks); later, book a consultation | tutorial |
-| [runbook.md](./runbook.md) | respond to an alert, handle a `VideoUnavailable` 503, diagnose a record `RecordLocked` 409 or an audit-failure `500` on a record read, an attachment `AttachmentLimitReached` / `RecordLocked` 409 or a failed attachment upload (and roll back a dev database that ran the pre-merge records migrations), read a boot/shutdown log line (incl. the fake video provider refused in production), or perform an on-call task | how-to |
+| [quickstart.md](./quickstart.md) | run the service locally for the first time (compose stack, migrate, health checks), call the slots endpoint; later, search and book a consultation | tutorial |
+| [runbook.md](./runbook.md) | respond to an alert, handle a `VideoUnavailable` 503, diagnose a record `RecordLocked` 409 or an audit-failure `500` on a record read, an attachment `AttachmentLimitReached` / `RecordLocked` 409 or a failed attachment upload (and roll back a dev database that ran the pre-merge records migrations), read a boot/shutdown log line (incl. the fake video provider refused in production), see how slots behave when Redis is down (`availability_listener_skipped`, `doctor_change_listener_failed`), or perform an on-call task | how-to |
 
 ## Architecture shards
 | Doc | Read it when you need to… | Lens |
@@ -36,7 +36,7 @@ Diátaxis type — a label, not a folder tree.
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts (Postgres, Redis, HTTP, shutdown), Postgres failure modes, retries, degrade policies, idempotency, durable jobs | explanation |
 | [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars (implemented vs planned), database and Redis connection settings, logging and redaction, error envelope, health, request ids, boot and shutdown, worker loops and `--once`, the local compose stack (Postgres, Redis, MinIO) | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics, alerts | explanation |
-| [architecture/availability.md](./architecture/availability.md) | understand or build doctor search, the profile preview and the slots endpoint (designed 2026-10-21, not built): the Redis rank index and free-map, freshness, the name index, Redis-down degradation, worker loops, build slices and the contract changes still to land | explanation |
+| [architecture/availability.md](./architecture/availability.md) | understand the availability design: slice 1 (the slots endpoint, the `slots:` cache with `slots-ver`, the three change listeners) is built; doctor search, profile preview, rank index, free-map persistence, name index, and worker loops remain planned | explanation |
 | [architecture/capacity.md](./architecture/capacity.md) | check Care's load, compute, database, storage, Redis sizing, 10× check | explanation |
 | [architecture/file-handling.md](./architecture/file-handling.md) | understand document/attachment uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, contract changes, and the as-built verification deviations (§4a) and record-attachment specifics (§4b) | explanation |
 | [architecture/future.md](./architecture/future.md) | see deferred work: events, Phase-2 AI (Care's side), scale, out of scope | explanation |
@@ -77,6 +77,10 @@ spec, tasks, manual-qa; `reviews/` exists only while a review has open findings)
 
 | Doc | Read it when you need to… | Lens |
 |---|---|---|
+| [availability/brainstorm.md](./availability/brainstorm.md) | see the agreed scope of `availability` (doctor search, public profile, slots; delivered slice by slice: slots and listeners, search and profile, name filter), its roles, business rules, success criteria and open questions; the architecture itself is in architecture/availability.md | explanation |
+| [availability/spec.md](./availability/spec.md) | build or change `availability` (v0.1.1; slice 1 slots and listeners implemented with as-built notes in section 14, slices 2-3 planned): discovery roles and routes, contract edits C1-C8 by slice, rules AV-R1..AV-R29, Redis operations and TTLs, slot computation, worker design, query budgets, tests, and exit gates | reference |
+| [availability/tasks.md](./availability/tasks.md) | track the slice 1 slots and listeners build steps, the verified gate status (unit, integration with real Postgres and Redis, benchmark), and what is pending outside this repo | reference |
+| [availability/manual-qa.md](./availability/manual-qa.md) | see the slice 1 slots CURL QA cases and repeat them with the script on a disposable test database | how-to |
 | [foundation/brainstorm.md](./foundation/brainstorm.md) | see the agreed scope of the runnable skeleton (what is in and out of the foundation) | explanation |
 | [foundation/spec.md](./foundation/spec.md) | build or change the skeleton: entrypoints, `lib/` APIs (errors, logger, idempotency, rate limit, health, shutdown, worker runner), env, tooling, Docker, CI, test plan; its As-built notes list the known latent gaps (#5–#17) | reference |
 | [foundation/tasks.md](./foundation/tasks.md) | see what the foundation build did, its fix-review rounds, and what is still open | — |

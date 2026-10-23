@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-10-14
+last_verified: 2026-10-21
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -158,12 +158,13 @@ curl -s "http://localhost:3001/api/doctors?specialty=dermatology&language=ar&sor
 ```
 If Identity is down, results still arrive with `displayName: null` and `profileHydrated: false`.
 
-## 7. See slots in your timezone (planned)
+## 7. See slots in your timezone (built 2026-10-21; needs a token from step 4)
 ```bash
-curl -s "http://localhost:3001/api/doctors/204/slots?typeId=31&from=2026-09-21T00:00:00Z&to=2026-09-28T00:00:00Z&timezone=America/New_York" \
+curl -s "http://localhost:3001/api/doctors/204/slots?typeId=31&from=2026-11-02T00:00:00Z&to=2026-11-09T00:00:00Z&timezone=America/New_York" \
   -H "Authorization: Bearer $PATIENT"
 ```
 Each slot has `startsAt`/`endsAt` in UTC and `startsAtLocal`/`endsAtLocal` rendered in `America/New_York`.
+Use a window that starts today or later and a bookable doctor with an active consultation type of their own: a window in the past answers `200` with an empty list, and an unknown or non-bookable doctor or a foreign type answers `404`. The window is at most 14 days. The repeatable version is `scripts/curl-test-availability.sh`.
 A doctor's Monday morning in `Africa/Cairo` may show as your Sunday night.
 
 ## 8. Book with an Idempotency-Key (planned)

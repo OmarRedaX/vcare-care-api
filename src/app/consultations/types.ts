@@ -81,6 +81,7 @@ export interface RenderedConsultation { consultation: Consultation; view: Consul
 export type RenderedConsultationPage = Page<RenderedConsultation>;
 
 export interface ConsultationChangeEvent { kind: ConsultationChangeKind; doctorUserId: number; consultationId: number }
+export interface BusyIntervalRow { doctor_user_id: number; starts_at: Date; ends_at: Date }
 /** Seam for the discovery cache invalidation (default no-op); invoked after commit, its failure never fails the write. */
 export interface ConsultationChangeListener {
     onConsultationChanged(event: ConsultationChangeEvent): Promise<void>;
