@@ -114,7 +114,14 @@ partition > 10 GB · consultations > 20 k/day · replica lag p95 > 30 s · booka
 ## 9. Availability inputs (authored here)
 The name-index refresh ([ADR 0025](../adr/0025-derived-name-index.md)) hydrates ≈ 2.5 k doctors every 300 s through the
 `identity:user:*` read-through cache: ≈ 25 batched calls per refresh, ≈ 7.2 k calls/day reaching Identity (≈ +7 % on the
-hub's Case 2 figure). The hub cross-service load row quotes this value and links back here.
+hub's Case 2 figure of ≈ 100 k/day). The hub cross-service load row quotes this value and links back here.
+As built (slice 3, 2026-10-23): (1) the **cache reuse is about zero**: the `identity:user:*` TTL is 300 s and the rebuild period is at least
+300 s (rebuilds run on 120 s sweep ticks once the stamp is 300 s old, so about every 360 s), so a doctor's entry has expired by the next rebuild unless a
+search page happened to refill it; assume every rebuild pays the full ⌈doctors / 100⌉ calls. (2) The 7.2 k/day figure is the nominal 300 s cadence and is
+a slight over-estimate (≈ 240 rebuilds/day at the real ≈ 360 s period gives ≈ 6 k/day at 2.5 k doctors). (3) The load **scales linearly with bookable
+doctors** and is independent of traffic: at the 6 k revisit trigger, 60 calls per rebuild, ≈ 17 k calls/day nominal (≈ +17 %); at 10 k doctors, 100 calls
+per rebuild, ≈ 29 k calls/day nominal (≈ +29 %), both on the same ≈ 100 k/day base and still `id = ANY($1)` primary-key lookups; at those sizes the
+5,000-match cap below also applies, so lifting it and re-checking this load are one revisit.
 Known limitation (slice 3 review, 2026-10-23): one name query uses at most 5,000 index matches (`NAME_MATCH_LIMIT`, alphabetical); a longer
 match list is cut and logged count-only as `availability_name_index_truncated`, without `meta.degraded`. It cannot happen at 2.5 k doctors and is
 reachable only above the 6 k bookable-doctors trigger in section 8, so lifting the limit belongs to that revisit. Rebuild cadence is bounded at boot:
