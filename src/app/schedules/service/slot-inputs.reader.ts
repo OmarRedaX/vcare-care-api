@@ -11,9 +11,10 @@ export class SlotInputsReader {
     constructor(@inject(TOKENS.Db) private readonly db: Knex) {}
 
     async loadSlotInputs(profileIds: readonly number[], fromDate: string, toDate: string, conn: Knex = this.db): Promise<Map<number, SlotScheduleInputs>> {
-        const [hours, exceptions, types] = await Promise.all([
-            listSlotHours(profileIds, conn), listSlotExceptions(profileIds, fromDate, toDate, conn), listShortestTypes(profileIds, conn),
-        ]);
+        // Sequential on purpose: a batch holds one pool connection at a time (the worker pool is small and the sweep pins one).
+        const hours = await listSlotHours(profileIds, conn);
+        const exceptions = await listSlotExceptions(profileIds, fromDate, toDate, conn);
+        const types = await listShortestTypes(profileIds, conn);
         const result = new Map<number, SlotScheduleInputs>(profileIds.map((id) => [id, { weekly: [], exceptions: [], shortestType: null }]));
         for (const row of hours) {
             const entry = result.get(row.doctor_profile_id);

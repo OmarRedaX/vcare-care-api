@@ -5,6 +5,7 @@ import { TOKENS } from "../../../../src/lib/di/tokens";
 import { REDIS_BREAKER_OPEN_MS } from "../../../../src/lib/redis/breaker";
 import {
     closeRedis,
+    connectWithin,
     createRedis,
     isRedisReady,
     probeRedis,
@@ -105,6 +106,35 @@ describe("lib/redis", () => {
         } finally {
             client.disconnect();
         }
+    });
+
+    it("should resolve only after the handshake finished when connecting within the budget", async () => {
+        let handshake!: () => void;
+        const connect = jest.fn(() => new Promise<void>((resolve) => { handshake = resolve; }));
+        let settled = false;
+        const waiting = connectWithin({ connect } as unknown as Redis, 1_000).then(() => { settled = true; });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        handshake();
+        await waiting;
+        expect(settled).toBe(true);
+    });
+
+    it("should report a failed connect once and never reject when connecting within the budget", async () => {
+        const onFailure = jest.fn();
+        const client = { connect: jest.fn(() => Promise.reject(new Error("refused"))) } as unknown as Redis;
+        await expect(connectWithin(client, 1_000, onFailure)).resolves.toBeUndefined();
+        expect(onFailure).toHaveBeenCalledTimes(1);
+    });
+
+    it("should give up waiting after the budget without rejecting when the handshake is slow", async () => {
+        jest.useFakeTimers();
+        const onFailure = jest.fn();
+        const client = { connect: jest.fn(() => new Promise<void>(() => undefined)) } as unknown as Redis;
+        const waiting = connectWithin(client, 3_000, onFailure);
+        await jest.advanceTimersByTimeAsync(3_000);
+        await expect(waiting).resolves.toBeUndefined();
+        expect(onFailure).not.toHaveBeenCalled();
     });
 
     it("should prefer the explicit override when resolving a client", () => {

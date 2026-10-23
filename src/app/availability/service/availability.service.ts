@@ -14,12 +14,10 @@ import { DoctorDiscoveryReader } from "../../doctors/service/doctor-discovery.re
 import type { SlotDoctor } from "../../doctors/types";
 import { PatientsService } from "../../patients/service/patients.service";
 import { SchedulesService } from "../../schedules/service/schedules.service";
-import { SLOTS_MAX_SPAN_DAYS } from "../constants";
+import { DAY_MS, SLOTS_MAX_SPAN_DAYS } from "../constants";
 import type { DoctorSlotsQuery, SlotResult, SlotType } from "../types";
 import { NextAvailableIndex } from "./next-available.index";
 import { SlotInputsLoader } from "./slot-inputs.loader";
-
-const DAY_MS = 86_400_000;
 
 @injectable()
 export class AvailabilityService {
@@ -42,8 +40,7 @@ export class AvailabilityService {
         if (doctor === undefined) throw NotFound;
         const type = await this.schedules.findBookableType(doctor.profileId, query.typeId);
         if (type === undefined || !doctor.bookableBase) throw NotFound;
-        const timezone = query.timezone !== undefined ? canonicalIanaTimezone(query.timezone) : actor.role === "patient"
-            ? (await this.patients.findProfile(actor.userId))?.timezone ?? "UTC" : "UTC";
+        const timezone = await this.resolveRenderZone(actor, query.timezone);
         const now = this.clock.now();
         const window = clipWindow(from, to, now, now + this.env.BOOKING_HORIZON_DAYS * DAY_MS);
         const result: SlotResult = { slots: [], fromMs: window.fromMs, toMs: window.toMs, timezone, doctorTimezone: doctor.timezone };
@@ -53,6 +50,12 @@ export class AvailabilityService {
         const slots = await this.listSlots(doctor, { id: type.id, durationMinutes: type.durationMinutes }, fromDate, toDate);
         result.slots = slots.filter((slot) => slot.startMs > now && slot.startMs >= window.fromMs && slot.startMs < window.toMs);
         return result;
+    }
+
+    /** AV-R7: the zone slots are rendered in: the `timezone` parameter (canonical), else a patient's profile zone, else UTC. */
+    async resolveRenderZone(actor: AuthContext, timezone: string | undefined): Promise<string> {
+        if (timezone !== undefined) return canonicalIanaTimezone(timezone);
+        return actor.role === "patient" ? (await this.patients.findProfile(actor.userId))?.timezone ?? "UTC" : "UTC";
     }
 
     async listSlots(doctor: SlotDoctor, type: SlotType, fromDate: string, toDate: string): Promise<SlotRange[]> {

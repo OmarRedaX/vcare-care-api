@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-15
+last_verified: 2026-10-23
 tags: [integration, identity, service-token, case-1, case-2, case-3, case-4, notifications]
 related: [resilience, rbac, runbook, adr-0004-cross-service-failure-policies, adr-0011-notification-outbox-and-reminders, adr-0012-doctor-reinstatement, adr-0021-identity-sync-engine-module, admin-doctors-spec, consultations-spec, future, hub-adr-0006-doctor-account-status-via-care-only, hub-adr-0009-doctor-reinstatement-via-care, hub-adr-0010-notification-contact-lookup]
 ---
@@ -90,7 +90,7 @@ sequenceDiagram
 - **Known environment dependency:** real Identity does not yet serve `GET /internal/users` or `PATCH /internal/users/{id}/status` (its internal-users module is pending). Until it lands, Case 1 against real Identity keeps the decision, answers `202 identitySync: pending`, and the worker retries on `404`; Case 2 degrades to `profileHydrated: false`. Care needs no change when it lands.
 
 ## Case 2 — Batch profile hydration (degrade, never fail)
-Used by search, doctor profile, consultation lists, waiting room, calendar, the admin application queue. As built (`sessions`, 2026-10-15): waiting room and calendar make one batched call per response through `hydrateUsersOrEmpty` (`lib/identity-client/hydrate.ts`, shared with the consultation lists); an outage returns `profileHydrated:false`, never a 5xx. Session writes (join, start, complete, no-show) make no Identity call.
+Used by search, doctor profile, consultation lists, waiting room, calendar, the admin application queue. As built (`sessions`, 2026-10-15): waiting room and calendar make one batched call per response through `hydrateUsersOrEmpty` (`lib/identity-client/hydrate.ts`, shared with the consultation lists); an outage returns `profileHydrated:false`, never a 5xx. Session writes (join, start, complete, no-show) make no Identity call. As built (`availability`, 2026-10-23): `GET /api/doctors` and `GET /api/doctors/{doctorUserId}` hydrate once per page through the same helper, and drop a search row whose hydrated Identity `status` is not `active` (defence in depth, never authorization); an outage returns `profileHydrated:false`, never a 5xx. `/slots`, the rank index and the sweep make no Identity call; the name-index rebuild (slice 3, not built) will use `getUsersBatch` from `care-worker`.
 
 ```mermaid
 sequenceDiagram

@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [architecture, capacity, sizing, load, storage, redis]
 related: [deployment, infrastructure, data-model, scheduling-slots, availability, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, adr-0024-next-available-rank-index-free-map-and-sweep, adr-0025-derived-name-index, hub-capacity]
 ---
@@ -115,3 +115,10 @@ partition > 10 GB · consultations > 20 k/day · replica lag p95 > 30 s · booka
 The name-index refresh ([ADR 0025](../adr/0025-derived-name-index.md)) hydrates ≈ 2.5 k doctors every 300 s through the
 `identity:user:*` read-through cache: ≈ 25 batched calls per refresh, ≈ 7.2 k calls/day reaching Identity (≈ +7 % on the
 hub's Case 2 figure). The hub cross-service load row quotes this value and links back here.
+
+## 10. As-built check (availability slice 2, 2026-10-23)
+Measured on a development machine with real Postgres and Redis, 2,500 bookable doctors among 20,000 profiles (the derivation inputs above are unchanged; these are checks, not new inputs):
+- **Search p95** 12 to 48 ms warm index, 68 to 97 ms with a cold index (inline cap of 20), against the 400 ms budget; `/slots` 14 ms on a miss and 7 ms on a hit against 300 ms.
+- **Sweep:** one full pass over 2,500 doctors took 6.4 to 6.7 s of wall time on an unconstrained dev CPU. The 15 to 20 s per cycle planning figure for the 0.5 vCPU worker in §3 stays as the conservative derivation (it was not re-measured on a 0.5 vCPU limit); the revisit trigger `availability_sweep_duration_ms` > 60 000 still applies.
+- **Postgres query cost of a search is higher than §4 assumed.** A search page costs one candidate or page query plus 5 page-view queries (profiles, languages, specialty links, specialties, active types), so 6 queries in steady state, and an index miss adds an inline batch of 5. §4 counted search at 1 to 2 queries; at 25 rps peak that is about 100 more queries per second than the ≈ 400 qps headline assumed. The statements are all indexed and narrow, and the 2 vCPU / 8 GB class still holds with room; the headline in this section and in the hub's Care row (≈ 400 qps) is **not** changed here and is flagged for `/system-design` to decide whether to restate (hub `architecture/capacity.md`).
+- **Redis:** `free-map:*` is 173 bytes per bookable doctor and the rank index one sorted-set member each, as sized in §5.

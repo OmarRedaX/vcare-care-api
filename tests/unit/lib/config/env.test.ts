@@ -54,6 +54,9 @@ describe("lib/config/env parseEnv", () => {
             REMINDER_SCAN_SECONDS: 60,
             BOOKING_HORIZON_DAYS: 60,
             SLOT_CACHE_TTL_SECONDS: 60,
+            AVAILABILITY_SWEEP_INTERVAL_SECONDS: 120,
+            AVAILABILITY_NAME_REFRESH_SECONDS: 300,
+            AVAILABILITY_INLINE_MISS_CAP: 20,
             CANCELLATION_POLICY_MINUTES: 120,
             NO_SHOW_GRACE_MINUTES: 10,
             WAITING_ROOM_OPEN_MINUTES: 10,
@@ -82,6 +85,16 @@ describe("lib/config/env parseEnv", () => {
         expect(parseEnv({ ...secretsOnly(), SLOT_CACHE_TTL_SECONDS: "1" }).SLOT_CACHE_TTL_SECONDS).toBe(1);
         expect(captureInvalid({ ...secretsOnly(), SLOT_CACHE_TTL_SECONDS: "0" }).keys).toEqual(["SLOT_CACHE_TTL_SECONDS"]);
         expect(captureInvalid({ ...secretsOnly(), SLOT_CACHE_TTL_SECONDS: "61" }).keys).toEqual(["SLOT_CACHE_TTL_SECONDS"]);
+    });
+
+    it("should default and bound the availability sweep, name refresh and inline miss cap variables", () => {
+        expect(parseEnv({ ...secretsOnly(), AVAILABILITY_SWEEP_INTERVAL_SECONDS: "30", AVAILABILITY_NAME_REFRESH_SECONDS: "600", AVAILABILITY_INLINE_MISS_CAP: "0" })).toMatchObject({
+            AVAILABILITY_SWEEP_INTERVAL_SECONDS: 30, AVAILABILITY_NAME_REFRESH_SECONDS: 600, AVAILABILITY_INLINE_MISS_CAP: 0 });
+        expect(parseEnv({ ...secretsOnly(), AVAILABILITY_INLINE_MISS_CAP: "100" }).AVAILABILITY_INLINE_MISS_CAP).toBe(100);
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_INLINE_MISS_CAP: "101" }).keys).toEqual(["AVAILABILITY_INLINE_MISS_CAP"]);
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_INLINE_MISS_CAP: "-1" }).keys).toEqual(["AVAILABILITY_INLINE_MISS_CAP"]);
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_SWEEP_INTERVAL_SECONDS: "0" }).keys).toEqual(["AVAILABILITY_SWEEP_INTERVAL_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_NAME_REFRESH_SECONDS: "86401" }).keys).toEqual(["AVAILABILITY_NAME_REFRESH_SECONDS"]);
     });
 
     it("should never include a value in the error message when parsing fails (F1)", () => {

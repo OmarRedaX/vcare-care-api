@@ -1,4 +1,5 @@
 import type { Knex } from "knex";
+import type Redis from "ioredis";
 import type { Env } from "../config/types";
 import type { Logger } from "../logger/logger";
 import type { ObjectStorage } from "../storage/object-storage";
@@ -26,10 +27,11 @@ export interface LoopRunnerDeps {
     heartbeatEveryMs?: number;
 }
 
-/** What `buildWorkerLoops` hands every loop: the worker's own Postgres pool (`care-worker`), never the API's. */
+/** What `buildWorkerLoops` hands every loop: the worker's own Postgres pool and Redis client (`care-worker`), never the API's. */
 export interface WorkerLoopDeps {
     env: Env;
     db: Knex;
+    redis: Redis;
     logger: Logger;
     storage: ObjectStorage;
     identity: IdentityClient;

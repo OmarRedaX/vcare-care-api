@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -151,12 +151,13 @@ curl -s -X PATCH http://localhost:3001/api/admin/applications/12/approve \
   The doctor stays **unbookable** until synced. Stop your Identity fake to see this path; `node dist/worker.js --once identity-sync` retries once. Against real Identity today this is always the outcome (its internal status route is not deployed yet).
 - `409` with `Retry-After: 5` → the account is still `pending` from a resubmit/reopen that has not reached Identity; retry after the sync.
 
-## 6. Search doctors (planned)
+## 6. Search doctors (built 2026-10-23; needs a token from step 4)
 ```bash
 curl -s "http://localhost:3001/api/doctors?specialty=dermatology&language=ar&sort=earliest_availability&limit=10" \
   -H "Authorization: Bearer $PATIENT"
+curl -s "http://localhost:3001/api/doctors/204" -H "Authorization: Bearer $PATIENT"   # profile with the first free slots
 ```
-If Identity is down, results still arrive with `displayName: null` and `profileHydrated: false`.
+If Identity is down, results still arrive with `displayName: null` and `profileHydrated: false`. If Redis is down they still arrive, in price order, with `meta.degraded: ["sort"]`. The earliest-availability order comes from a Redis index that `care-worker` keeps fresh (`node dist/worker.js --once availability-sweep` fills it at once; without the worker, the first requests compute up to 20 doctors inline). `name` matches headlines only until slice 3. The repeatable version is `scripts/curl-test-availability.sh` (see [availability manual QA](./availability/manual-qa.md)).
 
 ## 7. See slots in your timezone (built 2026-10-21; needs a token from step 4)
 ```bash

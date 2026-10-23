@@ -88,3 +88,6 @@ export interface ScheduleOwnerResolver {
 export type SchedulesRoute = "getWorkingHours" | "replaceWorkingHours" | "listExceptions" | "createException" | "deleteException"
     | "listTypes" | "createType" | "updateType";
 export type SchedulesPolicies = Readonly<Record<SchedulesRoute, UserPolicy>>;
+
+/** A consultation type row with its owner profile, for batched loads. */
+export interface ConsultationTypeOwnerRow extends ConsultationTypeRow { doctor_profile_id: number }

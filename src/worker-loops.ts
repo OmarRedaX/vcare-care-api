@@ -1,3 +1,12 @@
+import { AvailabilityRefreshService } from "./app/availability/service/availability-refresh.service";
+import { AvailabilitySweepService } from "./app/availability/service/availability-sweep.service";
+import { NextAvailableComputer } from "./app/availability/service/next-available.computer";
+import { NextAvailableIndex } from "./app/availability/service/next-available.index";
+import { SlotInputsLoader } from "./app/availability/service/slot-inputs.loader";
+import { buildAvailabilityRefreshLoop, buildAvailabilitySweepLoop } from "./app/availability/worker/availability.loops";
+import { BusyIntervalsReader } from "./app/consultations/service/busy-intervals.reader";
+import { DoctorDiscoveryReader } from "./app/doctors/service/doctor-discovery.reader";
+import { SlotInputsReader } from "./app/schedules/service/slot-inputs.reader";
 import { SYSTEM_SYNC_TIMING } from "./app/identity-sync/constants";
 import { IdentitySyncService } from "./app/identity-sync/service/identity-sync.service";
 import { buildIdentitySyncLoop } from "./app/identity-sync/worker/identity-sync.loop";
@@ -27,6 +36,12 @@ export function buildWorkerLoops(deps: WorkerLoopDeps): WorkerLoop[] {
     const outboxDelivery = new OutboxDeliveryService(deps.db, deps.identity, new LogEmailAdapter(deps.logger), consultations, deps.env, deps.logger, SYSTEM_NOTIFICATION_TIMING);
     const reminderScan = new ReminderScanService(deps.db, consultations, new NotificationsService(), deps.logger, SYSTEM_NOTIFICATION_TIMING);
     const outboxPurge = new OutboxPurgeService(deps.db, deps.env, deps.logger, SYSTEM_NOTIFICATION_TIMING);
+    const doctorReader = new DoctorDiscoveryReader(deps.db);
+    const index = new NextAvailableIndex(deps.redis, deps.logger, deps.env);
+    const computer = new NextAvailableComputer(new SlotInputsLoader(doctorReader, new SlotInputsReader(deps.db), new BusyIntervalsReader(deps.db)), index);
+    const clock = { now: () => Date.now() };
+    const availabilityRefresh = new AvailabilityRefreshService(doctorReader, computer, index, deps.logger, clock);
+    const availabilitySweep = new AvailabilitySweepService(deps.db, doctorReader, computer, index, deps.logger, clock);
     return [
         buildAuditPartitionLoop({
             db: deps.db,
@@ -38,5 +53,7 @@ export function buildWorkerLoops(deps: WorkerLoopDeps): WorkerLoop[] {
         buildNotificationOutboxLoop({ service: outboxDelivery, pollSeconds: deps.env.OUTBOX_POLL_SECONDS }),
         buildConsultationRemindersLoop({ service: reminderScan, intervalSeconds: deps.env.REMINDER_SCAN_SECONDS }),
         buildNotificationOutboxPurgeLoop({ service: outboxPurge, intervalSeconds: deps.env.OUTBOX_PURGE_SECONDS }),
+        buildAvailabilityRefreshLoop({ service: availabilityRefresh }),
+        buildAvailabilitySweepLoop({ service: availabilitySweep, intervalSeconds: deps.env.AVAILABILITY_SWEEP_INTERVAL_SECONDS }),
     ];
 }
