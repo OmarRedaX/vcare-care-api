@@ -1,4 +1,12 @@
 import { instanceCachingFactory } from "tsyringe";
+import { AvailabilityController } from "./app/availability/controller/availability.controller";
+import { AvailabilityChangeListener } from "./app/availability/service/availability-change.listener";
+import { AvailabilityService } from "./app/availability/service/availability.service";
+import { NextAvailableIndex } from "./app/availability/service/next-available.index";
+import { SlotInputsLoader } from "./app/availability/service/slot-inputs.loader";
+import { BusyIntervalsReader } from "./app/consultations/service/busy-intervals.reader";
+import { DoctorDiscoveryReader } from "./app/doctors/service/doctor-discovery.reader";
+import { SlotInputsReader } from "./app/schedules/service/slot-inputs.reader";
 import { AuditController } from "./app/audit/controller/audit.controller";
 import { AuditService } from "./app/audit/service/audit.service";
 import { AdminDoctorsController } from "./app/admin-doctors/controller/admin-doctors.controller";
@@ -7,7 +15,6 @@ import { ConsultationsController } from "./app/consultations/controller/consulta
 import { ConsultationRowsService } from "./app/consultations/service/consultation-rows.service";
 import { ConsultationQueriesService } from "./app/consultations/service/consultation-queries.service";
 import { ConsultationsService } from "./app/consultations/service/consultations.service";
-import { NoopConsultationChangeListener } from "./app/consultations/service/noop-consultation-change.listener";
 import { buildScheduleImpactProvider } from "./app/consultations/service/schedule-impact.provider";
 import { ConsultationSuspensionImpactProvider } from "./app/consultations/service/suspension-impact.provider";
 import { RecordAttachmentsController } from "./app/record-attachments/controller/record-attachments.controller";
@@ -28,7 +35,6 @@ import { DoctorsController } from "./app/doctors/controller/doctors.controller";
 import { DoctorsService } from "./app/doctors/service/doctors.service";
 import { buildScheduleOwnerResolver } from "./app/doctors/schedule-owner.resolver";
 import { SchedulesController } from "./app/schedules/controller/schedules.controller";
-import { NoopScheduleChangeListener } from "./app/schedules/service/noop-schedule-change-listener";
 import { SchedulesService } from "./app/schedules/service/schedules.service";
 import { HealthService } from "./app/health/service/health.service";
 import { SpecialtiesController } from "./app/specialties/controller/specialties.controller";
@@ -60,15 +66,24 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.HealthController, HealthController);
     container.registerSingleton(TOKENS.SpecialtiesService, SpecialtiesService);
     container.registerSingleton(TOKENS.SpecialtiesController, SpecialtiesController);
+    container.registerSingleton(TOKENS.DoctorDiscoveryReader, DoctorDiscoveryReader);
+    container.registerSingleton(TOKENS.SlotInputsReader, SlotInputsReader);
+    container.registerSingleton(TOKENS.BusyIntervalsReader, BusyIntervalsReader);
+    container.registerSingleton(TOKENS.SlotInputsLoader, SlotInputsLoader);
+    container.registerSingleton(TOKENS.NextAvailableIndex, NextAvailableIndex);
+    container.registerSingleton(TOKENS.AvailabilityChangeListener, AvailabilityChangeListener);
+    container.register(TOKENS.ScheduleChangeListener, { useToken: TOKENS.AvailabilityChangeListener });
+    container.register(TOKENS.ConsultationChangeListener, { useToken: TOKENS.AvailabilityChangeListener });
+    container.register(TOKENS.DoctorChangeListener, { useToken: TOKENS.AvailabilityChangeListener });
+    container.registerSingleton(TOKENS.AvailabilityService, AvailabilityService);
+    container.registerSingleton(TOKENS.AvailabilityController, AvailabilityController);
     // Consultations seams, registered before their consumers: the outbox writer and the (no-op) cache-invalidation listener.
     container.registerSingleton(TOKENS.NotificationsService, NotificationsService);
-    container.registerSingleton(TOKENS.ConsultationChangeListener, NoopConsultationChangeListener);
     // Schedules seams: the real impact provider from `consultations` (SchedulesService is looked up at call time because it
     // injects the provider), the no-op `availability` listener, and the lazy owner resolver that breaks the doctors <->
     // schedules constructor cycle (DoctorsService is looked up at call time).
     container.register(TOKENS.ScheduleImpactProvider, { useFactory: instanceCachingFactory((c) => buildScheduleImpactProvider({
         getSchedules: () => c.resolve<SchedulesService>(TOKENS.SchedulesService), notifications: c.resolve<NotificationsService>(TOKENS.NotificationsService) })) });
-    container.registerSingleton(TOKENS.ScheduleChangeListener, NoopScheduleChangeListener);
     container.register(TOKENS.ScheduleOwnerResolver, { useFactory: (c) => buildScheduleOwnerResolver(() => c.resolve<DoctorsService>(TOKENS.DoctorsService)) });
     container.registerSingleton(TOKENS.SchedulesService, SchedulesService);
     container.registerSingleton(TOKENS.SchedulesController, SchedulesController);
