@@ -52,7 +52,7 @@ Slice 1 gate met; all tasks above are `[x]`.
 
 ## Slice 2 — Search, profile, loops, degradation (branch feature/availability-slice2)
 
-Legend: [ ] todo, [~] in progress, [x] done (typecheck and the task's unit tests green). Integration tests, the curl script, review and docs are separate passes.
+Legend: [ ] todo, [~] in progress, [x] done (typecheck and the task's tests green). The curl script, review and docs are separate passes.
 
 - [x] S2-01 [0] Contract edits C4 to C8; contract test S2 part.
 - [x] S2-02 [1] Migration `20261021120000_add_doctor_discovery_indexes` (+ migration test extension); EXPLAIN fixtures are a later integration pass.
@@ -63,7 +63,10 @@ Legend: [ ] todo, [~] in progress, [x] done (typecheck and the task's unit tests
 - [x] S2-07 [4,5] `SearchDoctorsQueryDto`, `GetDoctorQueryDto`, `DiscoveryDoctorResponseDto` (viewer-aware), `PaginationMeta` + `degraded`.
 - [x] S2-08 [8,9,10,11] Policies (`search`, `getDoctor`), controller methods, routes with limiters.
 - [x] S2-09 [worker] `WorkerLoopDeps.redis`, `worker.ts` Redis lifecycle, `worker-loops.ts` registration, `--once` for both loops.
-- [~] S2-10 [12] Unit + integration + RBAC + contract + degradation + pagination + freshness + worker + EXPLAIN + budget tests. Unit tests are part of this pass; the integration, EXPLAIN and budget tests are NOT (later pass).
-  - Unit part done (2026-10-23): rules, discovery-cursor, index (rank), computer, discovery service, refresh and sweep services, loops and worker wiring, loader, repo SQL shape, DTOs, controller, routes, policies, env, contract, single-flight. Still open: the integration, RBAC, contract-conformance, degradation, pagination, freshness, worker process, EXPLAIN and budget suites (9.2 Integration).
+- [x] S2-10 [12] Unit + integration + RBAC + contract + degradation + pagination + freshness + worker + EXPLAIN + budget tests.
+  - Unit part done (2026-10-23): rules, discovery-cursor, index (rank), computer, discovery service, refresh and sweep services, loops and worker wiring, loader, repo SQL shape, DTOs, controller, routes, policies, env, contract, single-flight.
+  - Integration part done (2026-10-23), real Postgres 5499 and Redis 6380, fake Identity and JWKS, each file green alone: `availability-search` (34), `availability-search-pagination` (33), `availability-freshness` (31), `availability-degradation` (23), `availability-worker` (5 pass, 1 skipped on win32), `availability-search-explain` (14). Helpers: `tests/helpers/availability-harness.ts` (consultations harness plus a rebuilt discovery stack on the test clock and Identity client, `withRedisDown`, sweep and refresh ticks, suite-wide log capture that fails on any display name or avatar URL), `tests/helpers/availability-seed.ts` (single and `generate_series` bulk doctors).
+  - Budget part done: `tests/bench/availability-search-http.bench.test.ts` (`npm run test:bench`), 2,500 bookable doctors, 100 requests per run after 10 warm-up. Search p95: warm 12 to 31 ms (window 46 ms), cold index with the inline cap 69 to 92 ms, Redis down 64 ms, all against 400 ms. Slots at the same scale: miss 13 ms, hit 8 ms (300 ms budget); the slice 1 slots bench is unchanged (16.7 / 10.2 ms).
+  - Caveats: (1) the graceful SIGTERM case of `availability-worker` is skipped on win32 like `process.test.ts`, it runs on CI (its client-observation logic was run here with SIGKILL); (2) EXPLAIN evidence differs from spec 8 in two places that are planner choices, not defects: the unfiltered path B candidate scan hashes the active-type set (Seq Scan on `consultation_types`, 13 ms for 2,500 candidates of 20,000 profiles) instead of probing `idx_consultation_types_doctor_profile_id_active`, which every keyset page and every selective filter does use; the `specialties` slug lookup reads the 10-row table directly; the sweep list sorts by id over a bitmap scan of the bookable partial index; (3) the AV-R16 span rule (more than 14 days) is unreachable through HTTP because both supplied bounds must lie in `[now, now + 14 d]`, the boundary (exactly 14 days) is tested.
 - [ ] S2-11 [13] `/manual-qa availability` search/profile sections (later pass).
 - [ ] S2-12 [14] Docs, runbook alerts, as-built notes (later pass, `/update-docs`).
