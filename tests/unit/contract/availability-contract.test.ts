@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { contractOperationBlock, contractResponseCodes, inlineLists, schemaBlock } from "../../helpers/contract";
+import { FEE_AMOUNT_MAX } from "../../../src/app/doctors/constants";
 
 describe("availability slice 1 contract (C1-C3)", () => {
     const block = contractOperationBlock("/api/doctors/{doctorUserId}/slots", "get");
@@ -64,6 +65,12 @@ describe("availability slice 2 contract (C4-C8)", () => {
         expect(parameter("NameFilter")).toContain("`meta.degraded` contains `nameFilter`");
         expect(parameter("NameFilter")).toContain("Control characters are rejected");
         for (const name of ["MinFee", "MaxFee"]) expect(parameter(name)).toContain("currency is ignored");
+        for (const name of ["MinFee", "MaxFee"]) {
+            expect(parameter(name)).toContain("minimum: 0");
+            expect(parameter(name)).toContain(`maximum: ${FEE_AMOUNT_MAX}`);
+        }
+        expect(parameter("SpecialtyFilter")).toContain("minLength: 1");
+        expect(parameter("SpecialtyFilter")).toContain("maxLength: 100");
         for (const name of ["AvailableFrom", "AvailableTo"]) {
             expect(parameter(name)).toContain("`[availableFrom, availableTo)`");
             expect(parameter(name)).toContain("Matching is exact to 15 minutes");

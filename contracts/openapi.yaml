@@ -3287,6 +3287,7 @@ components:
       description: Specialty slug.
       schema:
         type: string
+        minLength: 1
         maxLength: 100
         examples: [dermatology]
     LanguageFilter:
@@ -3318,6 +3319,7 @@ components:
       schema:
         type: integer
         minimum: 0
+        maximum: 2147483647
     MaxFee:
       name: maxFee
       in: query
@@ -3326,6 +3328,7 @@ components:
       schema:
         type: integer
         minimum: 0
+        maximum: 2147483647
     AvailableFrom:
       name: availableFrom
       in: query

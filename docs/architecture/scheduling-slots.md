@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [scheduling, slots, timezones, booking, caching, performance]
 related: [consultations-spec, schedules-spec, data-model, consultation-lifecycle, resilience, capacity, availability, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh, adr-0024-next-available-rank-index-free-map-and-sweep]
 ---
@@ -28,9 +28,9 @@ Slots are **never stored** ([ADR 0002](../adr/0002-slots-never-stored.md)). Only
 | Weekly hours (split shifts = several rows per weekday) | `TIME` start/end, ISO weekday | doctor tz, per local date |
 | Exceptions: `day_off` removes the date; `custom_hours` **replaces** that date's hours | `DATE` + optional `TIME`s | doctor tz |
 | Duration | `consultation_types.duration_minutes` | — |
-| Busy intervals | consultations with status `booked`, `waiting`, `in_progress`, not deleted | UTC instants, half-open `[start, end)` |
+| Busy intervals | consultations with every status but `cancelled` and `no_show` (`booked`, `waiting`, `in_progress`, `completed`; mirrors `excl_consultations_doctor_no_overlap`), not deleted | UTC instants, half-open `[start, end)` |
 
-`cancelled` and `no_show` release their interval — exactly the set the exclusion constraint ignores.
+`cancelled` and `no_show` release their interval — exactly the set the exclusion constraint ignores. A `completed` consultation keeps its planned `ends_at` (`complete` never shortens it), so it stays busy and a listed slot is never refused by booking (availability review 2026-10-23).
 
 ## Algorithm (pure, `pkg/slots`, `now` passed in)
 1. **Clip** the window to `[max(from, now), min(to, now + 60 days)]` (`BOOKING_HORIZON_DAYS`).

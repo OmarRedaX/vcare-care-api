@@ -21,9 +21,12 @@ function lockedDb(acquired: boolean): { db: Knex; unlocked: jest.Mock; released:
     return { db: { client, raw } as unknown as Knex, unlocked, released };
 }
 
-function setup(options: { acquired?: boolean; list?: IndexDoctor[]; truncated?: boolean } = {}) {
+function setup(options: { acquired?: boolean; list?: IndexDoctor[]; truncated?: boolean; recheck?: IndexDoctor[] } = {}) {
     const { db, unlocked, released } = lockedDb(options.acquired ?? true);
-    const reader = { listBookableForIndex: jest.fn().mockResolvedValue({ items: options.list ?? doctors(3), truncated: options.truncated ?? false }) };
+    // The full list answers the argument-less call; the re-check of stale ids (`listBookableForIndex(ids)`) answers with `recheck` (default none).
+    const reader = { listBookableForIndex: jest.fn((ids?: number[]) => Promise.resolve(ids === undefined
+        ? { items: options.list ?? doctors(3), truncated: options.truncated ?? false }
+        : { items: (options.recheck ?? []).filter((doctor) => ids.includes(doctor.userId)), truncated: false })) };
     const computer = { refresh: jest.fn().mockResolvedValue({ entries: [], removed: [], stored: 0, failed: [] }) };
     const index = {
         isUsable: jest.fn(() => true), members: jest.fn().mockResolvedValue([1001, 1002, 1003]), remove: jest.fn().mockResolvedValue(true),
@@ -56,13 +59,31 @@ describe("AvailabilitySweepService.tick (AV-R23)", () => {
         s.index.members.mockResolvedValue([1001, 1002, 9999, 8888]);
         expect(await s.service.tick(signal())).toBe("done");
         expect(s.index.remove).toHaveBeenCalledWith([9999, 8888]);
+        expect(s.reader.listBookableForIndex).toHaveBeenLastCalledWith([9999, 8888]);
         expect(s.index.remove.mock.invocationCallOrder[0]).toBeLessThan(s.index.markSwept.mock.invocationCallOrder[0] ?? 0);
     });
 
-    it("should not call remove when every member is still bookable", async () => {
+    it("should not call remove nor re-check when every member is still bookable", async () => {
         const s = setup({ list: doctors(3) });
         await s.service.tick(signal());
         expect(s.index.remove).not.toHaveBeenCalled();
+        expect(s.reader.listBookableForIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("should keep a member that became bookable during the pass and remove only those the re-check still finds not bookable", async () => {
+        const s = setup({ list: doctors(2), recheck: [{ profileId: 77, userId: 9999, timezone: "UTC" }] });
+        s.index.members.mockResolvedValue([1001, 1002, 9999, 8888]);
+        expect(await s.service.tick(signal())).toBe("done");
+        expect(s.index.remove).toHaveBeenCalledTimes(1);
+        expect(s.index.remove).toHaveBeenCalledWith([8888]);
+    });
+
+    it("should skip the removal entirely when the re-check finds every candidate bookable again", async () => {
+        const s = setup({ list: doctors(1), recheck: [{ profileId: 77, userId: 9999, timezone: "UTC" }] });
+        s.index.members.mockResolvedValue([1001, 9999]);
+        expect(await s.service.tick(signal())).toBe("done");
+        expect(s.index.remove).not.toHaveBeenCalled();
+        expect(s.index.markSwept).toHaveBeenCalledTimes(1);
     });
 
     it("should report incomplete without touching Redis or Postgres reads when the lock is held elsewhere", async () => {

@@ -1,10 +1,9 @@
 import "reflect-metadata";
-import { settleWithin } from "./lib/async/settle-within";
 import { getEnv } from "./lib/config/env";
 import { createKnex } from "./lib/knex/knex";
 import { runMain } from "./lib/lifecycle/run-main";
 import { logger } from "./lib/logger/logger";
-import { closeRedis, createRedis } from "./lib/redis/redis";
+import { closeRedis, connectWithin, createRedis } from "./lib/redis/redis";
 import { IdentityClient } from "./lib/identity-client/identity-client";
 import { S3Adapter } from "./lib/storage/s3.adapter";
 import { LoopRunner } from "./lib/worker/loop-runner";
@@ -15,8 +14,11 @@ import { buildWorkerLoops } from "./worker-loops";
 const WORKER_POOL_MAX = 6;
 const WORKER_STATEMENT_TIMEOUT_MS = 5_000;
 const ONCE_DRAIN_TIMEOUT_MS = 5_000;
-/** `--once`: how long to wait for the worker Redis connection before the tick runs (a tick that needs Redis reports "incomplete" without it). */
-const ONCE_REDIS_CONNECT_TIMEOUT_MS = 3_000;
+/**
+ * How long to wait for the worker Redis connection before the first tick runs: `--once` (a tick that needs Redis reports "incomplete" without it)
+ * and the daemon (so the boot-time availability sweep finds a ready client). The loops start anyway when Redis is down.
+ */
+const REDIS_CONNECT_TIMEOUT_MS = 3_000;
 
 /**
  * `node dist/worker.js --once <loop>` (runbook): exactly one tick of the named loop with a fresh AbortController, then
@@ -71,12 +73,10 @@ function main(): void | Promise<void> {
     const onceAt = process.argv.indexOf("--once");
     if (onceAt !== -1) {
         // Bounded wait: `--once` must not hang when Redis is down; Redis-dependent ticks then report "incomplete" (exit 1).
-        const connected = settleWithin(redis.connect().catch(() => undefined), ONCE_REDIS_CONNECT_TIMEOUT_MS, undefined);
-        return runOnce(process.argv[onceAt + 1], loops, connected, closeAll);
+        return runOnce(process.argv[onceAt + 1], loops, connectWithin(redis, REDIS_CONNECT_TIMEOUT_MS), closeAll);
     }
-    redis.connect().catch(() => {
-        logger.warn("redis_unavailable");
-    });
+    // Bounded wait before the first tick (below): the boot-time sweep (AV-R23) must not race the Redis handshake.
+    const connected = connectWithin(redis, REDIS_CONNECT_TIMEOUT_MS, () => logger.warn("redis_unavailable"));
 
     const runner = new LoopRunner(loops, { logger });
 
@@ -122,8 +122,13 @@ function main(): void | Promise<void> {
 
     // Handlers are registered before `worker_started` is logged: a supervisor (or a test) that signals on seeing the
     // line must never hit the default SIGTERM action.
-    runner.start();
-    logger.info("worker_started", { loops: loops.map((loop) => loop.name) });
+    return connected.then(() => {
+        if (stopping) {
+            return;
+        }
+        runner.start();
+        logger.info("worker_started", { loops: loops.map((loop) => loop.name) });
+    });
 }
 
 runMain(main);

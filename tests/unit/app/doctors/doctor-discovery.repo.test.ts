@@ -27,11 +27,11 @@ describe("candidate statements", () => {
         expect(sql).not.toContain("*");
     });
 
-    it("should cap the candidate read at 10 001 rows and not order it", () => {
+    it("should cap the candidate read at 10 001 rows in a deterministic (fee, id) order", () => {
         const { sql, bindings } = sqlOf(listCandidatesQuery({}, dry));
         expect(sql).toContain("limit ?");
         expect(bindings.at(-1)).toBe(10_001);
-        expect(sql).not.toContain("order by");
+        expect(sql).toContain('order by "dp"."consultation_fee" asc, "dp"."id" asc limit ?');
     });
 
     it("should bind every filter as a parameter, never interpolate it", () => {
@@ -54,7 +54,7 @@ describe("candidate statements", () => {
     it("should map rows to candidates and flag truncation only above the hard cap", async () => {
         const rows = Array.from({ length: 10_001 }, (_, position) => ({ id: position + 1, user_id: position + 1001, consultation_fee: 100, years_experience: 3 }));
         const stub = (data: unknown[]) => {
-            const builder = { select: () => builder, whereRaw: () => builder, limit: () => builder, then: (resolve: (value: unknown[]) => void) => resolve(data) };
+            const builder = { select: () => builder, whereRaw: () => builder, orderBy: () => builder, limit: () => builder, then: (resolve: (value: unknown[]) => void) => resolve(data) };
             return (() => builder) as never;
         };
         expect((await listCandidates({}, stub(rows))).truncated).toBe(true);

@@ -158,7 +158,7 @@ describe("availability slots cache and invalidation (real Postgres and Redis)", 
         expect(await expectMiss(loader)).toContain(start);
     });
 
-    it("should invalidate and restore the completed interval when a doctor completes", async () => {
+    it("should invalidate yet keep the interval busy when a doctor completes early", async () => {
         const first = await slots();
         const start = first.body.data[0].startsAt as string;
         const id = await book(start);
@@ -172,7 +172,8 @@ describe("availability slots cache and invalidation (real Postgres and Redis)", 
         h.clock.release();
         expect(afterStart).toBeGreaterThanOrEqual(before);
         await expectInvalidated(afterStart);
-        expect(await expectMiss(loader)).toContain(start);
+        // `completed` keeps its planned `ends_at` and the exclusion constraint still holds it, so the start is not offered again.
+        expect(await expectMiss(loader)).not.toContain(start);
     });
 
     it("should invalidate and change starts when working hours are replaced", async () => {

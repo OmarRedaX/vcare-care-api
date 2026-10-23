@@ -4,11 +4,13 @@ import { MAX_DURATION_MINUTES } from "../constants";
 import { ConsultationStatus } from "../enums";
 import type { BusyIntervalRow } from "../types";
 
+/** Mirrors `excl_consultations_doctor_no_overlap`: every status except `cancelled` and `no_show` holds the interval (a completed one keeps its planned `ends_at`). */
+export const BUSY_STATUSES = [ConsultationStatus.Booked, ConsultationStatus.Waiting, ConsultationStatus.InProgress, ConsultationStatus.Completed] as const;
 export const BUSY_INTERVAL_COLUMNS = ["doctor_user_id", "starts_at", "ends_at"] as const;
 export function listBusyIntervalsQuery(doctorUserIds: readonly number[], fromMs: number, toMs: number, conn: Knex = db): Knex.QueryBuilder<BusyIntervalRow, BusyIntervalRow[]> {
     return conn<BusyIntervalRow>("consultations").select<BusyIntervalRow[]>(...BUSY_INTERVAL_COLUMNS)
         .whereRaw("doctor_user_id = ANY(?::bigint[])", [[...doctorUserIds]]).whereNull("deleted_at")
-        .whereIn("status", [ConsultationStatus.Booked, ConsultationStatus.Waiting, ConsultationStatus.InProgress])
+        .whereIn("status", [...BUSY_STATUSES])
         .where("starts_at", ">=", new Date(fromMs - MAX_DURATION_MINUTES * 60_000)).where("starts_at", "<", new Date(toMs))
         .where("ends_at", ">", new Date(fromMs)).orderBy("doctor_user_id").orderBy("starts_at");
 }

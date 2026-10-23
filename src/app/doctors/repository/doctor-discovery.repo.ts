@@ -54,9 +54,12 @@ function candidateBase(filters: CandidateFilters, conn: Knex): Knex.QueryBuilder
     return query;
 }
 
-/** Path B: every candidate, unordered, capped at `CANDIDATE_HARD_CAP + 1` rows. Exported so an EXPLAIN test inspects what runs. */
+/**
+ * Path B: every candidate in `(fee, id)` order, capped at `CANDIDATE_HARD_CAP + 1` rows, so the rows kept beyond the cap are the same on every
+ * request (a cursor never skips or repeats a doctor). Exported so an EXPLAIN test inspects what runs.
+ */
 export function listCandidatesQuery(filters: CandidateFilters, conn: Knex = db): Knex.QueryBuilder<CandidateRow, CandidateRow[]> {
-    return candidateBase(filters, conn).limit(CANDIDATE_HARD_CAP + 1);
+    return candidateBase(filters, conn).orderBy("dp.consultation_fee", "asc").orderBy("dp.id", "asc").limit(CANDIDATE_HARD_CAP + 1);
 }
 
 /** Path A: one keyset page in price order `(fee, id)` or experience order `(years DESC, id DESC)`. */

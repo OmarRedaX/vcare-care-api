@@ -45,12 +45,19 @@ export class AvailabilitySweepService {
         const members = await this.index.members();
         if (members === undefined) return "incomplete";
         const bookable = new Set(listed.items.map((doctor) => doctor.userId));
-        const stale = members.filter((member) => !bookable.has(member));
+        const candidates = members.filter((member) => !bookable.has(member));
+        // The list above is minutes old on a big pass: a doctor who became bookable (and was freshly written) meanwhile must not be removed.
+        const stale = candidates.length === 0 ? candidates : await this.withoutBookable(candidates);
         if (stale.length > 0 && !(await this.index.remove(stale))) return "incomplete";
         if (!(await this.index.markSwept(this.clock.now()))) return "incomplete";
         const durationMs = this.clock.now() - startedAt;
         this.logger.metric(METRIC_SWEEP_DURATION_MS, durationMs);
         this.logger.info(LOG_SWEEP_DONE, { doctors: listed.items.length, batches, durationMs });
         return "done";
+    }
+
+    private async withoutBookable(userIds: readonly number[]): Promise<number[]> {
+        const still = new Set((await this.reader.listBookableForIndex(userIds)).items.map((doctor) => doctor.userId));
+        return userIds.filter((userId) => !still.has(userId));
     }
 }

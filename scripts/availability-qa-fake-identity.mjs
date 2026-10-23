@@ -6,6 +6,7 @@
 import process from 'node:process';
 import { URL } from 'node:url';
 import http from 'node:http';
+import { setTimeout } from 'node:timers';
 import { randomUUID } from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 

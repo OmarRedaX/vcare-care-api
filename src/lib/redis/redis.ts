@@ -97,6 +97,21 @@ export async function withRedis<T>(client: Redis, command: () => Promise<T>): Pr
     }
 }
 
+/**
+ * Dials a `lazyConnect` client and waits at most `timeoutMs` for the handshake, so the first command already finds a ready client. Never
+ * rejects: a failed attempt calls `onFailure` once, a slow one is left to finish (or retry) in the background.
+ */
+export async function connectWithin(client: Redis, timeoutMs: number, onFailure?: () => void): Promise<void> {
+    await settleWithin(
+        client.connect().then(
+            () => undefined,
+            () => { onFailure?.(); },
+        ),
+        timeoutMs,
+        undefined,
+    );
+}
+
 /** Graceful `QUIT`, falling back to a hard disconnect when the connection is already gone. */
 export async function closeRedis(client: Redis = redis): Promise<void> {
     try {
