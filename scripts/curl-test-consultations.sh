@@ -260,7 +260,11 @@ v400 unknown-member-patientUserId "$(bj ',"patientUserId":999')" 'b.error.detail
 v400 unknown-member-price "$(bj ',"price":1')"
 v400 unknown-member-endsAt "$(bj ',"endsAt":"2030-01-01T00:00:00Z"')"
 v400 unknown-member-durationMinutes "$(bj ',"durationMinutes":5')"
-v400 followUpOfRecordId-not-supported "$(bj ',"followUpOfRecordId":5')" 'b.error.details.some(d=>d.field==="followUpOfRecordId")'
+# followUpOfRecordId is supported: a record that does not exist for this patient and doctor is 404 (missing and foreign are indistinguishable); a malformed id is 400.
+expect POST /api/consultations patient "$(vtok)" followUpOfRecordId-unknown-record '404 NotFound' '' "$(bj ',"followUpOfRecordId":99999999')" "$(uuid)"
+v400 followUpOfRecordId-string "$(bj ',"followUpOfRecordId":"5"')" 'b.error.details.some(d=>d.field==="followUpOfRecordId")'
+v400 followUpOfRecordId-zero "$(bj ',"followUpOfRecordId":0')" 'b.error.details.some(d=>d.field==="followUpOfRecordId")'
+v400 followUpOfRecordId-fraction "$(bj ',"followUpOfRecordId":1.5')" 'b.error.details.some(d=>d.field==="followUpOfRecordId")'
 v400 doctorId-string '{"doctorId":"601","typeId":1,"startsAt":"'"$OKS"'","complaintText":"synthetic","patientTimezone":"Africa/Cairo"}'
 v400 doctorId-zero '{"doctorId":0,"typeId":1,"startsAt":"'"$OKS"'","complaintText":"synthetic","patientTimezone":"Africa/Cairo"}'
 v400 doctorId-negative '{"doctorId":-3,"typeId":1,"startsAt":"'"$OKS"'","complaintText":"synthetic","patientTimezone":"Africa/Cairo"}'
@@ -618,7 +622,7 @@ check_value headers 'helmet header present on consultations responses' 1 "$(echo
 
 # ---- 13. Database guarantees ----
 check_value grants 'vcare_app on consultations: select,insert,update yes, delete no' 'true true true false' "$(sql "SELECT has_table_privilege('vcare_app','consultations','SELECT')::text||' '||has_table_privilege('vcare_app','consultations','INSERT')::text||' '||has_table_privilege('vcare_app','consultations','UPDATE')::text||' '||has_table_privilege('vcare_app','consultations','DELETE')::text")"
-check_value grants 'vcare_app on notification_outbox: select,insert yes, update,delete no' 'true true false false' "$(sql "SELECT has_table_privilege('vcare_app','notification_outbox','SELECT')::text||' '||has_table_privilege('vcare_app','notification_outbox','INSERT')::text||' '||has_table_privilege('vcare_app','notification_outbox','UPDATE')::text||' '||has_table_privilege('vcare_app','notification_outbox','DELETE')::text")"
+check_value grants 'vcare_app on notification_outbox: select,insert,delete yes (delete is limited to sent rows by trg_notification_outbox_delete_sent_only), update no' 'true true false true' "$(sql "SELECT has_table_privilege('vcare_app','notification_outbox','SELECT')::text||' '||has_table_privilege('vcare_app','notification_outbox','INSERT')::text||' '||has_table_privilege('vcare_app','notification_outbox','UPDATE')::text||' '||has_table_privilege('vcare_app','notification_outbox','DELETE')::text")"
 OVL="$(psql "$CARE_OWNER_DATABASE_URL" -XAt -c "INSERT INTO consultations (doctor_user_id,patient_user_id,consultation_type_id,starts_at,ends_at,status,complaint_text,patient_timezone,price,currency,idempotency_key,request_hash) SELECT doctor_user_id,599,consultation_type_id,starts_at+interval '10 minutes',ends_at+interval '10 minutes','booked','x','UTC',1,'EGP',gen_random_uuid(),repeat('0',64) FROM consultations WHERE id=$C1" 2>&1 | tr -d '\r' || true)"
 check_value db 'direct overlapping INSERT rejected by excl_consultations_doctor_no_overlap (23P01)' 1 "$(echo "$OVL" | grep -c 'excl_consultations_doctor_no_overlap' || true)"
 check_value db 'no live overlapping pair exists in fixtures' 0 "$(sql "SELECT count(*) FROM consultations a JOIN consultations b ON a.doctor_user_id=b.doctor_user_id AND a.id<b.id AND tstzrange(a.starts_at,a.ends_at,'[)') && tstzrange(b.starts_at,b.ends_at,'[)') WHERE a.status NOT IN ('cancelled','no_show') AND b.status NOT IN ('cancelled','no_show') AND a.deleted_at IS NULL AND b.deleted_at IS NULL AND a.doctor_user_id BETWEEN 600 AND 699")"
