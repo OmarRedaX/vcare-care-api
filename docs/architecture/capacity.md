@@ -115,6 +115,10 @@ partition > 10 GB · consultations > 20 k/day · replica lag p95 > 30 s · booka
 The name-index refresh ([ADR 0025](../adr/0025-derived-name-index.md)) hydrates ≈ 2.5 k doctors every 300 s through the
 `identity:user:*` read-through cache: ≈ 25 batched calls per refresh, ≈ 7.2 k calls/day reaching Identity (≈ +7 % on the
 hub's Case 2 figure). The hub cross-service load row quotes this value and links back here.
+Known limitation (slice 3 review, 2026-10-23): one name query uses at most 5,000 index matches (`NAME_MATCH_LIMIT`, alphabetical); a longer
+match list is cut and logged count-only as `availability_name_index_truncated`, without `meta.degraded`. It cannot happen at 2.5 k doctors and is
+reachable only above the 6 k bookable-doctors trigger in section 8, so lifting the limit belongs to that revisit. Rebuild cadence is bounded at boot:
+`AVAILABILITY_NAME_REFRESH_SECONDS` + `AVAILABILITY_SWEEP_INTERVAL_SECONDS` + 60 s must stay below the 900 s index TTL.
 
 ## 10. As-built check (availability slice 2, 2026-10-23)
 Measured on a development machine with real Postgres and Redis, 2,500 bookable doctors among 20,000 profiles (the derivation inputs above are unchanged; these are checks, not new inputs):

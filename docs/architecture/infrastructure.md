@@ -64,7 +64,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `ALLOWED_CURRENCIES` | `EGP` | | comma-separated uppercase currency allowlist for doctor consultation fees; empty entries and malformed codes are rejected |
 | `SLOT_CACHE_TTL_SECONDS` | `60` | | 1–60 (integer); TTL of a cached `slots:` list; `availability` slice 1 (built 2026-10-21). Values above 60 fail boot (derived data never outlives one minute, [availability.md](./availability.md)) |
 | `AVAILABILITY_SWEEP_INTERVAL_SECONDS` | `120` | | positive integer seconds; interval of the `availability-sweep` loop (full rank-index recomputation, singleton by advisory lock); `availability` slice 2 (built 2026-10-23) |
-| `AVAILABILITY_NAME_REFRESH_SECONDS` | `300` | | positive integer seconds; how often the sweep rebuilds `name-index`. Declared in slice 2, **read from slice 3** (name index, not built) |
+| `AVAILABILITY_NAME_REFRESH_SECONDS` | `300` | | positive integer seconds; how often the sweep rebuilds `name-index` (read since slice 3). Boot check: this + `AVAILABILITY_SWEEP_INTERVAL_SECONDS` + 60 must stay below the 900 s name-index TTL, else the process refuses to start |
 | `AVAILABILITY_INLINE_MISS_CAP` | `20` | | 0–100; most doctors a single search request computes inline on a rank-index miss (the rest rank last with `nextAvailableAt: null`); `0` disables inline computation |
 
 Discovery rate limits (60/min per IP, 120/min per user, per route) are module constants in `availability/constants.ts`, not env; the earlier planned `NEXT_AVAILABLE_CACHE_TTL_SECONDS` and `RATE_LIMIT_SEARCH_*` variables were dropped (the rank index has no TTL, ADR 0024).

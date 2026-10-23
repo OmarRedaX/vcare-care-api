@@ -9,14 +9,15 @@ const NUL = String.fromCharCode(0);
 function setup() {
     const calls: unknown[][] = [];
     const record = (name: string) => jest.fn((...args: unknown[]) => { calls.push([name, ...args]); return chain; });
-    const chain: Record<"exists" | "zrangebylex" | "rename" | "expire" | "set" | "del" | "exec", jest.Mock> = {
-        exists: record("exists"), zrangebylex: record("zrangebylex"), rename: record("rename"), expire: record("expire"), set: record("set"), del: record("del"),
+    const chain: Record<"exists" | "zrangebylex" | "zadd" | "expire" | "set" | "del" | "exec", jest.Mock> = {
+        exists: record("exists"), zrangebylex: record("zrangebylex"), zadd: record("zadd"), expire: record("expire"), set: record("set"), del: record("del"),
         exec: jest.fn().mockResolvedValue([]),
     };
     const client = {
         status: "ready",
         multi: jest.fn(() => chain),
-        del: jest.fn().mockResolvedValue(1), zadd: jest.fn().mockResolvedValue(1), expire: jest.fn().mockResolvedValue(1), get: jest.fn(),
+        del: jest.fn().mockResolvedValue(1), expire: jest.fn().mockResolvedValue(1), rename: jest.fn().mockResolvedValue("OK"),
+        set: jest.fn().mockResolvedValue("OK"), get: jest.fn(),
     };
     const warn = jest.fn();
     const index = new NextAvailableIndex(client as unknown as Redis, { warn } as unknown as Logger, { SLOT_CACHE_TTL_SECONDS: 60 } as Env);
@@ -29,7 +30,26 @@ describe("NextAvailableIndex.readNameMatches", () => {
         chain.exec.mockResolvedValue([[null, 1], [null, [`ann${NUL}7`, `anna${NUL}12`, `ann${NUL}x${NUL}13`]]]);
         expect(await index.readNameMatches("ann")).toEqual([7, 12, 13]);
         expect(calls).toContainEqual(["exists", "name-index"]);
-        expect(calls).toContainEqual(["zrangebylex", "name-index", "[ann", "[ann\u{10FFFF}", "LIMIT", 0, 5000]);
+        expect(calls).toContainEqual(["zrangebylex", "name-index", "[ann", "[ann\u{10FFFF}", "LIMIT", 0, 5001]);
+    });
+
+    it("should return every match and not warn when the reply holds exactly the limit", async () => {
+        const { chain, index, warn } = setup();
+        chain.exec.mockResolvedValue([[null, 1], [null, Array.from({ length: 5000 }, (_, position) => `ann${NUL}${position + 1}`)]]);
+        const ids = await index.readNameMatches("ann");
+        expect(ids).toHaveLength(5000);
+        expect(ids?.[4999]).toBe(5000);
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("should use only the first 5000 and log a count-only warning when the reply reaches the limit plus one", async () => {
+        const { chain, index, warn } = setup();
+        chain.exec.mockResolvedValue([[null, 1], [null, Array.from({ length: 5001 }, (_, position) => `ann${NUL}${position + 1}`)]]);
+        const ids = await index.readNameMatches("ann");
+        expect(ids).toHaveLength(5000);
+        expect(ids).not.toContain(5001);
+        expect(warn).toHaveBeenCalledWith("availability_name_index_truncated", { limit: 5000 });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain("ann");
     });
 
     it("should return an empty list, not undefined, when the index exists and nothing matches", async () => {
@@ -68,32 +88,34 @@ describe("NextAvailableIndex.readNameMatches", () => {
 });
 
 describe("NextAvailableIndex.replaceNameIndex", () => {
-    it("should build in the side key in chunks of 500 with score 0, give it a TTL, then swap with RENAME, EXPIRE 900 and the stamp in one MULTI", async () => {
+    it("should build in the side key in chunks of 500 with score 0 and a TTL on every chunk, then EXPIRE 900, RENAME and stamp in that order", async () => {
         const { client, chain, calls, index } = setup();
-        chain.exec.mockResolvedValue([[null, "OK"], [null, 1], [null, "OK"]]);
+        chain.exec.mockResolvedValue([[null, 1], [null, 1]]);
         const members = Array.from({ length: 1200 }, (_, position) => `name${position}${NUL}${position + 1}`);
         expect(await index.replaceNameIndex(members, 1_800_000_000_000)).toBe(true);
         expect(client.del).toHaveBeenCalledWith("name-index:building");
-        expect(client.zadd).toHaveBeenCalledTimes(3);
-        const firstChunk = client.zadd.mock.calls[0] as unknown[];
-        expect(firstChunk.slice(0, 3)).toEqual(["name-index:building", 0, `name0${NUL}1`]);
-        expect(firstChunk).toHaveLength(1 + 500 * 2);
-        expect((client.zadd.mock.calls[2] as unknown[])).toHaveLength(1 + 200 * 2);
-        expect(client.expire).toHaveBeenCalledWith("name-index:building", 600);
-        expect(client.zadd.mock.invocationCallOrder[2]).toBeLessThan(client.expire.mock.invocationCallOrder[0] ?? 0);
-        expect(client.multi).toHaveBeenCalledTimes(1);
-        expect(calls).toEqual([
-            ["rename", "name-index:building", "name-index"],
-            ["expire", "name-index", 900],
-            ["set", "name-index:built-at", "1800000000000", "EX", 900],
-        ]);
+        const adds = calls.filter((call) => call[0] === "zadd");
+        expect(adds).toHaveLength(3);
+        expect((adds[0] as unknown[]).slice(0, 4)).toEqual(["zadd", "name-index:building", 0, `name0${NUL}1`]);
+        expect(adds[0]).toHaveLength(2 + 500 * 2);
+        expect(adds[2]).toHaveLength(2 + 200 * 2);
+        expect(calls.filter((call) => call[0] === "expire")).toEqual(Array(3).fill(["expire", "name-index:building", 600]));
+        expect(client.multi).toHaveBeenCalledTimes(3);
+        expect(client.expire).toHaveBeenCalledWith("name-index:building", 900);
+        expect(client.rename).toHaveBeenCalledWith("name-index:building", "name-index");
+        expect(client.set).toHaveBeenCalledWith("name-index:built-at", "1800000000000", "EX", 900);
+        const lastChunkOrder = chain.exec.mock.invocationCallOrder[2] ?? 0;
+        expect(lastChunkOrder).toBeLessThan(client.expire.mock.invocationCallOrder[0] ?? 0);
+        expect(client.expire.mock.invocationCallOrder[0]).toBeLessThan(client.rename.mock.invocationCallOrder[0] ?? 0);
+        expect(client.rename.mock.invocationCallOrder[0]).toBeLessThan(client.set.mock.invocationCallOrder[0] ?? 0);
     });
 
     it("should delete the index and stamp the build when the member list is empty", async () => {
         const { client, calls, chain, index } = setup();
         chain.exec.mockResolvedValue([[null, 1], [null, 1], [null, "OK"]]);
         expect(await index.replaceNameIndex([], 5)).toBe(true);
-        expect(client.zadd).not.toHaveBeenCalled();
+        expect(chain.zadd).not.toHaveBeenCalled();
+        expect(client.rename).not.toHaveBeenCalled();
         expect(calls).toEqual([
             ["del", "name-index:building"],
             ["del", "name-index"],
@@ -101,18 +123,54 @@ describe("NextAvailableIndex.replaceNameIndex", () => {
         ]);
     });
 
-    it("should return false without throwing when Redis is unusable, a write fails or the swap reports an error", async () => {
+    it("should return false without throwing when Redis is unusable", async () => {
         const unusable = setup();
         unusable.client.status = "wait";
         expect(await unusable.index.replaceNameIndex([`a${NUL}1`], 1)).toBe(false);
-        const failing = setup();
-        failing.client.zadd.mockRejectedValue(new Error("boom"));
-        expect(await failing.index.replaceNameIndex([`a${NUL}1`], 1)).toBe(false);
-        expect(failing.chain.exec).not.toHaveBeenCalled();
-        const swapError = setup();
-        swapError.chain.exec.mockResolvedValue([[new Error("ERR no such key"), null], [null, 0], [null, "OK"]]);
-        expect(await swapError.index.replaceNameIndex([`a${NUL}1`], 1)).toBe(false);
-        expect(swapError.warn).toHaveBeenCalledWith("availability_cache_unavailable");
+        expect(unusable.client.multi).not.toHaveBeenCalled();
+    });
+
+    it("should leave no building key without a TTL when a middle ZADD chunk fails", async () => {
+        const { client, chain, calls, index, warn } = setup();
+        chain.exec.mockResolvedValueOnce([[null, 1], [null, 1]]).mockRejectedValueOnce(new Error("boom"));
+        const members = Array.from({ length: 1200 }, (_, position) => `name${position}${NUL}${position + 1}`);
+        expect(await index.replaceNameIndex(members, 1)).toBe(false);
+        expect(calls.filter((call) => call[0] === "zadd")).toHaveLength(2);
+        expect(calls.filter((call) => call[0] === "expire")).toEqual(Array(2).fill(["expire", "name-index:building", 600]));
+        expect(client.del).toHaveBeenCalledTimes(2);
+        expect(client.del).toHaveBeenLastCalledWith("name-index:building");
+        expect(client.rename).not.toHaveBeenCalled();
+        expect(client.set).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith("availability_cache_unavailable");
+    });
+
+    it("should delete the building key and report false when a chunk replies with a command error", async () => {
+        const { client, chain, index } = setup();
+        chain.exec.mockResolvedValue([[new Error("OOM"), null], [null, 0]]);
+        expect(await index.replaceNameIndex([`a${NUL}1`], 1)).toBe(false);
+        expect(client.del).toHaveBeenLastCalledWith("name-index:building");
+        expect(client.rename).not.toHaveBeenCalled();
+        expect(client.set).not.toHaveBeenCalled();
+    });
+
+    it("should touch neither the live index TTL nor the stamp and return false when RENAME fails", async () => {
+        const { client, chain, calls, index } = setup();
+        chain.exec.mockResolvedValue([[null, 1], [null, 1]]);
+        client.rename.mockRejectedValue(new Error("ERR no such key"));
+        expect(await index.replaceNameIndex([`a${NUL}1`], 1)).toBe(false);
+        expect(client.set).not.toHaveBeenCalled();
+        expect(client.expire.mock.calls).toEqual([["name-index:building", 900]]);
+        expect(calls.some((call) => call[0] === "expire" && call[1] === "name-index")).toBe(false);
+        expect(client.del).toHaveBeenLastCalledWith("name-index:building");
+    });
+
+    it("should return false without renaming or stamping when the building key vanished before the swap", async () => {
+        const { client, chain, index } = setup();
+        chain.exec.mockResolvedValue([[null, 1], [null, 1]]);
+        client.expire.mockResolvedValue(0);
+        expect(await index.replaceNameIndex([`a${NUL}1`], 1)).toBe(false);
+        expect(client.rename).not.toHaveBeenCalled();
+        expect(client.set).not.toHaveBeenCalled();
     });
 });
 
