@@ -3,7 +3,8 @@ import type { Knex } from "knex";
 import * as repo from "../../../../src/app/admin-doctors/repository/admin-doctors.repo";
 import { AdminDoctorsService } from "../../../../src/app/admin-doctors/service/admin-doctors.service";
 import { DoctorProfile } from "../../../../src/app/doctors/entity/doctor-profile.entity";
-import { IdentitySyncStatus, VerificationStatus } from "../../../../src/app/doctors/enums";
+import { DoctorChangeKind, IdentitySyncStatus, VerificationStatus } from "../../../../src/app/doctors/enums";
+import type { DoctorsService } from "../../../../src/app/doctors/service/doctors.service";
 import type { IdentitySyncService } from "../../../../src/app/identity-sync/service/identity-sync.service";
 import type { AuditRecorder } from "../../../../src/lib/audit/audit";
 import { logger } from "../../../../src/lib/logger/logger";
@@ -28,7 +29,9 @@ describe("AdminDoctorsService", () => {
     const audit = { record: jest.fn((_trx: unknown, entry: { action: string }) => { order.push(`audit:${entry.action}`); return Promise.resolve(); }) };
     const identitySync = { supersedeOpen: jest.fn(), enqueue: jest.fn(), syncNow: jest.fn(), findLatestJob: jest.fn() };
     const impact = { flagFutureConsultations: jest.fn(), listFlaggedConsultations: jest.fn() };
-    const service = new AdminDoctorsService(db as unknown as Knex, audit as unknown as AuditRecorder, identitySync as unknown as IdentitySyncService, impact, clock);
+    const doctors = { notifyDoctorChanged: jest.fn(() => { order.push(`doctorChanged:settled=${String(transactionSettled)}`); return Promise.resolve(); }) };
+    const service = new AdminDoctorsService(db as unknown as Knex, audit as unknown as AuditRecorder, identitySync as unknown as IdentitySyncService, impact, clock,
+        doctors as unknown as DoctorsService);
     let lock: jest.SpiedFunction<typeof repo.lockProfileByUserId>;
     let apply: jest.SpiedFunction<typeof repo.applySuspension>;
     let clear: jest.SpiedFunction<typeof repo.clearSuspension>;
@@ -55,6 +58,23 @@ describe("AdminDoctorsService", () => {
         jest.spyOn(logger, "metric").mockImplementation(() => undefined);
     });
 
+    it("should notify availability after the suspension commit and never for a no-op", async () => {
+        await service.suspend(admin, 202, REASON);
+        expect(doctors.notifyDoctorChanged).toHaveBeenCalledWith(DoctorChangeKind.Suspended, 202);
+        expect(order).toContain("doctorChanged:settled=true");
+        doctors.notifyDoctorChanged.mockClear();
+        lock.mockResolvedValueOnce(profile({ suspendedAt: SUSPENDED_AT }));
+        await service.suspend(admin, 202, REASON);
+        expect(doctors.notifyDoctorChanged).not.toHaveBeenCalled();
+    });
+
+    it("should notify availability after reinstatement commits", async () => {
+        lock.mockResolvedValueOnce(profile({ suspendedAt: SUSPENDED_AT }));
+        await service.reinstate(admin, 202, REASON);
+        expect(doctors.notifyDoctorChanged).toHaveBeenCalledWith(DoctorChangeKind.Reinstated, 202);
+        expect(order).toContain("doctorChanged:settled=true");
+    });
+
     describe("suspend", () => {
         it("should throw NotFound when no live profile has that Identity user id", async () => {
             lock.mockResolvedValueOnce(undefined);
@@ -78,7 +98,7 @@ describe("AdminDoctorsService", () => {
         it("should run lock, supersede, apply, flag, enqueue and audit in one transaction, then sync after it committed", async () => {
             const outcome = await service.suspend(admin, 202, REASON);
             expect(db.transaction).toHaveBeenCalledTimes(1);
-            expect(order).toEqual(["begin", "lock", "supersede", "apply", "flag", "enqueue", "audit:doctor.suspended", "commit", "syncNow:settled=true"]);
+            expect(order).toEqual(["begin", "lock", "supersede", "apply", "flag", "enqueue", "audit:doctor.suspended", "commit", "doctorChanged:settled=true", "syncNow:settled=true"]);
             expect(outcome.confirmed).toBe(true);
         });
 
@@ -214,7 +234,7 @@ describe("AdminDoctorsService", () => {
         it("should run lock, supersede, clear, enqueue and audit in one transaction, then sync after it committed", async () => {
             lock.mockImplementationOnce(() => { order.push("lock"); return Promise.resolve(suspended()); });
             await service.reinstate(admin, 202, REASON);
-            expect(order).toEqual(["begin", "lock", "supersede", "clear", "enqueue", "audit:doctor.reinstated", "commit", "syncNow:settled=true"]);
+            expect(order).toEqual(["begin", "lock", "supersede", "clear", "enqueue", "audit:doctor.reinstated", "commit", "doctorChanged:settled=true", "syncNow:settled=true"]);
         });
 
         it("should enqueue a reinstatement job targeting active and never call the flag port", async () => {

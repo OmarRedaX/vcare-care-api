@@ -3,6 +3,8 @@ import { inject, injectable } from "tsyringe";
 import { actorFromAuth, AuditRecorder } from "../../../lib/audit/audit";
 import type { Env } from "../../../lib/config/types";
 import { TOKENS } from "../../../lib/di/tokens";
+import { logger } from "../../../lib/logger/logger";
+import { currentRequestId } from "../../../lib/logger/request-context";
 import { NotFound } from "../../../lib/error/errors";
 import { uniqueViolationConstraint } from "../../../lib/knex/pg-errors";
 import type { AuthContext } from "../../../lib/types/types";
@@ -10,13 +12,13 @@ import { canonicalIanaTimezone } from "../../../lib/validation/timezone-decorato
 import type { Specialty } from "../../specialties/entity/specialties.entity";
 import { SpecialtiesService } from "../../specialties/service/specialties.service";
 import { DOCTOR_PROFILE_ENTITY_TYPE, DOCTOR_PROFILE_UNIQUE_USER } from "../constants";
-import { DoctorAuditAction, DoctorProfileField, IdentitySyncStatus, VerificationStatus } from "../enums";
+import { DoctorAuditAction, DoctorChangeKind, DoctorProfileField, IdentitySyncStatus, VerificationStatus } from "../enums";
 import { ApplicationNotEditable, CurrencyNotAllowed, PrimarySpecialtyNotLinked, PrimarySpecialtyRequired, UnknownSpecialty } from "../errors";
 import { Conflict } from "../../../lib/error/errors";
 import { deleteLanguagesNotIn, insertLanguages, listLanguages } from "../repository/doctor-languages.repo";
 import { findProfileByUserId, findProfileByUserIdForShare, findProfileByUserIdForUpdate, insertProfile, isUserLocallySuspended, updateProfile } from "../repository/doctor-profiles.repo";
 import { clearPrimaryExcept, deleteLinksNotIn, insertLinks, listSpecialtyLinks, markPrimary } from "../repository/doctor-specialties.repo";
-import type { ApplyResult, BookingDoctor, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, SpecialtyLink, SpecialtyRef } from "../types";
+import type { ApplyResult, BookingDoctor, DoctorChangeListener, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, SpecialtyLink, SpecialtyRef } from "../types";
 import type { DoctorProfile } from "../entity/doctor-profile.entity";
 import { SchedulesService } from "../../schedules/service/schedules.service";
 import { VerificationService } from "../../verification/service/verification.service";
@@ -40,6 +42,7 @@ export class DoctorsService {
         @inject(TOKENS.SpecialtiesService) private readonly specialties: SpecialtiesService,
         @inject(TOKENS.VerificationService) private readonly verification: VerificationService,
         @inject(TOKENS.SchedulesService) private readonly schedules: SchedulesService,
+        @inject(TOKENS.DoctorChangeListener) private readonly changeListener: DoctorChangeListener,
     ) {}
 
     async getOwn(actor: AuthContext): Promise<DoctorProfileView> {
@@ -117,7 +120,7 @@ export class DoctorsService {
 
     async update(actor: AuthContext, changes: DoctorProfileChanges): Promise<DoctorProfileView> {
         if (changes.consultationFee !== undefined) this.assertCurrencyAllowed(changes.consultationFee.currency);
-        return this.db.transaction(async (trx) => {
+        const result = await this.db.transaction(async (trx) => {
             const current = await findProfileByUserIdForUpdate(actor.userId, trx);
             if (current === undefined) throw NotFound;
             if (current.verificationStatus === VerificationStatus.Submitted) throw ApplicationNotEditable;
@@ -133,8 +136,19 @@ export class DoctorsService {
                 await this.resolveSpecialties(ids, links.map((link) => link.specialtyId), trx);
                 changes = { ...changes, primarySpecialtyId: primary };
             }
-            return this.applyChanges(actor, current, changes, trx, links);
+            const view = await this.applyChanges(actor, current, changes, trx, links);
+            return { view, timezoneChanged: current.timezone !== view.profile.timezone,
+                acceptingChanged: current.isAcceptingPatients !== view.profile.isAcceptingPatients };
         });
+        if (result.timezoneChanged) await this.notifyDoctorChanged(DoctorChangeKind.TimezoneChanged, actor.userId);
+        if (result.acceptingChanged) await this.notifyDoctorChanged(DoctorChangeKind.AcceptingChanged, actor.userId);
+        return result.view;
+    }
+
+    /** Called only after the owner's transaction has committed. */
+    async notifyDoctorChanged(kind: DoctorChangeKind, doctorUserId: number): Promise<void> {
+        try { await this.changeListener.onDoctorChanged({ kind, doctorUserId }); }
+        catch { logger.error("doctor_change_listener_failed", { requestId: currentRequestId(), kind }); }
     }
 
     private async applyChanges(actor: AuthContext, current: DoctorProfile, changes: DoctorProfileChanges,

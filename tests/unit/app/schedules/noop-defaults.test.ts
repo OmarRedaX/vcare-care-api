@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { container } from "../../../../src/lib/di/container";
 import { TOKENS } from "../../../../src/lib/di/tokens";
 import { NoopScheduleChangeListener } from "../../../../src/app/schedules/service/noop-schedule-change-listener";
+import { AvailabilityChangeListener } from "../../../../src/app/availability/service/availability-change.listener";
 import { NoopScheduleImpactProvider } from "../../../../src/app/schedules/service/noop-schedule-impact.provider";
 import type { ScheduleChangeListener, ScheduleImpactProvider } from "../../../../src/app/schedules/types";
 
@@ -16,11 +17,11 @@ describe("no-op schedule defaults", () => {
         await expect(new NoopScheduleChangeListener().onScheduleChanged()).resolves.toBeUndefined();
     });
 
-    it("should keep the no-op listener in the container while consultations bind the real impact provider", async () => {
+    it("should bind the availability listener while retaining the no-op class for isolated tests", async () => {
         const provider = container.resolve<ScheduleImpactProvider>(TOKENS.ScheduleImpactProvider);
         const listener = container.resolve<ScheduleChangeListener>(TOKENS.ScheduleChangeListener);
         expect(provider).not.toBeInstanceOf(NoopScheduleImpactProvider);
-        expect(listener).toBeInstanceOf(NoopScheduleChangeListener);
+        expect(listener).toBeInstanceOf(AvailabilityChangeListener);
         await expect(listener.onScheduleChanged({ doctorProfileId: 1, doctorUserId: 202, kind: "working_hours" as never })).resolves.toBeUndefined();
     });
 });
