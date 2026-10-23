@@ -27,7 +27,7 @@ import {
     ConsultationTypeLimitReached, ConsultationTypeNameTaken, DateRangeReversed, ExceptionDateTaken, ExceptionInPast, scheduleConflictsUnconfirmed,
     TypeCurrencyMismatch,
 } from "../errors";
-import { countLiveTypes, findTypeById, hasActiveType, insertType, listTypesPage, updateType } from "../repository/consultation-types.repo";
+import { countLiveTypes, findTypeById, hasActiveType, insertType, listActiveTypesForProfiles, listTypesPage, updateType } from "../repository/consultation-types.repo";
 import { findExceptionById, insertExceptions, listExceptionsInRange, listExceptionsPage, softDeleteException } from "../repository/schedule-exceptions.repo";
 import { insertHours, listLiveHours, softDeleteLiveHours } from "../repository/working-hours.repo";
 import { assertExceptionShape, assertValidHours, diffConsultationType, expandExceptionDates, groupHours, normalizeHours, sameHours, toExceptionRules, toWeeklyRules } from "../rules";
@@ -200,6 +200,11 @@ export class SchedulesService {
     /** Domain rule 6 term for `doctors`' `isBookable`; the caller passes its own connection or transaction. */
     hasActiveConsultationType(profileId: number, conn: Knex = this.db): Promise<boolean> {
         return hasActiveType(profileId, conn);
+    }
+
+    /** For discovery page views: the live active types of every given profile in one statement (profiles with none are absent). */
+    listActiveTypesFor(profileIds: readonly number[], conn: Knex = this.db): Promise<Map<number, ConsultationType[]>> {
+        return listActiveTypesForProfiles(profileIds, conn);
     }
 
     /** For booking: a live, active consultation type of the profile; a foreign, deactivated or deleted id is `undefined`. */

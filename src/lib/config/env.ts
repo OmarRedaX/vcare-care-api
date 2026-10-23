@@ -131,6 +131,10 @@ export const envSchema = z
         /** Furthest bookable start, in days from now (Domain rule 3). */
         BOOKING_HORIZON_DAYS: z.coerce.number().int().min(1).max(365).default(60),
         SLOT_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).max(60).default(60),
+        /** Availability worker (ADR 0024): full rank-index sweep cadence, name-index rebuild cadence (used from slice 3), and doctors computed inline per search request when the index misses. */
+        AVAILABILITY_SWEEP_INTERVAL_SECONDS: positiveSeconds.default(120),
+        AVAILABILITY_NAME_REFRESH_SECONDS: positiveSeconds.default(300),
+        AVAILABILITY_INLINE_MISS_CAP: z.coerce.number().int().min(0).max(100).default(20),
         /** A patient may not cancel or reschedule within this many minutes of the start (Domain rule 10). */
         CANCELLATION_POLICY_MINUTES: z.coerce.number().int().min(0).max(10080).default(120),
         /** Session window and no-show grace (Domain rules 11 and 12): minutes before the start the room opens, after the end it stays open, and after the start before a no-show may be marked. */

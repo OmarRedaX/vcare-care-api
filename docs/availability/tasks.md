@@ -1,18 +1,18 @@
 ---
-title: availability — Slice 1 Tasks
+title: availability — Tasks
 owner: care-team
 service: care-service
 module: availability
 status: draft
 diataxis: reference
 last_verified: 2026-10-23
-tags: [availability, slots, tasks, slice-1]
+tags: [availability, slots, search, tasks, slice-1, slice-2]
 related: [availability-spec, availability-brainstorm, availability-architecture, availability-manual-qa, scheduling-slots]
 ---
 
-# Availability — Slice 1 tasks
+# Availability — tasks
 
-Build order tags refer to CLAUDE.md → Build order for a new module. This tracker covers slice 1 only.
+Build order tags refer to CLAUDE.md → Build order for a new module. Slice 1 first, slice 2 (search, profile, loops) below the slice 1 gate status.
 
 - [x] S1-01 [0] Apply contract edits C1 to C3 (spec §3.0) and write `availability-contract.test.ts` (S1 part).
 - [x] S1-02 [2] `env.ts` + `Env` type: `SLOT_CACHE_TTL_SECONDS`; availability constants, enums, types; `DoctorChangeKind` + port types in doctors.
@@ -49,3 +49,21 @@ Slice 1 gate met; all tasks above are `[x]`.
 ## Pending outside this repo
 
 - Sync `contracts/openapi.yaml` and `docs/service-card.md` to the hub with `cd ../vcare-hub && scripts/sync-from-spoke.sh care-service ../vcare-care-api` (the hub copies predate C1-C3 and the slice 1 card text). Hub edits other than the sync belong to `/system-design`.
+
+## Slice 2 — Search, profile, loops, degradation (branch feature/availability-slice2)
+
+Legend: [ ] todo, [~] in progress, [x] done (typecheck and the task's unit tests green). Integration tests, the curl script, review and docs are separate passes.
+
+- [x] S2-01 [0] Contract edits C4 to C8; contract test S2 part.
+- [x] S2-02 [1] Migration `20261021120000_add_doctor_discovery_indexes` (+ migration test extension); EXPLAIN fixtures are a later integration pass.
+- [x] S2-03 [2] Env vars `AVAILABILITY_*`; constants; `DegradedPart`; types.
+- [x] S2-04 [pkg/lib] Free-map functions (already built in slice 1); `lib/async/single-flight.ts` (+ `yield-to-event-loop.ts`); tests.
+- [x] S2-05 [6] `doctor-discovery.repo.ts` (candidates, page, bookable list, view loads), `SchedulesService.listActiveTypesFor`, `SlotInputsReader.loadSlotInputs` (batch, built in slice 1), `DoctorsService.findPublicViews`.
+- [x] S2-06 [7] `NextAvailableIndex` (index part), `NextAvailableComputer`, `rules.ts` + `discovery-cursor.ts`, `DiscoveryService`, `AvailabilityRefreshService`, `AvailabilitySweepService`.
+- [x] S2-07 [4,5] `SearchDoctorsQueryDto`, `GetDoctorQueryDto`, `DiscoveryDoctorResponseDto` (viewer-aware), `PaginationMeta` + `degraded`.
+- [x] S2-08 [8,9,10,11] Policies (`search`, `getDoctor`), controller methods, routes with limiters.
+- [x] S2-09 [worker] `WorkerLoopDeps.redis`, `worker.ts` Redis lifecycle, `worker-loops.ts` registration, `--once` for both loops.
+- [~] S2-10 [12] Unit + integration + RBAC + contract + degradation + pagination + freshness + worker + EXPLAIN + budget tests. Unit tests are part of this pass; the integration, EXPLAIN and budget tests are NOT (later pass).
+  - Unit part done (2026-10-23): rules, discovery-cursor, index (rank), computer, discovery service, refresh and sweep services, loops and worker wiring, loader, repo SQL shape, DTOs, controller, routes, policies, env, contract, single-flight. Still open: the integration, RBAC, contract-conformance, degradation, pagination, freshness, worker process, EXPLAIN and budget suites (9.2 Integration).
+- [ ] S2-11 [13] `/manual-qa availability` search/profile sections (later pass).
+- [ ] S2-12 [14] Docs, runbook alerts, as-built notes (later pass, `/update-docs`).

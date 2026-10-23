@@ -1047,7 +1047,11 @@ paths:
       description: |
         Returns only bookable doctors (Domain rule 6): `verification_status='approved'`, `identity_sync_status='synced'`,
         not suspended, accepting patients, at least one active consultation type. Filters run on indexed columns;
-        `sort=earliest_availability` uses the derived per-doctor `next-available` Redis cache, never full slot computation per row.
+        `sort=earliest_availability` ranks the whole filtered candidate set from a derived Redis index (never slot computation per row);
+        a schedule change is reflected in the order within one 120 s sweep at worst. When Redis is unavailable the response is still
+        `200`: the parts that cannot be honoured are ignored and named in `meta.degraded`. Fee filters compare the profile
+        `consultationFee` amount only (currency is not compared). `minFee > maxFee` is `400`. A `cursor` issued under another effective
+        sort (including one issued while `meta.degraded` contained `sort`) is `400 ValidationFailed`; restart the list without a cursor.
         Display names and avatars are hydrated with **one** batched Identity call per page (Case 2): if Identity is slow or down,
         results are still returned with `displayName=null`, `avatarUrl=null`, `profileHydrated=false` — never a 5xx.
         Budget: p95 < 400 ms. Rate limit 60/min per IP and 120/min per user.
@@ -1088,7 +1092,20 @@ paths:
                     items:
                       $ref: '#/components/schemas/DoctorProfile'
                   meta:
-                    $ref: '#/components/schemas/PaginationMeta'
+                    allOf:
+                      - $ref: '#/components/schemas/PaginationMeta'
+                      - type: object
+                        properties:
+                          degraded:
+                            type: array
+                            uniqueItems: true
+                            items:
+                              type: string
+                              enum: [sort, availabilityFilter, nameFilter]
+                            description: >-
+                              Present only when a requested part could not be honoured. `sort`: earliest availability was served in price order.
+                              `availabilityFilter`: the `availableFrom`/`availableTo` filter was ignored, or applied only to doctors whose availability was
+                              known. `nameFilter`: the name filter matched headlines only.
         '400':
           $ref: '#/components/responses/ValidationFailed'
         '401':
@@ -1108,6 +1125,8 @@ paths:
       description: |
         Patients see only bookable doctors (a non-bookable doctor returns `404 NotFound`); admins see any doctor.
         Name/avatar hydration follows Case 2 (degrade).
+        Rate limit 60/min per IP and 120/min per user. `timezone` is validated as an IANA zone (`400` otherwise).
+        A path id that is not a positive integer is `404 NotFound`.
       security:
         - bearerUser: []
       x-roles: [patient, admin]
@@ -1123,6 +1142,7 @@ paths:
           description: IANA zone used to render `nextAvailableSlots`. Defaults to the caller's patient profile timezone, else UTC.
           schema:
             type: string
+            maxLength: 64
             examples: [Africa/Cairo]
       responses:
         '200':
@@ -3282,7 +3302,10 @@ components:
       name: name
       in: query
       required: false
-      description: Case-insensitive prefix match on the doctor's display name (resolved via cached hydration) or headline.
+      description: >-
+        Case-insensitive prefix match on the whole display name (through a derived index rebuilt every 5 minutes, so a renamed doctor
+        matches the old name for up to that long) or on the headline. When the name index is unavailable only the headline is matched
+        and `meta.degraded` contains `nameFilter`. Control characters are rejected.
       schema:
         type: string
         minLength: 2
@@ -3291,7 +3314,7 @@ components:
       name: minFee
       in: query
       required: false
-      description: Minimum consultation fee in minor units (inclusive).
+      description: Minimum consultation fee in minor units (inclusive). Compared with the profile consultation fee only; currency is ignored.
       schema:
         type: integer
         minimum: 0
@@ -3299,7 +3322,7 @@ components:
       name: maxFee
       in: query
       required: false
-      description: Maximum consultation fee in minor units (inclusive).
+      description: Maximum consultation fee in minor units (inclusive). Compared with the profile consultation fee only; currency is ignored.
       schema:
         type: integer
         minimum: 0
@@ -3307,7 +3330,10 @@ components:
       name: availableFrom
       in: query
       required: false
-      description: Only doctors with a free slot starting at or after this instant (uses the derived next-available cache).
+      description: >-
+        Availability window `[availableFrom, availableTo)`, applied with every sort. A missing `availableFrom` means now; a missing
+        `availableTo` means `availableFrom + 14 days`, clipped to now + 14 days. Supplied values must lie in `[now, now + 14 days]`,
+        `availableTo` after `availableFrom`, at most 14 days apart, else `400 ValidationFailed`. Matching is exact to 15 minutes.
       schema:
         type: string
         format: date-time
@@ -3315,7 +3341,10 @@ components:
       name: availableTo
       in: query
       required: false
-      description: Only doctors with a free slot starting before this instant. Window at most 14 days.
+      description: >-
+        Availability window `[availableFrom, availableTo)`, applied with every sort. A missing `availableFrom` means now; a missing
+        `availableTo` means `availableFrom + 14 days`, clipped to now + 14 days. Supplied values must lie in `[now, now + 14 days]`,
+        `availableTo` after `availableFrom`, at most 14 days apart, else `400 ValidationFailed`. Matching is exact to 15 minutes.
       schema:
         type: string
         format: date-time
@@ -3323,6 +3352,7 @@ components:
       name: sort
       in: query
       required: false
+      description: 'earliest_availability: earliest free slot first (ties by id; doctors with no slot in the next 14 days last). price: lowest consultation fee first (ties by id). experience: most years of experience first (ties by id, descending).'
       schema:
         type: string
         enum: [earliest_availability, price, experience]
@@ -4595,20 +4625,21 @@ components:
             nextAvailableAt:
               type: [string, 'null']
               format: date-time
-              description: Derived from the next-available cache (14-day look-ahead); null when none or not yet computed.
+              description: Earliest free slot start of the doctor's shortest active consultation type within the next 14 days; null when there is none or it is not yet known. In search it can be up to one sweep (about 2 minutes) old; in the profile it is exact.
             consultationTypes:
               type: array
+              description: Active types only.
               items:
                 $ref: '#/components/schemas/ConsultationType'
             nextAvailableSlots:
               type: array
-              description: Present only on GET /api/doctors/{doctorUserId}; the first few free slots for the first active type.
+              description: 'Present only on GET /api/doctors/{doctorUserId}: the first 5 free slots of the shortest active type (ties: lowest id) within the next 14 days, rendered in `timezone`; empty for a non-bookable doctor.'
               items:
                 $ref: '#/components/schemas/Slot'
             status:
               type: string
               enum: [bookable, not_bookable]
-              description: Admin view only.
+              description: Present only on GET /api/doctors/{doctorUserId} for an admin caller.
     DoctorProfileOwn:
       description: The doctor's own full view, including verification and sync state.
       type: object

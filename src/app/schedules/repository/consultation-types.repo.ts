@@ -1,7 +1,7 @@
 import type { Knex } from "knex";
 import { db } from "../../../lib/knex/knex";
 import { ConsultationType } from "../entity/consultation-type.entity";
-import type { ConsultationTypeColumnChanges, ConsultationTypeInput, ConsultationTypeRow, TypePageParams } from "../types";
+import type { ConsultationTypeColumnChanges, ConsultationTypeInput, ConsultationTypeOwnerRow, ConsultationTypeRow, TypePageParams } from "../types";
 
 export const CONSULTATION_TYPE_COLUMNS = ["id", "name", "duration_minutes", "price", "currency", "is_active", "created_at", "updated_at"] as const;
 
@@ -67,4 +67,19 @@ export function hasActiveTypeQuery(profileId: number, conn: Knex = db): Knex.Que
 export async function hasActiveType(profileId: number, conn: Knex = db): Promise<boolean> {
     const rows = await hasActiveTypeQuery(profileId, conn);
     return rows.length > 0;
+}
+
+/** Page view load: the live active types of a page of doctors in one statement (`idx_consultation_types_doctor_profile_id_active`), by id. */
+export function listActiveTypesForProfilesQuery(profileIds: readonly number[], conn: Knex = db): Knex.QueryBuilder<ConsultationTypeOwnerRow, ConsultationTypeOwnerRow[]> {
+    return conn<ConsultationTypeOwnerRow>("consultation_types").select<ConsultationTypeOwnerRow[]>("doctor_profile_id", ...CONSULTATION_TYPE_COLUMNS)
+        .whereRaw("doctor_profile_id = ANY(?::bigint[])", [[...profileIds]]).where("is_active", true).whereNull("deleted_at")
+        .orderBy("doctor_profile_id", "asc").orderBy("id", "asc");
+}
+
+export async function listActiveTypesForProfiles(profileIds: readonly number[], conn: Knex = db): Promise<Map<number, ConsultationType[]>> {
+    const grouped = new Map<number, ConsultationType[]>();
+    if (profileIds.length === 0) return grouped;
+    const rows: ConsultationTypeOwnerRow[] = await listActiveTypesForProfilesQuery(profileIds, conn);
+    for (const row of rows) grouped.set(row.doctor_profile_id, [...(grouped.get(row.doctor_profile_id) ?? []), toEntity(row)]);
+    return grouped;
 }

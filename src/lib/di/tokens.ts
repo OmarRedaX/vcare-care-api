@@ -28,6 +28,8 @@ export const TOKENS = {
     BusyIntervalsReader: Symbol.for("BusyIntervalsReader"),
     SlotInputsLoader: Symbol.for("SlotInputsLoader"),
     NextAvailableIndex: Symbol.for("NextAvailableIndex"),
+    NextAvailableComputer: Symbol.for("NextAvailableComputer"),
+    DiscoveryService: Symbol.for("DiscoveryService"),
     AvailabilityChangeListener: Symbol.for("AvailabilityChangeListener"),
     AvailabilityService: Symbol.for("AvailabilityService"),
     AvailabilityController: Symbol.for("AvailabilityController"),
