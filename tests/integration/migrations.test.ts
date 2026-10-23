@@ -26,6 +26,7 @@ import * as medicalRecordAmendmentsMigration from "../../src/migrations/20261017
 import * as followUpFkMigration from "../../src/migrations/20261017120200_add_consultations_follow_up_fk";
 import * as recordAttachmentsMigration from "../../src/migrations/20261018120000_create_record_attachments";
 import * as uploadIntentsCommentMigration from "../../src/migrations/20261018120100_comment_upload_intents_description";
+import * as doctorDiscoveryIndexesMigration from "../../src/migrations/20261021120000_add_doctor_discovery_indexes";
 import { closeDb, ownerDb, truncateAll } from "../helpers/db";
 
 async function hasBtreeGist(conn: Knex): Promise<boolean> {
@@ -300,6 +301,7 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             // The schedules tables reference doctor_profiles (ON DELETE RESTRICT): they go first and come back last;
             // consultations reference consultation_types and the outbox references consultations, so those go before them.
             // The records tables reference consultations (and consultations reference medical_records back): they go first.
+            await doctorDiscoveryIndexesMigration.down(migrator);
             await uploadIntentsCommentMigration.down(migrator);
             await recordAttachmentsMigration.down(migrator);
             await followUpFkMigration.down(migrator);
@@ -327,6 +329,7 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await doctorProfilesMigration.up(migrator);
             await doctorLanguagesMigration.up(migrator);
             await doctorSpecialtiesMigration.up(migrator);
+            await doctorDiscoveryIndexesMigration.up(migrator);
             await uploadIntentsMigration.up(migrator);
             await verificationDocumentsMigration.up(migrator);
             await identitySyncJobsMigration.up(migrator);
@@ -727,6 +730,42 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             );
             expect(jobs.rows.map((row) => row["QUERY PLAN"]).join("\n")).toContain("idx_identity_sync_jobs_pending_next_attempt_at");
         });
+    });
+
+    it("should create the three doctor discovery indexes with their bookable predicate, drop them on down and recreate them on up, leaving the grants unchanged (availability AV S2-02)", async () => {
+        const names = ["idx_doctor_languages_language_code_doctor_profile_id", "idx_doctor_profiles_bookable_experience_id", "idx_doctor_profiles_bookable_fee_id"];
+        const defs = async (): Promise<Record<string, string>> => {
+            const result = await migrator.raw<{ rows: Array<{ indexname: string; indexdef: string }> }>(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY(string_to_array(?, ',')) ORDER BY indexname", [names.join(",")]);
+            return Object.fromEntries(result.rows.map((row) => [row.indexname, row.indexdef]));
+        };
+        const grants = async (): Promise<unknown> => {
+            const result = await migrator.raw<{ rows: Array<{ table_name: string; privilege: string }> }>(
+                `SELECT table_name, privilege_type AS privilege FROM information_schema.role_table_grants
+                 WHERE grantee = 'vcare_app' AND table_name IN ('doctor_profiles', 'doctor_languages') ORDER BY table_name, privilege_type`);
+            return result.rows;
+        };
+        const before = await defs();
+        expect(Object.keys(before)).toEqual(names);
+        const grantsBefore = await grants();
+        expect(before["idx_doctor_profiles_bookable_fee_id"]).toContain("(consultation_fee, id)");
+        expect(before["idx_doctor_profiles_bookable_experience_id"]).toContain("(years_experience DESC, id DESC)");
+        for (const name of ["idx_doctor_profiles_bookable_fee_id", "idx_doctor_profiles_bookable_experience_id"]) {
+            const definition = before[name] ?? "";
+            for (const term of ["verification_status", "approved", "identity_sync_status", "synced", "suspended_at IS NULL", "is_accepting_patients", "deleted_at IS NULL"]) {
+                expect(definition).toContain(term);
+            }
+        }
+        expect(before["idx_doctor_languages_language_code_doctor_profile_id"]).toContain("(language_code, doctor_profile_id)");
+        try {
+            await doctorDiscoveryIndexesMigration.down(migrator);
+            expect(await defs()).toEqual({});
+            await doctorDiscoveryIndexesMigration.down(migrator); // IF EXISTS: a second down is a no-op
+        } finally {
+            await doctorDiscoveryIndexesMigration.up(migrator);
+        }
+        expect(await defs()).toEqual(before);
+        expect(await grants()).toEqual(grantsBefore);
     });
 
     it("should drop the three audit read indexes and their partition children on down and recreate them on up, idempotently (audit T-IDX4)", async () => {

@@ -2,6 +2,7 @@ import "reflect-metadata";
 import type { Knex } from "knex";
 import { DoctorProfile } from "../../../../src/app/doctors/entity/doctor-profile.entity";
 import { DoctorChangeKind, IdentitySyncStatus, VerificationStatus } from "../../../../src/app/doctors/enums";
+import * as discoveryRepo from "../../../../src/app/doctors/repository/doctor-discovery.repo";
 import * as languageRepo from "../../../../src/app/doctors/repository/doctor-languages.repo";
 import * as profileRepo from "../../../../src/app/doctors/repository/doctor-profiles.repo";
 import * as linkRepo from "../../../../src/app/doctors/repository/doctor-specialties.repo";
@@ -255,5 +256,52 @@ describe("isBookable", () => {
         [VerificationStatus.Approved, IdentitySyncStatus.Synced, null, true, false, false],
     ] as const)("should return %s/%s bookability when all gates are evaluated", (status, sync, suspendedAt, accepting, hasType, expected) => {
         expect(isBookable(profile({ verificationStatus: status, identitySyncStatus: sync, suspendedAt, isAcceptingPatients: accepting }), hasType)).toBe(expected);
+    });
+});
+
+describe("DoctorsService.findPublicViews (availability S2-05)", () => {
+    const types = new Map([[9, [{ id: 5, name: "Visit", durationMinutes: 30, price: 100, currency: "EGP", isActive: true }]]]);
+    function build() {
+        const trx = {} as Knex;
+        const listActiveTypesFor = jest.fn().mockResolvedValue(types);
+        const findByIds = jest.fn().mockResolvedValue([
+            { id: 1, slug: "a", name: "Zeta", isActive: true }, { id: 2, slug: "b", name: "Alpha", isActive: true }, { id: 3, slug: "c", name: "Beta", isActive: true }]);
+        const service = new DoctorsService({} as Knex, {} as AuditRecorder, { ALLOWED_CURRENCIES: ["EGP"] } as unknown as Env, { findByIds } as unknown as SpecialtiesService,
+            {} as VerificationService, { listActiveTypesFor } as unknown as SchedulesService, { onDoctorChanged: jest.fn() });
+        const approved = profile({ id: 9, userId: 202, verificationStatus: VerificationStatus.Approved, identitySyncStatus: IdentitySyncStatus.Synced });
+        const draft = profile({ id: 10, userId: 203 });
+        const mocks = {
+            profiles: jest.spyOn(discoveryRepo, "listProfilesByUserIds").mockResolvedValue([approved, draft]),
+            languages: jest.spyOn(discoveryRepo, "listLanguagesForProfiles").mockResolvedValue(new Map([[9, ["ar", "en"]]])),
+            links: jest.spyOn(discoveryRepo, "listLinksForProfiles").mockResolvedValue(new Map([[9, [{ specialtyId: 1, isPrimary: false }, { specialtyId: 2, isPrimary: true }, { specialtyId: 3, isPrimary: false }]]])),
+        };
+        return { service, trx, listActiveTypesFor, findByIds, mocks };
+    }
+
+    it("should load the page with five statements however many doctors, keyed by user id", async () => {
+        const { service, trx, listActiveTypesFor, findByIds, mocks } = build();
+        const views = await service.findPublicViews([202, 203], trx);
+        expect(mocks.profiles).toHaveBeenCalledWith([202, 203], trx);
+        expect(mocks.languages).toHaveBeenCalledWith([9, 10], trx);
+        expect(mocks.links).toHaveBeenCalledWith([9, 10], trx);
+        expect(listActiveTypesFor).toHaveBeenCalledWith([9, 10], trx);
+        expect(findByIds).toHaveBeenCalledTimes(1);
+        expect([...views.keys()]).toEqual([202, 203]);
+    });
+
+    it("should order specialties primary first, then name, and reuse isBookable for the verdict", async () => {
+        const { service } = build();
+        const views = await service.findPublicViews([202, 203]);
+        expect(views.get(202)?.specialties.map((ref) => ref.name)).toEqual(["Alpha", "Beta", "Zeta"]);
+        expect(views.get(202)?.specialties[0]?.isPrimary).toBe(true);
+        expect(views.get(202)?.languages).toEqual(["ar", "en"]);
+        expect(views.get(202)?.bookable).toBe(true);
+        expect(views.get(203)).toMatchObject({ bookable: false, activeTypes: [], languages: [], specialties: [] });
+    });
+
+    it("should treat an approved doctor with no active type as not bookable", async () => {
+        const { service, listActiveTypesFor } = build();
+        listActiveTypesFor.mockResolvedValue(new Map());
+        expect((await service.findPublicViews([202, 203])).get(202)?.bookable).toBe(false);
     });
 });
