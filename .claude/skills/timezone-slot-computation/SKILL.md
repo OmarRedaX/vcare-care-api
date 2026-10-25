@@ -125,7 +125,7 @@ Then pure in-memory computation: O(days × intervals + busy) — microseconds to
 - **Invalidate** on: booking, reschedule, cancel, no-show, completion, working-hours change, exception change, type change, timezone change, suspension, reinstatement, accepting toggle. After commit, one `MULTI`: bump `slots-ver`, `ZREM` the index member, `DEL free-map`, `SADD next-available:refresh`.
 - A cache miss must still meet the budget — the cache smooths peaks, it does not hide slow queries.
 
-**Search** never computes full slots for every result row: filter/sort in SQL on indexed columns, rank "earliest availability" from `next-available:index` (one `ZMSCORE` over the candidates; compute only a capped number of misses inline, `AVAILABILITY_INLINE_MISS_CAP`), and hydrate names with one batched Identity call. With Redis down, serve price order and say so in `meta.degraded`.
+**Search** never computes full slots for every result row: filter/sort in SQL on indexed columns, rank "earliest availability" from `next-available:index` (one `ZMSCORE` over the candidates; compute only a capped number of misses inline, `AVAILABILITY_INLINE_MISS_CAP`), and hydrate names with one batched Identity call. With Redis down, serve price order and say so in `meta.degraded`. The `name` filter is a prefix match on the display name through the derived Redis `name-index` (built by the worker sweep from Identity data, never stored in Postgres) unioned with the SQL headline prefix; a missing or expired index falls back to the headline and adds `nameFilter` to `meta.degraded`.
 
 ## Edge cases that must have tests (pure unit tests in `pkg/slots`)
 - Split shift (09:00–12:00 + 14:00–18:00) → no slots in the gap

@@ -94,7 +94,20 @@ describe("lib/config/env parseEnv", () => {
         expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_INLINE_MISS_CAP: "101" }).keys).toEqual(["AVAILABILITY_INLINE_MISS_CAP"]);
         expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_INLINE_MISS_CAP: "-1" }).keys).toEqual(["AVAILABILITY_INLINE_MISS_CAP"]);
         expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_SWEEP_INTERVAL_SECONDS: "0" }).keys).toEqual(["AVAILABILITY_SWEEP_INTERVAL_SECONDS"]);
-        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_NAME_REFRESH_SECONDS: "86401" }).keys).toEqual(["AVAILABILITY_NAME_REFRESH_SECONDS"]);
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_NAME_REFRESH_SECONDS: "86401" }).keys).toContain("AVAILABILITY_NAME_REFRESH_SECONDS");
+    });
+
+    it("should accept a name refresh plus sweep interval plus 60 s margin below the 900 s name-index TTL", () => {
+        expect(parseEnv({ ...secretsOnly(), AVAILABILITY_NAME_REFRESH_SECONDS: "720", AVAILABILITY_SWEEP_INTERVAL_SECONDS: "119" })).toMatchObject({
+            AVAILABILITY_NAME_REFRESH_SECONDS: 720, AVAILABILITY_SWEEP_INTERVAL_SECONDS: 119 });
+        expect(parseEnv({ ...secretsOnly(), AVAILABILITY_NAME_REFRESH_SECONDS: "300", AVAILABILITY_SWEEP_INTERVAL_SECONDS: "539" }).AVAILABILITY_SWEEP_INTERVAL_SECONDS).toBe(539);
+    });
+
+    it("should reject a name refresh plus sweep interval plus 60 s margin that reaches the name-index TTL", () => {
+        const keys = ["AVAILABILITY_NAME_REFRESH_SECONDS", "AVAILABILITY_SWEEP_INTERVAL_SECONDS"];
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_NAME_REFRESH_SECONDS: "720", AVAILABILITY_SWEEP_INTERVAL_SECONDS: "120" }).keys).toEqual(keys);
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_NAME_REFRESH_SECONDS: "850" }).keys).toEqual(keys);
+        expect(captureInvalid({ ...secretsOnly(), AVAILABILITY_SWEEP_INTERVAL_SECONDS: "600" }).keys).toEqual(keys);
     });
 
     it("should never include a value in the error message when parsing fails (F1)", () => {

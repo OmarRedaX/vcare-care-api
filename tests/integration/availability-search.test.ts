@@ -3,7 +3,7 @@
  *
  * Rule map: AV-R2 (RBAC), AV-R14 (candidate parity with isBookable), AV-R15 (filters), AV-R16 (window defaults and 400s are in
  * availability-search-pagination), AV-R20 (nameFilter fallback), AV-R21 (profile), AV-R22 (Case 2 hydration), AV-R26 (rate limits are unit
- * and rate-limit suites), AV-R27 (headline-only name filter in S2), AV-R29 (no names in logs). Contract conformance reads contracts/openapi.yaml.
+ * and rate-limit suites), AV-R27 (name filter: headline term and the no-index fallback here, the index-backed cases in the slice 3 suite), AV-R29 (no names in logs). Contract conformance reads contracts/openapi.yaml.
  */
 import { DateTime } from "luxon";
 import { toDoctorProfile } from "../../src/app/doctors/doctor-profile.mapper";
@@ -298,14 +298,14 @@ describe("availability search and profile (integration)", () => {
         });
     });
 
-    describe("name filter (AV-R27, slice 2: headline only)", () => {
+    describe("name filter (AV-R27): headline term and the no-index fallback", () => {
         beforeEach(async () => {
             await doctor({ userId: 801, headline: "Cardiologist Synthetic Ali" });
             await doctor({ userId: 802, headline: "Dermatology expert" }, { fullName: "Cardio Fixture Person" });
             await doctor({ userId: 803, headline: "Dermatology specialist" });
         });
 
-        it("should match a headline prefix case-insensitively and report nameFilter as degraded", async () => {
+        it("should match a headline prefix case-insensitively and report nameFilter as degraded while no name index exists", async () => {
             for (const name of ["cardio", "CARDIO", "Cardiologist Synthetic", "cardiologist   synthetic  ali"]) {
                 const response = await a.search({ name, sort: "price" });
                 expect(response.status).toBe(200);
@@ -316,11 +316,23 @@ describe("availability search and profile (integration)", () => {
             expect(sorted(ids(many.body))).toEqual([802, 803]);
         });
 
-        it("should not match the Identity display name until the name index exists and still say so", async () => {
+        it("should not match the Identity display name while no name index exists and say so", async () => {
             const response = await a.search({ name: "Cardio Fixture" });
             expect(response.status).toBe(200);
             expect(ids(response.body)).not.toContain(802);
             expect(response.body.meta.degraded).toEqual(["nameFilter"]);
+        });
+
+        it("should match the display name through the index once the sweep built it, without reporting nameFilter", async () => {
+            expect(await a.sweep()).toBe("done");
+            for (const name of ["Cardio Fixture", "cardio   FIXTURE person", "CARDIO"]) {
+                const response = await a.search({ name, sort: "price" });
+                expect(response.status).toBe(200);
+                expect(ids(response.body)).toContain(802);
+                expect(response.body.meta).not.toHaveProperty("degraded");
+            }
+            expect(ids((await a.search({ name: "Cardio Fixture", sort: "price" })).body)).toEqual([802]);
+            expect(sorted(ids((await a.search({ name: "cardio", sort: "price" })).body))).toEqual([801, 802]);
         });
 
         it("should match only a headline prefix, not a word inside the headline", async () => {

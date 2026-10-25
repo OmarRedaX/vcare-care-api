@@ -64,6 +64,8 @@ describe("availability slice 2 contract (C4-C8)", () => {
         expect(inlineLists(sort, "enum")).toEqual([["earliest_availability", "price", "experience"]]);
         expect(parameter("NameFilter")).toContain("`meta.degraded` contains `nameFilter`");
         expect(parameter("NameFilter")).toContain("Control characters are rejected");
+        expect(parameter("NameFilter")).toContain("up to about 11 minutes");
+        expect(parameter("NameFilter")).toContain("at least 2 code points must remain after trimming");
         for (const name of ["MinFee", "MaxFee"]) expect(parameter(name)).toContain("currency is ignored");
         for (const name of ["MinFee", "MaxFee"]) {
             expect(parameter(name)).toContain("minimum: 0");

@@ -157,7 +157,7 @@ curl -s "http://localhost:3001/api/doctors?specialty=dermatology&language=ar&sor
   -H "Authorization: Bearer $PATIENT"
 curl -s "http://localhost:3001/api/doctors/204" -H "Authorization: Bearer $PATIENT"   # profile with the first free slots
 ```
-If Identity is down, results still arrive with `displayName: null` and `profileHydrated: false`. If Redis is down they still arrive, in price order, with `meta.degraded: ["sort"]`. The earliest-availability order comes from a Redis index that `care-worker` keeps fresh (`node dist/worker.js --once availability-sweep` fills it at once; without the worker, the first requests compute up to 20 doctors inline). `name` matches headlines only until slice 3. The repeatable version is `scripts/curl-test-availability.sh` (see [availability manual QA](./availability/manual-qa.md)).
+If Identity is down, results still arrive with `displayName: null` and `profileHydrated: false`. If Redis is down they still arrive, in price order, with `meta.degraded: ["sort"]`. The earliest-availability order comes from a Redis index that `care-worker` keeps fresh (`node dist/worker.js --once availability-sweep` fills it at once; without the worker, the first requests compute up to 20 doctors inline). `name` is a case-insensitive prefix of the display name (through a name index the same sweep rebuilds about every 6 minutes; a missing index falls back to headlines and says `meta.degraded: ["nameFilter"]`, so after a fresh Redis run `node dist/worker.js --once availability-sweep` once to build it). The repeatable version is `scripts/curl-test-availability.sh` (see [availability manual QA](./availability/manual-qa.md)).
 
 ## 7. See slots in your timezone (built 2026-10-21; needs a token from step 4)
 ```bash

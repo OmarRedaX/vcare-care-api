@@ -1,5 +1,6 @@
 import { AvailabilityRefreshService } from "./app/availability/service/availability-refresh.service";
 import { AvailabilitySweepService } from "./app/availability/service/availability-sweep.service";
+import { NameIndexBuilder } from "./app/availability/service/name-index.builder";
 import { NextAvailableComputer } from "./app/availability/service/next-available.computer";
 import { NextAvailableIndex } from "./app/availability/service/next-available.index";
 import { SlotInputsLoader } from "./app/availability/service/slot-inputs.loader";
@@ -41,7 +42,8 @@ export function buildWorkerLoops(deps: WorkerLoopDeps): WorkerLoop[] {
     const computer = new NextAvailableComputer(new SlotInputsLoader(doctorReader, new SlotInputsReader(deps.db), new BusyIntervalsReader(deps.db)), index);
     const clock = { now: () => Date.now() };
     const availabilityRefresh = new AvailabilityRefreshService(doctorReader, computer, index, deps.logger, clock);
-    const availabilitySweep = new AvailabilitySweepService(deps.db, doctorReader, computer, index, deps.logger, clock);
+    const nameIndexBuilder = new NameIndexBuilder(deps.identity, index, deps.logger, clock);
+    const availabilitySweep = new AvailabilitySweepService(deps.db, doctorReader, computer, index, deps.logger, clock, nameIndexBuilder, deps.env.AVAILABILITY_NAME_REFRESH_SECONDS);
     return [
         buildAuditPartitionLoop({
             db: deps.db,
