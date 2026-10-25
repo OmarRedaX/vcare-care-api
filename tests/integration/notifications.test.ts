@@ -418,7 +418,7 @@ describe("notifications (integration: real Postgres and Redis, fake Identity, re
         });
 
         it("should register the three notification loops in buildWorkerLoops", () => {
-            const loops = buildWorkerLoops({ env, db, logger: fakeLogger().logger, storage: {} as never, identity: identity() });
+            const loops = buildWorkerLoops({ env, db, redis: {} as never, logger: fakeLogger().logger, storage: {} as never, identity: identity() });
             expect(loops.map((loop) => loop.name)).toEqual(expect.arrayContaining(["notification-outbox", "consultation-reminders", "notification-outbox-purge"]));
             expect(loops.find((loop) => loop.name === "notification-outbox")?.intervalMs).toBe(env.OUTBOX_POLL_SECONDS * 1000);
             expect(loops.find((loop) => loop.name === "consultation-reminders")?.intervalMs).toBe(env.REMINDER_SCAN_SECONDS * 1000);
@@ -433,7 +433,7 @@ describe("notifications (integration: real Postgres and Redis, fake Identity, re
 
         it("should run exactly one tick of each notification loop through the real loop objects", async () => {
             await insertOutbox(1);
-            const loops = buildWorkerLoops({ env, db, logger: fakeLogger().logger, storage: {} as never, identity: identity() });
+            const loops = buildWorkerLoops({ env, db, redis: {} as never, logger: fakeLogger().logger, storage: {} as never, identity: identity() });
             for (const name of ["notification-outbox", "consultation-reminders", "notification-outbox-purge"]) {
                 await expect(loops.find((loop) => loop.name === name)?.tick(signal())).resolves.toBe("done");
             }

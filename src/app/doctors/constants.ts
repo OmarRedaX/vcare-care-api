@@ -17,3 +17,5 @@ export const FEE_AMOUNT_MAX = 2_147_483_647;
 export const LANGUAGE_CODE_PATTERN = /^[a-z]{2}$/;
 export const DOCTOR_PROFILE_ENTITY_TYPE = "doctor_profile";
 export const DOCTOR_PROFILE_UNIQUE_USER = "uq_doctor_profiles_user_id";
+/** Candidate reads fetch one more row than this and report `truncated` when it is exceeded (availability spec 8). */
+export const CANDIDATE_HARD_CAP = 10_000;

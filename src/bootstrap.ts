@@ -2,6 +2,8 @@ import { instanceCachingFactory } from "tsyringe";
 import { AvailabilityController } from "./app/availability/controller/availability.controller";
 import { AvailabilityChangeListener } from "./app/availability/service/availability-change.listener";
 import { AvailabilityService } from "./app/availability/service/availability.service";
+import { DiscoveryService } from "./app/availability/service/discovery.service";
+import { NextAvailableComputer } from "./app/availability/service/next-available.computer";
 import { NextAvailableIndex } from "./app/availability/service/next-available.index";
 import { SlotInputsLoader } from "./app/availability/service/slot-inputs.loader";
 import { BusyIntervalsReader } from "./app/consultations/service/busy-intervals.reader";
@@ -75,7 +77,9 @@ export function registerDependencies(env: Env): void {
     container.register(TOKENS.ScheduleChangeListener, { useToken: TOKENS.AvailabilityChangeListener });
     container.register(TOKENS.ConsultationChangeListener, { useToken: TOKENS.AvailabilityChangeListener });
     container.register(TOKENS.DoctorChangeListener, { useToken: TOKENS.AvailabilityChangeListener });
+    container.registerSingleton(TOKENS.NextAvailableComputer, NextAvailableComputer);
     container.registerSingleton(TOKENS.AvailabilityService, AvailabilityService);
+    container.registerSingleton(TOKENS.DiscoveryService, DiscoveryService);
     container.registerSingleton(TOKENS.AvailabilityController, AvailabilityController);
     // Consultations seams, registered before their consumers: the outbox writer and the (no-op) cache-invalidation listener.
     container.registerSingleton(TOKENS.NotificationsService, NotificationsService);

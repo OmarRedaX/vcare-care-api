@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-20
+last_verified: 2026-10-23
 tags: [data-model, postgresql, schema, indexes, erd]
 related: [scheduling-slots, clinical-records, integration, file-handling, records-spec, record-attachments-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
@@ -16,7 +16,7 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
 (see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
-`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below); records (2026-10-18) — `20261017120000_create_medical_records` (table, lock `CHECK`, trigger, column-level `UPDATE` grant), `20261017120100_create_medical_record_amendments` (append-only by grant), `20261017120200_add_consultations_follow_up_fk` (the deferred FK; no table); see `medical_records` and `medical_record_amendments` below; record-attachments (2026-10-20) — `20261018120000_create_record_attachments` (table, partial index, delete-after-lock trigger, column-level grants), `20261018120100_comment_upload_intents_description` (a column comment only); see `record_attachments` and `upload_intents` below. `knex_migrations` records migration names without the file extension. Everything else below is the design the
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below); records (2026-10-18) — `20261017120000_create_medical_records` (table, lock `CHECK`, trigger, column-level `UPDATE` grant), `20261017120100_create_medical_record_amendments` (append-only by grant), `20261017120200_add_consultations_follow_up_fk` (the deferred FK; no table); see `medical_records` and `medical_record_amendments` below; record-attachments (2026-10-20) — `20261018120000_create_record_attachments` (table, partial index, delete-after-lock trigger, column-level grants), `20261018120100_comment_upload_intents_description` (a column comment only); see `record_attachments` and `upload_intents` below; availability slice 2 (2026-10-23) — `20261021120000_add_doctor_discovery_indexes` (three indexes on existing tables, no table, column, constraint or grant change; see `doctor_profiles` and `doctor_languages` below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
 remaining modules will build (`help_articles` and the remaining tables). Written in the style migrations
 will use (`knex.raw`, see the `write-migration` skill). Conventions:
 
@@ -157,10 +157,10 @@ CREATE INDEX idx_doctor_profiles_verification_status_submitted_at_id
 ```
 **As built:** `uq_doctor_profiles_user_id` and (since verification, 2026-10-08)
 `idx_doctor_profiles_verification_status_submitted_at_id` exist among the profile indexes above. The fee and
-experience indexes are deferred until their queries land. The migration comments the Identity user-id
+experience indexes are **built** by `availability` slice 2 (migration `20261021120000_add_doctor_discovery_indexes`, 2026-10-23; the planner uses them for the path A keyset pages, and the unfiltered candidate scan stays inside the bookable subset, see the availability spec section 14). The migration comments the Identity user-id
 columns and grants `vcare_app` `SELECT, INSERT, UPDATE` but no `DELETE`; the two link-table migrations grant
 `DELETE` for set replacement, and the specialties link also grants `UPDATE` to move the primary flag.
-The language-code search index below is likewise deferred. Each link table's unique constraint covers its
+The language-code search index below was built by the same migration. Each link table's unique constraint covers its
 `doctor_profile_id` FK; the specialties link has its `specialty_id` leading-column index.
 
 The verification **application** is a view over this row plus its documents (application id = profile id,
@@ -378,6 +378,8 @@ ALTER TABLE consultations
 -- Its GiST index also serves slot computation query 5, conflict detection for schedule changes, and the calendar:
 --   WHERE doctor_user_id = $1 AND tstzrange(starts_at, ends_at, '[)') && tstzrange($from, $to, '[)')
 --     AND status IN ('booked','waiting','in_progress') AND deleted_at IS NULL
+-- (As built, the slot-computation busy statement also counts 'completed': the constraint holds a completed row's planned interval,
+--  so every status but 'cancelled' and 'no_show' is busy; availability AV-R4, review 2026-10-23.)
 -- No duplicate btree for that query.
 
 -- uq_consultations_idempotency serves the in-transaction replay check:

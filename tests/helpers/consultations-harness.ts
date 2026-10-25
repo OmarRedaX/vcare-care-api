@@ -68,7 +68,7 @@ export interface ConsultationsHarness {
     call(verb: "get" | "post" | "patch" | "put", path: string, actor?: Actor, payload?: object, headers?: Record<string, string>): Test;
     write(verb: "post" | "patch", path: string, actor: Actor, payload: object, key?: string): Test;
     /** A signed token for an ad hoc principal (more patients than the fixed actors). */
-    signFor(userId: number, role?: "patient" | "doctor" | "admin", status?: "active" | "pending" | "rejected" | "suspended"): Promise<string>;
+    signFor(userId: number, role?: "patient" | "doctor" | "admin", status?: "active" | "pending" | "rejected" | "suspended", claims?: Record<string, unknown>): Promise<string>;
     /** Like `call` with a raw bearer token. */
     callWith(token: string, verb: "get" | "post" | "patch" | "put", path: string, payload?: object, headers?: Record<string, string>): Test;
     book(actor?: Actor, payload?: object, key?: string): Test;
@@ -107,7 +107,7 @@ export function useConsultationsHarness(suite: string): ConsultationsHarness {
 
     const harness: ConsultationsHarness = {
         clock, identityServer, tokens, video, call, write,
-        signFor: (userId, role = "patient", status = "active") => signUserToken(fake.key(suite), { sub: String(userId), role, status, ev: true }),
+        signFor: (userId, role = "patient", status = "active", claims = {}) => signUserToken(fake.key(suite), { sub: String(userId), role, status, ev: true, ...claims }),
         callWith: (token, verb, path, payload, headers = {}) => {
             let test = request(app)[verb](path).set(headers).set("Authorization", `Bearer ${token}`);
             if (payload !== undefined) test = test.send(payload);

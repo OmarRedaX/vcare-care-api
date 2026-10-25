@@ -7,3 +7,5 @@ export enum DoctorProfileField {
     Specialties = "specialtyIds", PrimarySpecialty = "primarySpecialtyId", ConsultationFee = "consultationFee",
     DefaultSlotMinutes = "defaultSlotMinutes", Timezone = "timezone", IsAcceptingPatients = "isAcceptingPatients",
 }
+/** Keyset order of the unfiltered-by-window search pages (availability path A); each has a matching partial index. */
+export enum CandidateOrder { Price = "price", Experience = "experience" }

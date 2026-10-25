@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 module: availability
 status: ready
-version: 0.1.1
+version: 0.2.0
 diataxis: reference
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [spec, availability, search, slots, discovery, redis, worker, rank-index, free-map, name-index, degradation, listeners]
 related: [availability-brainstorm, availability-architecture, scheduling-slots, consultations-spec, schedules-spec, doctors-spec, admin-doctors-spec, verification-spec, data-model, api, capacity, infrastructure, resilience, adr-0002-slots-never-stored, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0024-next-available-rank-index-free-map-and-sweep, adr-0025-derived-name-index, adr-0026-discovery-degradation-when-redis-is-down]
 contracts: [contracts/openapi.yaml]
@@ -22,11 +22,11 @@ architecture is decided and binding ([architecture/availability.md](../architect
 is superseded). Scope and the resolved open questions come from [brainstorm.md](./brainstorm.md). This spec turns them into
 exact definitions and is **organised around three build slices**, each mergeable alone:
 
-| Slice | Delivers | Migration | Worker | Section |
-|---|---|---|---|---|
-| **S1 Slots** | pure `pkg/slots` additions, `SlotInputsLoader`, `GET .../slots`, the `slots:` cache with `slots-ver`, the real `ScheduleChangeListener` / `ConsultationChangeListener` bindings, the new `DoctorChangeListener` port | none | none | 12.1, 13.1 |
-| **S2 Search and profile** | rank index, free-map, refresh set, `availability-refresh` + `availability-sweep` loops, `GET /api/doctors`, `GET /api/doctors/{id}`, public `DoctorProfile` DTO, candidate-index migration, Redis-down degradation, worker Redis | `20261021120000` | gains Redis | 12.2, 13.2 |
-| **S3 Name filter** | `name-index` build in the sweep, the `name` filter on the index | none | sweep step | 12.3, 13.3 |
+| Slice | Delivers | Migration | Worker | Section | Status |
+|---|---|---|---|---|---|
+| **S1 Slots** | pure `pkg/slots` additions, `SlotInputsLoader`, `GET .../slots`, the `slots:` cache with `slots-ver`, the real `ScheduleChangeListener` / `ConsultationChangeListener` bindings, the new `DoctorChangeListener` port | none | none | 12.1, 13.1 | **built 2026-10-21** |
+| **S2 Search and profile** | rank index, free-map, refresh set, `availability-refresh` + `availability-sweep` loops, `GET /api/doctors`, `GET /api/doctors/{id}`, public `DoctorProfile` DTO, candidate-index migration, Redis-down degradation, worker Redis | `20261021120000` | gains Redis | 12.2, 13.2 | **built 2026-10-23** (branch `feature/availability-slice2`; as-built notes in section 14) |
+| **S3 Name filter** | `name-index` build in the sweep, the `name` filter on the index | none | sweep step | 12.3, 13.3 | planned |
 
 Sections 1 to 11 are the contract of the module (what must be true); section 12 specifies the components slice by slice;
 section 13 is the task list and exit gate of each slice. Binding rules: CLAUDE.md → "Database rules", "API conventions",
@@ -107,6 +107,7 @@ Every index below is for a query that exists in code (CLAUDE.md → "Database ru
 --   SELECT dp.id, dp.user_id, dp.consultation_fee, dp.years_experience FROM doctor_profiles dp
 --   WHERE <bookable predicate> [AND dp.consultation_fee BETWEEN $min AND $max] [AND (dp.consultation_fee, dp.id) > ($fee, $id)]
 --   ORDER BY dp.consultation_fee, dp.id LIMIT $n + 1
+--   (path B carries the same ORDER BY since the 2026-10-23 review, so the rows kept past the 10,001 cap are deterministic)
 CREATE INDEX idx_doctor_profiles_bookable_fee_id ON doctor_profiles (consultation_fee, id)
     WHERE verification_status = 'approved' AND identity_sync_status = 'synced'
       AND suspended_at IS NULL AND is_accepting_patients AND deleted_at IS NULL;
@@ -138,7 +139,7 @@ CREATE INDEX idx_doctor_languages_language_code_doctor_profile_id ON doctor_lang
 ### 2.2 Query-to-index map
 | Query (module) | Statement shape | Served by |
 |---|---|---|
-| Candidates, path B (`doctors`) | bookable predicate + `EXISTS` active type + optional filters, `LIMIT 10001`, no ORDER BY | partial bookable indexes (either) + `idx_consultation_types_doctor_profile_id_active` per row |
+| Candidates, path B (`doctors`) | bookable predicate + `EXISTS` active type + optional filters, `ORDER BY dp.consultation_fee, dp.id LIMIT 10001` (deterministic when truncated) | partial bookable indexes (either) + `idx_consultation_types_doctor_profile_id_active` per row |
 | Page, path A price (`doctors`) | same + `(fee, id) > (...) ORDER BY fee, id LIMIT n+1` | `idx_doctor_profiles_bookable_fee_id` (no Sort node) |
 | Page, path A experience (`doctors`) | same + `(years, id) < (...) ORDER BY years DESC, id DESC LIMIT n+1` | `idx_doctor_profiles_bookable_experience_id` (no Sort node) |
 | Specialty filter | `ds.specialty_id = (SELECT id FROM specialties WHERE slug = $1)` | `uq_specialties_slug`, `idx_doctor_specialties_specialty_id_doctor_profile_id` |
@@ -281,13 +282,13 @@ returned count and `nextCursor`/`hasMore` are computed from the fetched page bef
 | AV-R1 | Slots exist only for a bookable doctor: an unknown or non-bookable doctor, and a `typeId` that is unknown, inactive, deleted or another doctor's, are `404 NotFound` for both roles (decided 2026-10-21; same type check as booking). A bookable doctor means the base predicate (`approved`, `synced`, not suspended, accepting) **and** the requested type being live and active. | `AvailabilityService` using `DoctorDiscoveryReader.findForSlots` + `SchedulesService.findBookableType` |
 | AV-R2 | Doctor role on any of the three routes -> `403`; patients and admins must have token `status=active`; no `emailVerified` requirement; a locally suspended doctor needs no check (doctors are not callers). | `authorize(policy)` |
 | AV-R3 | Inside the effective window `[from', to')` (AV-R6; `to' <= now + BOOKING_HORIZON_DAYS`), a start `m` is listed **iff booking would accept it**: `m > now`, on the grid of one open interval (`isSlotOnGrid` semantics: the interval holds the whole slot, `(m - intervalStart) % duration == 0`), and `[m, m + duration)` overlaps no busy interval. (A start exactly at `now + horizon` is accepted by booking but lies outside `[from', to')`: listing is stricter by that single instant.) | `pkg/slots` (`computeSlots`) built on `resolveOpenIntervals`; property test (9.1) |
-| AV-R4 | Busy = consultations with status `booked`, `waiting`, `in_progress` and `deleted_at IS NULL`, half-open `[starts_at, ends_at)`. `cancelled`, `no_show`, `completed` release the interval. Busy load window: `starts_at >= from - 240 min` (the longest possible consultation, `chk_consultation_types_duration`) and `starts_at < to` and `ends_at > from`. | `BusyIntervalsReader` SQL |
+| AV-R4 | Busy = consultations with every status the exclusion constraint `excl_consultations_doctor_no_overlap` holds, i.e. all but `cancelled` and `no_show` (`booked`, `waiting`, `in_progress`, `completed`), and `deleted_at IS NULL`, half-open `[starts_at, ends_at)`. Only `cancelled` and `no_show` release the interval: `complete` does not change `ends_at`, so an early-completed consultation keeps its planned interval busy (decided 2026-10-23, review 20261023-1130; no migration). Busy load window: `starts_at >= from - 240 min` (the longest possible consultation, `chk_consultation_types_duration`) and `starts_at < to` and `ends_at > from`. | `BusyIntervalsReader` SQL |
 | AV-R5 | The grid is anchored on the working interval's start and busy intervals never move it. Intervals are per doctor-local date and never merged across dates, so a slot cannot straddle local midnight. DST gap/overlap handling is that of `resolveOpenIntervals`/`localInstant`. | `subtractBusy` keeps `anchorMs`; `sliceSlots` steps from the anchor |
 | AV-R6 | Window (slots): `to <= from` -> `400`; `to - from > 14 days` -> `400` (both on the **original** values). The effective window is `from' = min(max(from, now), horizon)`, `to' = min(max(to, from'), horizon)` with `horizon = now + BOOKING_HORIZON_DAYS`; if `from' >= to'` the response is `200`, `data: []`, `meta.from/to = from'/to'`, `count: 0`. | `clipWindow` (pure) + service |
 | AV-R7 | `timezone` must be a valid IANA zone <= 64 chars on `/slots` and on `getDoctor` (`400` otherwise). Rendering zone: `timezone` (canonicalised) > the patient's profile zone > `UTC` (admins have no patient profile -> `UTC`). Rendering is applied **after** the cache. | DTO `@IsIanaTimezone`, `canonicalIanaTimezone`, service |
 | AV-R8 | Duration comes from the consultation type, never from the client. | service |
 | AV-R9 | The slot list is cached as a UTC list per doctor-local date range: key `slots:<doctorUserId>:<ver>:<typeId>:<fromDate>:<toDate>`, `ver` = `slots-ver:<doctorUserId>` (absent = `0`), TTL `SLOT_CACHE_TTL_SECONDS` (default and max 60). Request-specific filtering (`start > now`, `start <= horizon`, `[from', to')`) happens **after** the cache read. The `404` checks run before the cache read, so a cached list is never served for a doctor who stopped being bookable. | `NextAvailableIndex` + service |
-| AV-R10 | After commit, every input change runs four operations: bump `slots-ver`, `ZREM` the doctor from the index, delete the free-map, `SADD` the doctor to the refresh set. Sources: working hours / exception / consultation type (`ScheduleChangeListener`), book / reschedule / cancel / complete / no-show (`ConsultationChangeListener`), timezone change / accepting toggle / suspension / reinstatement (`DoctorChangeListener`). A listener failure, or Redis down, never fails the write: it is logged and skipped. | `AvailabilityChangeListener`; callers already guard (`notifyChanged`) |
+| AV-R10 | After commit, every input change runs four operations: bump `slots-ver`, `ZREM` the doctor from the index, delete the free-map, `SADD` the doctor to the refresh set. Sources: working hours / exception / consultation type (`ScheduleChangeListener`), book / reschedule / cancel / complete / no-show (`ConsultationChangeListener`; `complete` does not change the busy set, the bump is harmless), timezone change / accepting toggle / suspension / reinstatement (`DoctorChangeListener`). A listener failure, or Redis down, never fails the write: it is logged and skipped. | `AvailabilityChangeListener`; callers already guard (`notifyChanged`) |
 | AV-R11 | `DoctorChangeListener` is fired only by `doctors` (`PATCH /doctors/me` when `timezone` or `isAcceptingPatients` actually changed) and `admin-doctors` (suspend `applied`, reinstate `applied`; no-ops do not fire). It is **not** fired by `verification` or `identity-sync`: a doctor who becomes bookable appears as a miss and is computed on demand, the sweep covers it within about 2 minutes. | `DoctorsService.notifyDoctorChanged` (the one guarded home), call sites |
 | AV-R12 | Redis unavailable (down, breaker open, command error) never changes the answer of `/slots`: it is computed from Postgres, version bump / cache write skipped and logged. | `tryRedis` |
 | AV-R13 | No audit row, no clinical data, no Identity call on `/slots`. | design |
@@ -304,9 +305,9 @@ returned count and `nextCursor`/`hasMore` are computed from the fetched page bef
 | AV-R20 | Redis degradation (ADR 0026), decided per request from `isRedisUsable` and from the first failing Redis command: sort `earliest_availability` -> price order, `degraded` cursor kind, `meta.degraded += sort`, page rows get `nextAvailableAt` computed inline (<= cap, rest `null`); window filter -> ignored, `meta.degraded += availabilityFilter`; `name` -> headline only, `meta.degraded += nameFilter`. `meta.degraded` is absent when empty and ordered `sort, availabilityFilter, nameFilter`. A cursor of kind `earliest` presented while Redis is unusable is `400` (the client restarts the list). Search never returns a 5xx for Redis. | `DiscoveryService`, `tryRedis` |
 | AV-R21 | Profile: a patient gets `404` unless the doctor is bookable; an admin sees any live profile and gets `status`. `consultationTypes` lists active types only. `nextAvailableAt` / `nextAvailableSlots` come from the shortest active type's slot list for `[now, now + 14 d)` (cache-first, same code as `/slots`), first 5 slots, rendered in `renderTz`. | `DiscoveryService`, `AvailabilityService.listSlots` |
 | AV-R22 | Hydration is Case 2: one batched `hydrateUsersOrEmpty` per page (`getUsersBatch`, <= 100 ids per chunk, `identity:user:<id>` cache); failure -> `displayName:null`, `avatarUrl:null`, `profileHydrated:false`; a hydrated row with Identity `status != 'active'` is dropped from search results. Identity status is never used for authorization and is not exposed. | `DiscoveryService` |
-| AV-R23 | Sweep: every `AVAILABILITY_SWEEP_INTERVAL_SECONDS` (120) and once at worker boot, singleton by session advisory lock namespace **1104** (id 0); recomputes every bookable doctor in batches of 100 (4 Postgres queries per batch), writes version-guarded, removes index members that are no longer bookable, then writes `next-available:swept-at`. Lock not obtained, Redis unreachable, or aborted -> `"incomplete"` (`--once` exits 1). | `AvailabilitySweepService`, `withSessionAdvisoryLock` |
+| AV-R23 | Sweep: every `AVAILABILITY_SWEEP_INTERVAL_SECONDS` (120) and once at worker boot, singleton by session advisory lock namespace **1104** (id 0); recomputes every bookable doctor in batches of 100 (4 Postgres queries per batch, the doctor list is read once up front), writes version-guarded, removes index members that are no longer bookable (the stale ids are re-checked against Postgres first, so a doctor who became bookable during a long pass is kept), then writes `next-available:swept-at`. Lock not obtained, Redis unreachable, a batch that could not be written, a truncated doctor list (> 10,000), or aborted -> `"incomplete"` (`--once` exits 1) and `swept-at` is left alone. | `AvailabilitySweepService`, `withSessionAdvisoryLock` |
 | AV-R24 | Refresh: every 2 s drains `next-available:refresh` with `SPOP 50` per batch (<= 10 batches per tick), recomputes and writes version-guarded; ids that could not be written are `SADD`ed back; a doctor who is no longer bookable is just dropped. | `AvailabilityRefreshService` |
-| AV-R25 | `care-worker` owns its own Redis client (`createRedis(env.REDIS_URL, {name:"care-worker"})`), connected in the background at boot, passed to every loop and to its `IdentityClient`, closed in `closeAll`. `--once availability-refresh` / `--once availability-sweep` work. | `worker.ts`, `worker-loops.ts` |
+| AV-R25 | `care-worker` owns its own Redis client (`createRedis(env.REDIS_URL, {name:"care-worker"})`), passed to every loop and to its `IdentityClient`, closed in `closeAll`. Both modes wait at most 3 s for the handshake (`connectWithin`) before the first tick, so the boot-time sweep finds a ready client; when Redis is down the loops still start (daemon) or the tick reports `"incomplete"` (`--once`). `--once availability-refresh` / `--once availability-sweep` work. | `worker.ts`, `worker-loops.ts` |
 | AV-R26 | Each route has its own limiter pair: 60/min per IP (before `userGuard`) and 120/min per user (after `authorize`); values and names in 7.3. | `rateLimit` |
 
 ### 4.3 Name filter (S3)
@@ -395,12 +396,13 @@ Never `SELECT *`; every query backed by an index (2.2); no N+1.
 | `/slots`, cache hit | 2 (profile, type; +1 zone) | 2 `GET` | none |
 | search, path B, steady state | 1 candidate query + 5 page-view queries (profiles, languages, links, specialties by id, active types) | 1 `ZMSCORE` (+ `MGET free-map` chunks only for window-filter candidates whose earliest start is before the window) | 1 batched call, cache-first |
 | search, path A | 1 page query + 5 page-view queries | 1 `ZMSCORE` over the page rows | 1 batched call |
-| search, misses | + 4 per inline batch (hours, exceptions, shortest type, busy) | + guarded `EVAL` per computed doctor (one pipeline) | none |
+| search, misses | + 5 per inline batch (the doctors' timezones via `listBookableForIndex(ids)`, then hours, exceptions, shortest type, busy; run one after the other) | + guarded `EVAL` per computed doctor (one pipeline) | none |
 | profile | 5 view queries + 3 (hours, exceptions, busy; type known) on a slot-cache miss (+1 zone) | slot cache ops | 1 batched call |
-| sweep, per batch of 100 doctors | 4 | 1 `MGET slots-ver`, 1 pipeline of `EVAL`s | none |
+| sweep, per batch of 100 doctors | 4 (+ 1 doctor-list query per sweep, + 1 stale-member re-check when the index holds members that are no longer in the list) | 1 `MGET slots-ver`, 1 pipeline of `EVAL`s | none |
+| refresh, per batch of up to 50 doctors | 5 (`listBookableForIndex(ids)` + the 4 of a batch) | `SPOP`, 1 `MGET`, 1 pipeline of `EVAL`s | none |
 
 - Inline computation, the sweep and the refresh share one code path (`NextAvailableComputer`): loader batch -> `computeSlots`-based `computeDiscoveryEntry` -> guarded write.
-- A search never computes slots per row beyond the cap; Redis outage costs at most one cap-sized batch (<= 20 doctors, 4 queries).
+- A search never computes slots per row beyond the cap; Redis outage costs at most one cap-sized batch (<= 20 doctors, 5 queries).
 - The candidate query returns narrow rows (`id, user_id, fee, years`) and is hard-capped at `CANDIDATE_HARD_CAP = 10_000` rows (`LIMIT 10001`, `availability_candidates_truncated`
   if hit); the revisit triggers (bookable doctors > 6 k, sweep > 60 s, search p95 > 300 ms) are in [capacity.md](../architecture/capacity.md).
 - Sweep CPU about 15 to 20 s per cycle at 2.5 k doctors on the 0.5 vCPU worker; worker pool 6 connections, one pinned by the sweep lock.
@@ -435,7 +437,7 @@ repositories. Truncate tables and flush the prefixes `slots:`, `slots-ver:`, `ne
 **Integration (`tests/integration/availability-slots*.test.ts`)**
 - RBAC: patient 200, admin 200, doctor 403, unauthenticated 401, expired token 401, non-active patient 403; bookable-doctor matrix 404 (suspended, not accepting, unapproved, `sync pending`, no active type) for **both** roles; foreign type 404.
 - Contract conformance: status, error codes and the shapes of `Slot` and `SlotWindowMeta` against the contract helper.
-- Computation: DST day in `Africa/Cairo`/`America/New_York`; cross-midnight rendering; a booked slot disappears, cancel/reschedule/no-show/complete reappear; exception and hours change visible within the TTL and **immediately** through the listener; type duration change.
+- Computation: DST day in `Africa/Cairo`/`America/New_York`; cross-midnight rendering; a booked slot disappears, cancel/reschedule/no-show reappear, a `completed` consultation with a future `ends_at` keeps its interval busy (no listed start is refused by booking); exception and hours change visible within the TTL and **immediately** through the listener; type duration change.
 - **Book-every-listed-slot**: for a small fixture doctor, book (via `POST /consultations`) a sample of listed slots -> all `201`; for unlisted minutes (off-grid, outside hours, over a busy interval, past, beyond horizon) -> `422`/`409`.
 - Invalidation: each source (hours, exception, type, book, reschedule, cancel, complete, no-show, timezone change, accepting toggle, suspend, reinstate) bumps `slots-ver` and removes the index member; a failing listener never fails the write; Redis down (`createUnreachableRedis`) -> write succeeds, `/slots` still `200` from Postgres.
 - Cache: second identical request is a hit (assert via spy on loader); key contains `ver`; a change makes the next request a miss; TTL <= 60 s.
@@ -488,10 +490,10 @@ per-type availability in search (the index uses the shortest active type; `/slot
 None. The contract edits are decided and specified in 3.0 (applied at step 0 of each slice); no Identity contract change; **Platform changes required (/system-design): none** (the hub
 already lists `availability-refresh`/`availability-sweep`, the worker's own Redis and the name-index Identity load; Redis >= 6.2 is met by the local and test images, Redis 7).
 
-Doc updates owed by `/update-docs` after the build (not questions): `CLAUDE.md` (status line and module list, the `slots:` key gains `<ver>`, Performance rule 5 and 6 wording),
-`docs/architecture/{availability,scheduling-slots,api,overview,infrastructure,data-model,deployment,resilience,capacity}.md` (as-built notes, env table: add the four variables,
-remove `NEXT_AVAILABLE_CACHE_TTL_SECONDS` and `RATE_LIMIT_SEARCH_*` from "Planned"), `docs/runbook.md` (`AvailabilitySweepStale`, `AvailabilityDegradedHigh`, `--once availability-*`),
-`.claude/skills/timezone-slot-computation/SKILL.md` (still names the retired `next-available:<doctorId>` key), `docs/service-card.md` (see 13.4), `docs/INDEX.md`, `.env.example`.
+Doc updates owed by `/update-docs`: **slices 1 and 2 done** (2026-10-21 and 2026-10-23): `CLAUDE.md` (status line and module list, the `slots:` key gains `<ver>`),
+`docs/architecture/{availability,scheduling-slots,api,overview,infrastructure,data-model,deployment,resilience,capacity}.md`, `docs/runbook.md` (`AvailabilitySweepStale`, `AvailabilityDegradedHigh`,
+`--once availability-*`), `.claude/skills/timezone-slot-computation/SKILL.md`, `docs/service-card.md` (see 13.4), `docs/INDEX.md`, `.env.example`. **Left for slice 3:** the name-index parts of the same files
+(`name-index` rows and the S3 wording in `availability.md`, `data-model.md` is unaffected, the `AVAILABILITY_NAME_REFRESH_SECONDS` variable is already declared), the CLAUDE.md status wording "name index not built".
 
 ---
 
@@ -588,8 +590,8 @@ export function tryRedis<T>(client: Redis, command: () => Promise<T>): Promise<R
 
 #### 12.2.1 Env, constants, worker wiring
 - `env.ts`: `SLOT_CACHE_TTL_SECONDS` (int 1..60, default 60; added in S1), `AVAILABILITY_SWEEP_INTERVAL_SECONDS` (`positiveSeconds`, default 120), `AVAILABILITY_NAME_REFRESH_SECONDS` (`positiveSeconds`, default 300; declared in S2 so the env surface is complete, used from S3), `AVAILABILITY_INLINE_MISS_CAP` (int 0..100, default 20). No defaults on secrets.
-- `constants.ts`: `NONE_SCORE = 1e15`, `LOOKAHEAD_DAYS = 14`, `SWEEP_LOCK_NAMESPACE = 1104`, `SWEEP_LOCK_ID = 0`, `REFRESH_LOOP_NAME = "availability-refresh"`, `SWEEP_LOOP_NAME = "availability-sweep"`, `REFRESH_INTERVAL_MS = 2000`, `REFRESH_BATCH = 50`, `REFRESH_MAX_BATCHES_PER_TICK = 10`, `SWEEP_BATCH = 100`, `FREE_MAP_TTL_SECONDS = 600`, `CANDIDATE_HARD_CAP = 10_000`, `PREVIEW_SLOT_COUNT = 5`, `SLOTS_MAX_SPAN_DAYS = 14`, rate-limit constants (7.3), metric and log names.
-- `WorkerLoopDeps` gains `redis: Redis`. `worker.ts`: `const redis = createRedis(env.REDIS_URL, { name: "care-worker" })`; `redis.connect().catch(() => logger.warn("redis_unavailable"))` in long-running mode, and in `--once` mode `await settleWithin(redis.connect().catch(() => undefined), 3_000, undefined)` before the tick; `new IdentityClient({ env, redis })`; `closeAll` also `await closeRedis(redis)`. `buildWorkerLoops` constructs the readers with `deps.db`, `NextAvailableIndex`, `SlotInputsLoader`, `NextAvailableComputer`, `AvailabilityRefreshService`, `AvailabilitySweepService` and returns the two new loops (appended to the list). `docker-compose.yml` already gives `care-worker` `REDIS_URL`.
+- `constants.ts`: `NONE_SCORE = 1e15`, `LOOKAHEAD_DAYS = 14`, `SWEEP_LOCK_NAMESPACE = 1104`, `SWEEP_LOCK_ID = 0`, `REFRESH_LOOP_NAME = "availability-refresh"`, `SWEEP_LOOP_NAME = "availability-sweep"`, `REFRESH_INTERVAL_MS = 2000`, `REFRESH_BATCH = 50`, `REFRESH_MAX_BATCHES_PER_TICK = 10`, `SWEEP_BATCH = 100`, `FREE_MAP_TTL_SECONDS = 600`, `PREVIEW_SLOT_COUNT = 5`, `SLOTS_MAX_SPAN_DAYS = 14`, rate-limit constants (7.3), metric and log names. `CANDIDATE_HARD_CAP = 10_000` lives in `doctors/constants.ts` (the `doctors` repository applies it; `availability` does not import a foreign constant).
+- `WorkerLoopDeps` gains `redis: Redis`. `worker.ts`: `const redis = createRedis(env.REDIS_URL, { name: "care-worker" })`; in both modes the connection is awaited for at most 3 s through `connectWithin(redis, 3_000)` (`lib/redis/redis.ts`) before the first tick (the daemon logs `redis_unavailable` and starts its loops anyway; `--once` runs its tick, which reports `"incomplete"` without Redis); `new IdentityClient({ env, redis })`; `closeAll` also `await closeRedis(redis)`. `buildWorkerLoops` constructs the readers with `deps.db`, `NextAvailableIndex`, `SlotInputsLoader`, `NextAvailableComputer`, `AvailabilityRefreshService`, `AvailabilitySweepService` and returns the two new loops (appended to the list). `docker-compose.yml` already gives `care-worker` `REDIS_URL`.
 
 #### 12.2.2 Free-map and rank-index values
 - **Free-map (173 bytes):** byte 0 = version `1`; bytes 1-4 = big-endian `uint32` base bucket = `floor(computationInstantMs / 900000)`; bytes 5-172 = 168 bytes of bits, MSB first: bit `i` (byte `5 + (i >> 3)`, mask `0x80 >> (i & 7)`) is set when 15-minute bucket `base + i` contains a free slot start; 1344 buckets = 14 days. `FREE_MAP_BYTES = 173`, `FREE_MAP_BUCKETS = 1344`, `FREE_MAP_BUCKET_MS = 900_000`, `FREE_MAP_VERSION = 1`.
@@ -613,7 +615,7 @@ No `SCAN`, no `KEYS`. `ZSET` members are decimal user ids; scores are epoch ms (
 
 #### 12.2.4 `NextAvailableComputer` (shared by API inline path, refresh, sweep)
 `compute(doctors: readonly IndexDoctor[], nowMs) -> Promise<ComputedEntry[]>`:
-`IndexDoctor = { profileId, userId, timezone }`, `ComputedEntry = { userId, score, map, ver }`. Steps: snapshot versions (`MGET`) -> `SlotInputsLoader.loadShortestType` -> per doctor `computeSlots`-based entry (no type -> `removed`) -> returns entries; `write(entries)` pipelines the guarded `EVAL`s. Single-flight: an in-process `Map<userId, Promise<ComputedEntry>>` (`lib/async/single-flight.ts`: `createSingleFlight<K, V>(): { run(key: K, start: () => Promise<V>): Promise<V> }`, the entry is removed when the promise settles); a batch registers one promise per doctor derived from the batch promise, doctors already in flight are awaited instead of recomputed. Inline path: choose <= cap misses by ascending profile id, `compute` + `write`, metric `availability_inline_compute_ms`, count into `availability_index_miss`.
+`IndexDoctor = { profileId, userId, timezone }`, `ComputedEntry = { userId, score, map, ver }`. Steps: snapshot versions (`MGET`) -> `SlotInputsLoader.loadShortestType` -> per doctor `computeSlots`-based entry (no type -> `removed`) -> returns entries; `write(entries)` pipelines the guarded `EVAL`s. Single-flight: an in-process `Map<userId, Promise<ComputedEntry>>` (`lib/async/single-flight.ts`: `createSingleFlight<K, V>(): { run(key: K, start: () => Promise<V>): Promise<V> }`, the entry is removed when the promise settles); a batch registers one promise per doctor derived from the batch promise, doctors already in flight are awaited instead of recomputed. Inline path: choose <= cap misses by ascending profile id, load their `IndexDoctor` rows with `listBookableForIndex(userIds)` (1 query, which also re-proves they are still bookable), then `refresh` (= `compute` + `write`; 4 more queries), metric `availability_inline_compute_ms`, count into `availability_index_miss`. So an inline batch costs 5 Postgres queries (spec 8).
 
 #### 12.2.5 Candidate and page SQL (`doctor-discovery.repo.ts`; the only statements with the `consultation_types` term)
 ```sql
@@ -628,11 +630,11 @@ WHERE dp.verification_status = 'approved' AND dp.identity_sync_status = 'synced'
   AND EXISTS (SELECT 1 FROM doctor_languages dl WHERE dl.doctor_profile_id = dp.id AND dl.language_code = $language)
   AND (starts_with(lower(dp.headline), $namePrefix) OR dp.user_id = ANY($nameMatchedUserIds))   -- name filter (S2: headline term only)
 ```
-Shapes: `listCandidates(filters)` -> `SELECT dp.id, dp.user_id, dp.consultation_fee, dp.years_experience ... LIMIT 10001`; `pageCandidates(filters, kind, after, fetch)` -> `ORDER BY dp.consultation_fee, dp.id` with `(dp.consultation_fee, dp.id) > ($v, $id)` or `ORDER BY dp.years_experience DESC, dp.id DESC` with `(dp.years_experience, dp.id) < ($v, $id)`, `LIMIT $fetch`; `listBookableForIndex(userIds?)` -> `SELECT dp.id, dp.user_id, dp.timezone ... ORDER BY dp.id LIMIT 10001` [`AND dp.user_id = ANY($1)`]. Rows are exported query builders (`...Query`) so `EXPLAIN` tests inspect exactly what runs (repo convention).
+Shapes: `listCandidates(filters)` -> `SELECT dp.id, dp.user_id, dp.consultation_fee, dp.years_experience ... ORDER BY dp.consultation_fee, dp.id LIMIT 10001`; `pageCandidates(filters, kind, after, fetch)` -> `ORDER BY dp.consultation_fee, dp.id` with `(dp.consultation_fee, dp.id) > ($v, $id)` or `ORDER BY dp.years_experience DESC, dp.id DESC` with `(dp.years_experience, dp.id) < ($v, $id)`, `LIMIT $fetch`; `listBookableForIndex(userIds?)` -> `SELECT dp.id, dp.user_id, dp.timezone ... ORDER BY dp.id LIMIT 10001` [`AND dp.user_id = ANY($1)`]. Rows are exported query builders (`...Query`) so `EXPLAIN` tests inspect exactly what runs (repo convention).
 Page views: `DoctorsService.findPublicViews(userIds)` = profile rows (`user_id = ANY`), languages, links, `SpecialtiesService.findByIds`, `SchedulesService.listActiveTypesFor(profileIds)` (new batched read on `schedules`, uses `idx_consultation_types_doctor_profile_id_active`) assembled into `PublicDoctorView { profile, languages, specialties, activeTypes, bookable }`.
 
 #### 12.2.6 `DiscoveryService`
-`search(actor, query)`: (1) validate cross-field rules (`minFee`/`maxFee`, `resolveSearchWindow`) -> (2) mode: `usable = isRedisUsable(redis)`, effective cursor kind, decode + compare cursor -> (3) name ids (S2: none) -> (4) path A or B (AV-R17) -> (5) page rows -> `findPublicViews` -> `nextAvailableAt` (scores already in hand for path B; `ZMSCORE` for path A page rows; inline for misses within the cap) -> (6) `hydrateUsersOrEmpty` once -> drop non-active -> (7) DTOs + `meta` (`degraded` ordered, absent when empty) + metrics. Any `tryRedis` failure in step 4 switches the remainder of the request to the degraded plan (cursor rule AV-R20).
+`search(query)` (no actor: discovery data is the same for patient and admin, the policy already filtered the role): (1) validate cross-field rules (`minFee`/`maxFee`, `resolveSearchWindow`) -> (2) mode: `usable = isRedisUsable(redis)`, effective cursor kind, decode + compare cursor -> (3) name ids (S2: none) -> (4) path A or B (AV-R17) -> (5) page rows -> `findPublicViews` -> `nextAvailableAt` (scores already in hand for path B; `ZMSCORE` for path A page rows; inline for misses within the cap) -> (6) `hydrateUsersOrEmpty` once -> drop non-active -> (7) DTOs + `meta` (`degraded` ordered, absent when empty) + metrics. Any `tryRedis` failure in step 4 switches the remainder of the request to the degraded plan (cursor rule AV-R20).
 `getDoctor(actor, doctorUserId, query)`: `findPublicViews([id])` -> viewer rule (AV-R21) -> if bookable: `AvailabilityService.listSlots(shortest active type, [now, now + 14 d))`, first 5, `nextAvailableAt` = first start -> hydrate -> DTO.
 Pure helpers (`rules.ts`, unit-tested without I/O): `resolveSearchWindow`, `effectiveKind`, `orderCandidates`, `applyCursor`, `matchesWindow`.
 
@@ -656,34 +658,34 @@ Tasks follow CLAUDE.md -> "Build order for a new module" (step number in bracket
 
 ### 13.1 Slice S1 — Slots and listeners
 Tasks
-- [ ] S1-01 [0] Apply contract edits C1 to C3 (3.0) and write `availability-contract.test.ts` (S1 part).
-- [ ] S1-02 [2] `env.ts` + `Env` type: `SLOT_CACHE_TTL_SECONDS`; `availability` constants, enums, types; `DoctorChangeKind` + port types in `doctors`.
-- [ ] S1-03 [pkg] `pkg/slots` additions (12.1.2) with the unit tests of 9.1 including the property test.
-- [ ] S1-04 [lib] `lib/redis/try-redis.ts` + tests.
-- [ ] S1-05 [6] Readers and repos: `SlotInputsReader`, `BusyIntervalsReader`, `DoctorDiscoveryReader.findForSlots`; register tokens; EXPLAIN test for the busy statement.
-- [ ] S1-06 [7] `NextAvailableIndex` (slots part), `SlotInputsLoader`, `AvailabilityService`, `AvailabilityChangeListener`; `DoctorsService.notifyDoctorChanged` and the call sites in `doctors` / `admin-doctors`; `bootstrap.ts` rebinding.
-- [ ] S1-07 [4,5] `DoctorSlotsQueryDto`, slot response DTOs (`SlotResponseDto`, `SlotWindowMetaDto`).
-- [ ] S1-08 [8] `policies.ts` (`slots`).
-- [ ] S1-09 [9,10,11] controller, `routes.ts` (limiters named in 7.3), mount in `src/routes.ts`.
-- [ ] S1-10 [12] Integration, RBAC, contract, invalidation, cache, book-every-listed-slot, budget tests (9.1).
-- [ ] S1-11 [13] `/manual-qa availability` slots section (`scripts/curl-test-availability.sh`).
-- [ ] S1-12 [14] Docs: `docs/availability/tasks.md`, INDEX, as-built notes in this spec.
+- [x] S1-01 [0] Apply contract edits C1 to C3 (3.0) and write `availability-contract.test.ts` (S1 part).
+- [x] S1-02 [2] `env.ts` + `Env` type: `SLOT_CACHE_TTL_SECONDS`; `availability` constants, enums, types; `DoctorChangeKind` + port types in `doctors`.
+- [x] S1-03 [pkg] `pkg/slots` additions (12.1.2) with the unit tests of 9.1 including the property test.
+- [x] S1-04 [lib] `lib/redis/try-redis.ts` + tests.
+- [x] S1-05 [6] Readers and repos: `SlotInputsReader`, `BusyIntervalsReader`, `DoctorDiscoveryReader.findForSlots`; register tokens; EXPLAIN test for the busy statement.
+- [x] S1-06 [7] `NextAvailableIndex` (slots part), `SlotInputsLoader`, `AvailabilityService`, `AvailabilityChangeListener`; `DoctorsService.notifyDoctorChanged` and the call sites in `doctors` / `admin-doctors`; `bootstrap.ts` rebinding.
+- [x] S1-07 [4,5] `DoctorSlotsQueryDto`, slot response DTOs (`SlotResponseDto`, `SlotWindowMetaDto`).
+- [x] S1-08 [8] `policies.ts` (`slots`).
+- [x] S1-09 [9,10,11] controller, `routes.ts` (limiters named in 7.3), mount in `src/routes.ts`.
+- [x] S1-10 [12] Integration, RBAC, contract, invalidation, cache, book-every-listed-slot, budget tests (9.1).
+- [x] S1-11 [13] `/manual-qa availability` slots section (`scripts/curl-test-availability.sh`).
+- [x] S1-12 [14] Docs: `docs/availability/tasks.md`, INDEX, as-built notes in this spec.
 Exit gate: `npm run typecheck`, `npm run lint` (restricted-imports), `npm test`, `npm run test:integration` green; the S1 contract test passes against the edited contract; the property test, the cache/invalidation tests, the book-every-listed-slot test, the `EXPLAIN` test and the 14-day budget test (< 300 ms p95, hit and miss) pass; Redis-down `/slots` returns 200; RBAC matrix complete (doctor 403, patient/admin 200, non-bookable 404 for both); no existing suite changed behaviour (the three `Noop*` listeners still satisfy their old tests).
 
 ### 13.2 Slice S2 — Search, profile, loops, degradation
 Tasks
-- [ ] S2-01 [0] Contract edits C4 to C8; contract test S2 part.
-- [ ] S2-02 [1] Migration `20261021120000_add_doctor_discovery_indexes` (+ migration test); `EXPLAIN` fixtures.
-- [ ] S2-03 [2] Env vars `AVAILABILITY_*`; constants; `DegradedPart`; types; remove `NEXT_AVAILABLE_CACHE_TTL_SECONDS` from the plan.
-- [ ] S2-04 [pkg/lib] `pkg/slots` free-map functions; `lib/async/single-flight.ts`; tests.
-- [ ] S2-05 [6] `doctor-discovery.repo.ts` (candidates, page, bookable list, view loads), `SchedulesService.listActiveTypesFor` + `SlotInputsReader.loadSlotInputs`, `DoctorsService.findPublicViews`; parity test with `isBookable`.
-- [ ] S2-06 [7] `NextAvailableIndex` (index part), `NextAvailableComputer`, `rules.ts` + `discovery-cursor.ts`, `DiscoveryService`, `AvailabilityRefreshService`, `AvailabilitySweepService`.
-- [ ] S2-07 [4,5] `SearchDoctorsQueryDto`, `GetDoctorQueryDto`, `DiscoveryDoctorResponseDto` (viewer-aware), `PaginationMeta` + `degraded`.
-- [ ] S2-08 [8,9,10,11] policies (`search`, `getDoctor`), controller methods, routes with limiters.
-- [ ] S2-09 [worker] `WorkerLoopDeps.redis`, `worker.ts` Redis lifecycle, `worker-loops.ts` registration, `--once` for both loops.
-- [ ] S2-10 [12] Unit + integration + RBAC + contract + degradation + pagination + freshness + worker + EXPLAIN + budget tests (9.2).
-- [ ] S2-11 [13] `/manual-qa availability` search/profile sections incl. Redis stop/start, worker stop, fake Identity down.
-- [ ] S2-12 [14] Docs, runbook alerts, as-built notes.
+- [x] S2-01 [0] Contract edits C4 to C8; contract test S2 part.
+- [x] S2-02 [1] Migration `20261021120000_add_doctor_discovery_indexes` (+ migration test); `EXPLAIN` fixtures.
+- [x] S2-03 [2] Env vars `AVAILABILITY_*`; constants; `DegradedPart`; types; remove `NEXT_AVAILABLE_CACHE_TTL_SECONDS` from the plan.
+- [x] S2-04 [pkg/lib] `pkg/slots` free-map functions; `lib/async/single-flight.ts`; tests.
+- [x] S2-05 [6] `doctor-discovery.repo.ts` (candidates, page, bookable list, view loads), `SchedulesService.listActiveTypesFor` + `SlotInputsReader.loadSlotInputs`, `DoctorsService.findPublicViews`; parity test with `isBookable`.
+- [x] S2-06 [7] `NextAvailableIndex` (index part), `NextAvailableComputer`, `rules.ts` + `discovery-cursor.ts`, `DiscoveryService`, `AvailabilityRefreshService`, `AvailabilitySweepService`.
+- [x] S2-07 [4,5] `SearchDoctorsQueryDto`, `GetDoctorQueryDto`, `DiscoveryDoctorResponseDto` (viewer-aware), `PaginationMeta` + `degraded`.
+- [x] S2-08 [8,9,10,11] policies (`search`, `getDoctor`), controller methods, routes with limiters.
+- [x] S2-09 [worker] `WorkerLoopDeps.redis`, `worker.ts` Redis lifecycle, `worker-loops.ts` registration, `--once` for both loops.
+- [x] S2-10 [12] Unit + integration + RBAC + contract + degradation + pagination + freshness + worker + EXPLAIN + budget tests (9.2).
+- [x] S2-11 [13] `/manual-qa availability` search/profile sections incl. Redis stop/start, worker stop, fake Identity down.
+- [x] S2-12 [14] Docs, runbook alerts, as-built notes.
 Exit gate: all of S1's gate plus: contract test S2 part; the three migration indexes exist and the `EXPLAIN` evidence shows partial-index keyset scans with no Sort node and no `Seq Scan` beyond the bookable subset; search p95 < 400 ms at 2.5 k doctors for each sort (warm and one cold run); pagination page 2 passes on all three sorts; Redis-down, worker-down and Identity-down tests return 200 with the documented `meta.degraded` / `profileHydrated:false`; `--once availability-refresh|availability-sweep` exit 0; the sweep singleton test passes with two concurrent ticks; `name` works headline-only with `meta.degraded:["nameFilter"]`; logs contain no names.
 
 ### 13.3 Slice S3 — Name filter
@@ -706,3 +708,32 @@ Exit gate: S2's gate stays green; prefix on display name and headline works case
 - The opt-in benchmark config `jest.bench.config.js` (`npm run test:bench`) now also runs the integration global setup (`tests/integration/global-setup.ts`) and `tests/setup.ts` (`setupFilesAfterEnv`), so the HTTP benchmark `tests/bench/availability-slots-http.bench.test.ts` runs against the real wiring with real Postgres and real Redis (prerequisite: the test infra from `npm run test:infra:up`). Before, the config ran the pure benchmarks only. The pure benchmark `tests/bench/availability-slots.bench.test.ts` is unchanged in kind.
 - Measured budgets (2026-10-21, local dev machine, a doctor with 150 busy consultations, a 14-day window, p95 of 100 measured in-process supertest requests after 10 warm-up requests, budget < 300 ms): HTTP cache miss about 19 ms, HTTP cache hit about 11 ms, pure `computeSlots` about 4 ms. Both HTTP cases assert `< 300` in the benchmark. These numbers are well below the budget and are indicative only (one machine, no concurrent load); the benchmark is the repeatable check.
 - Slice 1 environment surface: only `SLOT_CACHE_TTL_SECONDS` (integer 1..60, default 60) is added; it is declared in `src/lib/config/env.ts` and `src/lib/config/types.ts`. No migration, no worker change, no new contract operation. Contract check (2026-10-21): `getDoctorSlots` in `contracts/openapi.yaml` (C1 to C3 applied) matches the controller, request DTO (`typeId`, `from`, `to`, `timezone`; `timezone` `maxLength: 64`), response DTOs (`Slot`, `SlotWindowMeta`), policy (roles `patient`, `admin`; ownership none), limiter pair and response-code set `200, 400, 401, 403, 404, 429, 500`; no drift.
+
+### Slice 2 as-built notes (2026-10-23, spec version 0.2.0)
+
+Slice 2 is built on branch `feature/availability-slice2` (search, profile, rank index, free-map, refresh and sweep loops, worker Redis, migration `20261021120000`). Contract check: `searchDoctors` and `getDoctor` in `contracts/openapi.yaml` (C4 to C8 applied, plus the review-time `MinFee`/`MaxFee` `maximum: 2147483647` and `SpecialtyFilter` `minLength: 1`) match the as-built controller, request DTOs, response DTOs, policies, limiter pairs and response-code sets (`200, 400, 401, 403, 404, 429, 500`); no drift. Deviations from the plan above, all intentional:
+
+1. **Name filter uses a local `resolveNamePrefix` (`src/app/availability/rules.ts`)** until slice 3 provides the shared `normalizeName` (`pkg/utils/name.ts`, 12.3). Same normalisation (NFC, trim, collapse whitespace, lower-case) and the same `>= 2` code-point rule (`400` with `details[].field = "name"`), applied to the headline term only. A request with `name` always reports `meta.degraded: ["nameFilter"]` in S2 (`DiscoveryService.nameDegradation`); slice 3 replaces `resolveNamePrefix` with `normalizeName` and makes the flag conditional (AV-R27).
+2. **`CANDIDATE_HARD_CAP = 10_000` lives in `src/app/doctors/constants.ts`**, not in `availability/constants.ts`: the cap is applied inside the `doctors` repository, and `availability` would otherwise import a foreign module's constant (or duplicate it). `listCandidates` carries `ORDER BY dp.consultation_fee, dp.id` so the rows kept past the cap are deterministic (review 20261023-1130); a truncated sweep list makes the sweep `"incomplete"`.
+3. **Batch loads run sequentially, not in `Promise.all`** (`SlotInputsReader.loadSlotInputs`: hours, then exceptions, then shortest types; `SlotInputsLoader.loadShortestType`: schedule inputs, then busy). One batch holds one pool connection at a time: the worker pool is 6 and the sweep pins one with its advisory lock, so parallel statements would starve the other loops. The statement count is unchanged. (`loadForSlots` for a single `/slots` request keeps its two-way `Promise.all`.)
+4. **The inline path costs 5 Postgres queries per batch, not 4** (sections 8 and 12.2.4 updated). The inline computation first loads the `IndexDoctor` rows of the chosen misses with `listBookableForIndex(userIds)` (`id, user_id, timezone`, which also re-proves bookability), then runs the 4-statement `NextAvailableComputer.refresh`. `availability-refresh` pays the same 5 per batch of up to 50 popped ids. The sweep lists all bookable doctors once and then pays 4 per batch of 100 (plus one re-check query for stale members, see 8).
+5. **A mid-request index failure reruns the whole request on the degraded plan** (`selectIndexed` returns `undefined` when the `ZMSCORE` or the free-map read fails, and `search` then calls `selectDegraded`; a failed write-back is ignored and the computed value is still used). Consequence beyond AV-R20: a client that sent a cursor of kind `earliest` and hit such a failure gets `400 ValidationFailed` (`details[0].field = "cursor"`), exactly as when Redis is unusable at the start; restarting the list without a cursor works. Price and experience cursors survive the switch (their kind does not change).
+6. **The "span more than 14 days" `400` of AV-R16 is unreachable over HTTP.** Both supplied bounds must already lie in `[now, now + 14 d]`, and a missing bound is derived inside that range, so the span can never exceed 14 days. The rule stays in `resolveSearchWindow` as a guard and its exactly-14-day boundary is unit-tested; the contract wording ("at most 14 days apart") remains true.
+7. **`DiscoveryService.search(query)` takes no actor**; `getDoctor(actor, id, query)` does (viewer-aware `status`, patient `404`). The policy already restricts the role and the item DTO is identical for patient and admin.
+8. **Two helpers beyond the plan, both in `lib/`:** `lib/async/yield-to-event-loop.ts` (the computer yields to the event loop every 10 doctors so a 100-doctor batch does not hold the event loop for its whole duration) and `connectWithin(client, timeoutMs, onFailure?)` in `lib/redis/redis.ts` (bounded Redis handshake used by `worker.ts` in both modes, see AV-R25). Both are generic and unit-tested.
+9. **AV-R4 now counts `completed` as busy** (it mirrors the exclusion constraint; review 20261023-1130, fixed on this branch). Spec 4.1, 9.1 and `architecture/scheduling-slots.md` already say so; the busy statement, the free-map, the index and the profile preview all use it.
+10. **Sweep hardening from the review:** stale index members are re-checked against Postgres before `ZREM`, and the worker waits for its Redis connection before the first (boot) tick (AV-R23, AV-R25 above).
+
+Measured (2026-10-23, local dev machine, real Postgres and Redis, in-process supertest, 2,500 bookable doctors among 20,000 profiles, 100 measured requests after 10 warm-up, budget 400 ms; `npm run test:bench`, `tests/bench/availability-search-http.bench.test.ts`):
+
+| Measure | Result |
+|---|---|
+| Search p95, warm index, every sort | 12 to 48 ms |
+| Search p95, cold index (inline cap of 20 applies) | 68 to 97 ms |
+| Search p95, Redis down | about 64 ms (one run) |
+| `/slots` p95 at the same scale, miss / hit | 14 ms / 7 ms (budget 300 ms) |
+| One full `availability-sweep` of 2,500 doctors (`--once`) | 6.4 to 6.7 s on the dev machine (unconstrained CPU; the 0.5 vCPU planning figure in [capacity.md](../architecture/capacity.md) stays the conservative derivation) |
+
+`EXPLAIN` findings (`tests/integration/availability-search-explain.test.ts`, 20,000 profiles of which 2,500 bookable). Path A price and experience pages use their partial index with no `Sort` node; the language and specialty filters use their indexes; the busy statement has no `Seq Scan` on `consultations`. Two planner choices differ from section 8 and are **accepted** (scans stay inside the bookable subset, no defect): (a) the **unfiltered path B candidate scan** plans as a hash semi join that hashes the active-type set with a `Seq Scan` on `consultation_types` (about 13 ms for 2,500 candidates) instead of probing `idx_consultation_types_doctor_profile_id_active` per candidate; every keyset page and every selective filter does use the index; (b) the **specialty slug lookup** reads the 10-row `specialties` table directly instead of `uq_specialties_slug`. The sweep list (`ORDER BY id`) sorts a bitmap scan of the bookable partial index.
+
+Test caveat: the graceful SIGTERM case of `tests/integration/availability-worker.test.ts` is skipped on win32 (like `process.test.ts`) and runs on CI; the worker's client-observation logic was exercised here with `SIGKILL`.

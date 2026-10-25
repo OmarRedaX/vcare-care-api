@@ -15,10 +15,12 @@ import { DOCTOR_PROFILE_ENTITY_TYPE, DOCTOR_PROFILE_UNIQUE_USER } from "../const
 import { DoctorAuditAction, DoctorChangeKind, DoctorProfileField, IdentitySyncStatus, VerificationStatus } from "../enums";
 import { ApplicationNotEditable, CurrencyNotAllowed, PrimarySpecialtyNotLinked, PrimarySpecialtyRequired, UnknownSpecialty } from "../errors";
 import { Conflict } from "../../../lib/error/errors";
+import { toSpecialtyRefs } from "../doctor-profile.mapper";
+import { listLanguagesForProfiles, listLinksForProfiles, listProfilesByUserIds } from "../repository/doctor-discovery.repo";
 import { deleteLanguagesNotIn, insertLanguages, listLanguages } from "../repository/doctor-languages.repo";
 import { findProfileByUserId, findProfileByUserIdForShare, findProfileByUserIdForUpdate, insertProfile, isUserLocallySuspended, updateProfile } from "../repository/doctor-profiles.repo";
 import { clearPrimaryExcept, deleteLinksNotIn, insertLinks, listSpecialtyLinks, markPrimary } from "../repository/doctor-specialties.repo";
-import type { ApplyResult, BookingDoctor, DoctorChangeListener, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, SpecialtyLink, SpecialtyRef } from "../types";
+import type { ApplyResult, BookingDoctor, DoctorChangeListener, DoctorProfileChanges, DoctorProfileColumnChanges, DoctorProfileDiff, DoctorProfileInput, DoctorProfileView, PublicDoctorView, SpecialtyLink } from "../types";
 import type { DoctorProfile } from "../entity/doctor-profile.entity";
 import { SchedulesService } from "../../schedules/service/schedules.service";
 import { VerificationService } from "../../verification/service/verification.service";
@@ -215,9 +217,26 @@ export class DoctorsService {
             knownLinks === undefined ? listSpecialtyLinks(profile.id, conn) : Promise.resolve(knownLinks),
             this.schedules.hasActiveConsultationType(profile.id, conn)]);
         const specialties = await this.specialties.findByIds(links.map((link) => link.specialtyId), conn);
-        const refs: SpecialtyRef[] = specialties.map((item) => ({ id: item.id, slug: item.slug, name: item.name,
-            isPrimary: links.some((link) => link.specialtyId === item.id && link.isPrimary) }));
-        refs.sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.name.localeCompare(b.name) || a.id - b.id);
-        return { profile, languages, specialties: refs, hasActiveConsultationType };
+        return { profile, languages, specialties: toSpecialtyRefs(specialties, links), hasActiveConsultationType };
+    }
+
+    /**
+     * Public views of a page of doctors for discovery (search and profile): five statements for any page size (profiles, languages,
+     * links, specialties by id, active types). A user id with no live profile is simply absent from the map.
+     */
+    async findPublicViews(userIds: readonly number[], conn: Knex = this.db): Promise<Map<number, PublicDoctorView>> {
+        const profiles = await listProfilesByUserIds(userIds, conn);
+        const profileIds = profiles.map((profile) => profile.id);
+        const [languages, links, types] = await Promise.all([
+            listLanguagesForProfiles(profileIds, conn), listLinksForProfiles(profileIds, conn), this.schedules.listActiveTypesFor(profileIds, conn),
+        ]);
+        const specialties = await this.specialties.findByIds([...new Set([...links.values()].flatMap((list) => list.map((link) => link.specialtyId)))], conn);
+        return new Map(profiles.map((profile) => {
+            const profileLinks = links.get(profile.id) ?? [];
+            const activeTypes = types.get(profile.id) ?? [];
+            return [profile.userId, { profile, languages: languages.get(profile.id) ?? [],
+                specialties: toSpecialtyRefs(specialties.filter((item) => profileLinks.some((link) => link.specialtyId === item.id)), profileLinks),
+                activeTypes, bookable: isBookable(profile, activeTypes.length > 0) }];
+        }));
     }
 }

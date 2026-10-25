@@ -171,6 +171,23 @@ describe("availability slots (integration: real Postgres and real wiring, AV-R1.
         expect(after.body.data.map((slot: { startsAt: string }) => slot.startsAt)).toContain(start);
     });
 
+    it("should keep a completed consultation busy until its planned end so no listed start is refused by booking", async () => {
+        const bookAt = (start: string) => request(app).post("/api/consultations").set("Authorization", `Bearer ${tokens.patient}`)
+            .set("Idempotency-Key", randomUUID()).send({ doctorId: 202, typeId, startsAt: start, complaintText: "SYNTHETIC-SLOT-BOOKING-7704", patientTimezone: "UTC" });
+        const initial = (await call(tokens.patient)).body.data.map((slot: { startsAt: string }) => slot.startsAt) as string[];
+        const first = initial[0]!;
+        const booked = await bookAt(first);
+        expect(booked.status).toBe(201);
+        // Completed early: `ends_at` stays in the future and `excl_consultations_doctor_no_overlap` still holds the interval.
+        await ownerDb("consultations").where("id", Number(booked.body.data.id)).update({ status: "completed", completed_at: new Date() });
+        const listed = (await call(tokens.patient)).body.data.map((slot: { startsAt: string }) => slot.startsAt) as string[];
+        expect(listed).not.toContain(first);
+        expect(listed).toEqual(initial.slice(1));
+        const refused = await bookAt(first);
+        expect(refused.status).toBe(409); expectErrorEnvelope(refused.body, "SlotUnavailable");
+        for (const start of listed) expect((await bookAt(start)).status).toBe(201);
+    });
+
     it("should accept listed starts and reject an off-grid booking", async () => {
         const listed = await call(tokens.patient);
         expect(listed.status).toBe(200);

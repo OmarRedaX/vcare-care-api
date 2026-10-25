@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [api, reference, routes, rbac]
-related: [rbac, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec]
+related: [rbac, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec, availability, availability-spec]
 ---
 
 # API — care-service (human view)
@@ -78,8 +78,8 @@ stored in Redis, and each issued URL gets its own audit row). All responses are 
 ## doctors-discovery
 | Method | Path | Roles | Ownership | Case | Notes |
 |---|---|---|---|---|---|
-| GET | `/api/doctors` (planned, availability slice 2) | patient, admin | none | 2 degrade | filters `specialty, language, name, minFee, maxFee, availableFrom, availableTo`; `sort=earliest_availability\|price\|experience`; bookable doctors only; p95 < 400 ms |
-| GET | `/api/doctors/{doctorUserId}` (planned, availability slice 2) | patient, admin | none (non-bookable → 404 for patients) | 2 degrade | includes `nextAvailableSlots` |
+| GET | `/api/doctors` (**live**, 2026-10-23) | patient, admin (doctor → 403) | none | 2 degrade | filters `specialty` (slug; unknown → empty), `language`, `name` (≥ 2 code points; headline prefix only until slice 3, always with `meta.degraded: ["nameFilter"]`), `minFee`/`maxFee` (amount only, `minFee > maxFee` → 400), `availableFrom`/`availableTo` (both within `[now, now + 14 d]`, ≤ 14 days apart, exact to 15 minutes, applied with every sort); `sort=earliest_availability\|price\|experience` (default earliest); bookable doctors only; `meta: { nextCursor, hasMore, count, degraded? }` with `degraded` ⊂ `sort, availabilityFilter, nameFilter` (Redis down → still 200); a cursor issued under another effective sort → 400; rows whose Identity account is not active are dropped; rate limit 60/min per IP and 120/min per user; no audit; p95 < 400 ms (measured 12–48 ms warm, 68–97 ms cold at 2,500 doctors) |
+| GET | `/api/doctors/{doctorUserId}` (**live**, 2026-10-23) | patient, admin | none (non-bookable → 404 for patients; an admin sees any live profile plus `status: bookable\|not_bookable`) | 2 degrade | `timezone` (IANA, ≤ 64, else 400) renders `nextAvailableSlots` (first 5 free slots of the shortest active type within 14 days; zone: `timezone`, else the caller's patient-profile zone, else UTC); `nextAvailableAt` exact; a non-numeric id → 404; rate limit 60/min per IP and 120/min per user; no audit |
 | GET | `/api/doctors/{doctorUserId}/slots` (**live**, 2026-10-21) | patient, admin | none (non-bookable doctor, unknown doctor, or a `typeId` that is unknown, inactive or another doctor's → 404 for both roles) | — | `typeId, from, to` (≤ 14 days, else 400), `timezone` (IANA, ≤ 64, else 400); window clipped to `[now, now + 60 days]` (an empty window is 200 with `data: []`); `meta: { from, to, timezone, doctorTimezone, count }`; rate limit 60/min per IP and 120/min per user; no audit, no `Idempotency-Key`; p95 < 300 ms (measured about 19 ms on a miss with 150 busy consultations) |
 
 ## schedules (live, schedules module, 2026-10-09; account `status` active, not locally suspended)

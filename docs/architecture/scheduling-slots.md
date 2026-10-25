@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-21
+last_verified: 2026-10-23
 tags: [scheduling, slots, timezones, booking, caching, performance]
 related: [consultations-spec, schedules-spec, data-model, consultation-lifecycle, resilience, capacity, availability, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0010-next-available-lazy-cache-worker-refresh, adr-0024-next-available-rank-index-free-map-and-sweep]
 ---
@@ -28,9 +28,9 @@ Slots are **never stored** ([ADR 0002](../adr/0002-slots-never-stored.md)). Only
 | Weekly hours (split shifts = several rows per weekday) | `TIME` start/end, ISO weekday | doctor tz, per local date |
 | Exceptions: `day_off` removes the date; `custom_hours` **replaces** that date's hours | `DATE` + optional `TIME`s | doctor tz |
 | Duration | `consultation_types.duration_minutes` | — |
-| Busy intervals | consultations with status `booked`, `waiting`, `in_progress`, not deleted | UTC instants, half-open `[start, end)` |
+| Busy intervals | consultations with every status but `cancelled` and `no_show` (`booked`, `waiting`, `in_progress`, `completed`; mirrors `excl_consultations_doctor_no_overlap`), not deleted | UTC instants, half-open `[start, end)` |
 
-`cancelled` and `no_show` release their interval — exactly the set the exclusion constraint ignores.
+`cancelled` and `no_show` release their interval — exactly the set the exclusion constraint ignores. A `completed` consultation keeps its planned `ends_at` (`complete` never shortens it), so it stays busy and a listed slot is never refused by booking (availability review 2026-10-23).
 
 ## Algorithm (pure, `pkg/slots`, `now` passed in)
 1. **Clip** the window to `[max(from, now), min(to, now + 60 days)]` (`BOOKING_HORIZON_DAYS`).
@@ -58,7 +58,7 @@ viewer's timezone.
 ## As built: `pkg/slots` after `schedules` (2026-10-09)
 The `schedules` module ships only the **open-interval resolution** part of the algorithm (steps 2-4 above) in `src/pkg/slots`
 (pure; imports only `luxon` and `pkg/utils`; no clock, no I/O). It does **not** subtract busy consultations or slice by duration:
-both stay with `availability` (steps 1, 5-7) and `consultations` (booking re-validation). **Update 2026-10-21:** `availability` slice 1 added those steps to `pkg/slots` as pure functions: `clipWindow`, `subtractBusy`, `sliceSlots`, `firstFreeStart`, `computeSlots` (plus `toFreeMap`, `testFreeMap`, `baseBucketOf`, which have no caller until slice 2). The slot list reuses the booking grid rules, and a property test books every listed slot. See [availability spec](../availability/spec.md) 12.1.2 and section 14.
+both stay with `availability` (steps 1, 5-7) and `consultations` (booking re-validation). **Update 2026-10-21:** `availability` slice 1 added those steps to `pkg/slots` as pure functions: `clipWindow`, `subtractBusy`, `sliceSlots`, `firstFreeStart`, `computeSlots` (plus `toFreeMap`, `testFreeMap`, `baseBucketOf`, consumed by the rank index since slice 2, 2026-10-23). The slot list reuses the booking grid rules, and a property test books every listed slot. See [availability spec](../availability/spec.md) 12.1.2 and section 14.
 
 | Function | Role |
 |---|---|
@@ -114,7 +114,7 @@ Then in-memory computation, O(days × intervals + busy). Always the primary for 
 reads may use a replica when one is introduced.
 
 ## Caching and invalidation (derived data only)
-**Redesigned 2026-10-21; the `slots:` / `slots-ver:` part is built (`availability` slice 1), the rank index and free-map are slice 2** ([availability.md](./availability.md), [ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md),
+**Redesigned 2026-10-21; built: the `slots:` / `slots-ver:` part (`availability` slice 1) and the rank index and free-map (slice 2, 2026-10-23)** ([availability.md](./availability.md), [ADR 0024](../adr/0024-next-available-rank-index-free-map-and-sweep.md),
 which supersedes ADR 0010). Summary; the key table, flows and failure handling live in the shard:
 
 | Key | Value | Lifetime |
