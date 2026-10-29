@@ -6,13 +6,14 @@ import { errorHandler } from "./lib/error/errorHandler";
 import { notFound, optionsNotFound } from "./lib/error/not-found";
 import { cors } from "./lib/http/cors";
 import { noStore } from "./lib/http/no-store";
+import { privateNoCache } from "./lib/http/private-no-cache";
 import type { AppOptions } from "./lib/http/types";
 import { inFlight } from "./lib/lifecycle/in-flight";
 import { requestLogger } from "./lib/logger/request-logger";
 import { assertRoutesAuthorized } from "./lib/rbac/assert-routes-authorized";
 import { markPreAuth } from "./lib/rbac/markers";
 import { requestId } from "./lib/request-id/request-id";
-import { buildPublicRoutes, NO_STORE_PREFIXES } from "./routes";
+import { buildPublicRoutes, NO_STORE_PREFIXES, PRIVATE_NO_CACHE_PREFIXES } from "./routes";
 
 /** The public listener (`/api/*` on PORT). */
 export function createPublicApp(options?: AppOptions): express.Express {
@@ -36,6 +37,10 @@ export function createPublicApp(options?: AppOptions): express.Express {
     // it too (patients spec 3.1; consultations spec 3.10). Doctor routes keep their own handling.
     for (const prefix of NO_STORE_PREFIXES) {
         app.use(prefix, markPreAuth(noStore()));
+    }
+    // Help center content is per-audience and non-clinical: `private, no-cache`, set before body parsing so a 400/401/404 carries it too.
+    for (const prefix of PRIVATE_NO_CACHE_PREFIXES) {
+        app.use(prefix, markPreAuth(privateNoCache()));
     }
     app.use(markPreAuth(express.json({ limit: "100kb", strict: true, type: "application/json" })));
 
