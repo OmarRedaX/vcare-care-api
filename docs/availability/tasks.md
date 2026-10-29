@@ -5,7 +5,7 @@ service: care-service
 module: availability
 status: active
 diataxis: reference
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [availability, slots, search, tasks, slice-1, slice-2, slice-3]
 related: [availability-spec, availability-brainstorm, availability-architecture, availability-manual-qa, scheduling-slots]
 ---
@@ -102,8 +102,6 @@ Legend: [ ] todo, [~] in progress, [x] done (typecheck and the task's tests gree
   - QA: manual QA of the name filter in `docs/availability/manual-qa.md` (slice 3 section) and `scripts/curl-test-availability.sh` + `scripts/availability-qa-fake-identity.mjs` (rows 66, 69, 70, 79 re-based on the index-absent / Redis-down fallback; 61 new Redis-up and 3 new Redis-down assertions; final runs 254 pass / 0 fail / 1 skipped with Redis up and 167 pass / 0 fail / 1 skipped with Redis down; no real failure).
   - Docs reconciled by `/update-docs` (2026-10-23): spec v0.3.0 (slice table, 12.3, 13.3, new "Slice 3 as-built notes" in section 14, slice 2 deviation 1 marked resolved), `docs/architecture/{availability,overview,deployment,api,infrastructure,resilience,capacity,integration}.md`, `docs/{runbook,service-card,INDEX,system-design,quickstart}.md`, the `CLAUDE.md` Status block, `.claude/state/system-design-checkpoint.md`. `data-model.md` needs no change (Redis keys are not listed there). Contract: no drift (only the `NameFilter` description changed in the slice 3 review, already in the contract and in spec 3.0 C6).
   - Review: `/review-code` slice 3 findings were fixed (building key TTL and atomic swap, env bound for the name refresh, truncation warning, rename-lag wording); the re-review verifies them and removes the review file (no review file = clean module).
-
-### Gate status (slice 3)
 
 ### Gate status (slice 3, 2026-10-23)
 
