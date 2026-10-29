@@ -39,6 +39,8 @@ import { buildScheduleOwnerResolver } from "./app/doctors/schedule-owner.resolve
 import { SchedulesController } from "./app/schedules/controller/schedules.controller";
 import { SchedulesService } from "./app/schedules/service/schedules.service";
 import { HealthService } from "./app/health/service/health.service";
+import { HelpArticlesController } from "./app/help-articles/controller/help-articles.controller";
+import { HelpArticlesService } from "./app/help-articles/service/help-articles.service";
 import { SpecialtiesController } from "./app/specialties/controller/specialties.controller";
 import { SpecialtiesService } from "./app/specialties/service/specialties.service";
 import { SYSTEM_SYNC_TIMING } from "./app/identity-sync/constants";
@@ -68,6 +70,8 @@ export function registerDependencies(env: Env): void {
     container.registerSingleton(TOKENS.HealthController, HealthController);
     container.registerSingleton(TOKENS.SpecialtiesService, SpecialtiesService);
     container.registerSingleton(TOKENS.SpecialtiesController, SpecialtiesController);
+    container.registerSingleton(TOKENS.HelpArticlesService, HelpArticlesService);
+    container.registerSingleton(TOKENS.HelpArticlesController, HelpArticlesController);
     container.registerSingleton(TOKENS.DoctorDiscoveryReader, DoctorDiscoveryReader);
     container.registerSingleton(TOKENS.SlotInputsReader, SlotInputsReader);
     container.registerSingleton(TOKENS.BusyIntervalsReader, BusyIntervalsReader);

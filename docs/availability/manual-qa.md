@@ -5,7 +5,7 @@ service: care-service
 module: availability
 status: verified
 diataxis: how-to
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [availability, slots, search, profile, worker, name-index, manual-qa, curl]
 related: [availability-spec, availability-tasks, availability-brainstorm]
 ---
@@ -415,7 +415,7 @@ Skipped (both runs): the AV-R16 span rule (`availableTo - availableFrom > 14 day
   - Identity slow (4 s per call, above the 2 s client timeout): the search stays `200` with `profileHydrated:false` but takes about 4.5 s (two attempts of the Case 2 policy: 2 s timeout plus one retry). That is the documented Case 2 policy, yet it is more than ten times the 400 ms search budget whenever Identity is slow; the budget only holds with a healthy or fast-failing Identity.
   - `--once availability-refresh` with Redis unreachable exits 1; the spec states the exit-1 rule only for the sweep. The sweep exits 1 for both Redis unreachable and lock held, and neither stamps `next-available:swept-at`.
   - With Redis down the in-memory limiter allows 30 requests per minute per route (limit 60 divided by 2); the 429 case tripped after 29 more requests because earlier profile calls already counted.
-  - Responses carry `Cache-Control: no-store` (the application default); the spec only says these routes are not in `NO_STORE_PREFIXES`.
+  - Responses carry `Cache-Control: no-store` (the application default); the spec only says these routes are not in `NO_STORE_PREFIXES`. _Correction 2026-10-29: this was an accident of the time, not a default. A pathless `router.use(noStore())` in the verification router stamped `no-store` on every request that fell through to routers mounted after it, including `GET /api/doctors`, `/api/doctors/:id` and `/api/doctors/:id/slots`. Since commit 50f6e6e that middleware is scoped to its own prefixes, so the doctor discovery routes now set no `Cache-Control` header of their own (they are not in `NO_STORE_PREFIXES`, and the contract declares none). A QA run today should expect the header to be absent on them._
   - Slice 3: a doctor who stops being a candidate (here via SQL, so no listener) stays in `name-index` until the next due rebuild, and a name search still hides it because the match is intersected with the SQL candidate set (S3-16..S3-19). A rename at Identity is visible only after the next due rebuild AND after the `identity:user:<id>` cache entry (300 s) has expired or been deleted, because the builder reads through that cache; so the worst-case lag is the refresh period (300 s) plus the cache TTL (300 s), within the 15-minute bound of AV-R29. The hydrated `displayName` in search results can therefore show the old name for a moment while the index already matches the new one, or the reverse; both are bounded by the same two TTLs.
   - Slice 3: with Identity down the rebuild is attempted on every sweep (every 120 s) because `built-at` is left absent; each attempt costs the Case 2 client policy (2 s timeout, retries) inside the sweep tick after `swept-at` is stamped, so it does not make the sweep `incomplete`. The previous build keeps serving for at most its remaining TTL (900 s from the last successful build) and is then replaced by the headline-only fallback with `nameFilter`.
   - A doctor whose Identity `status` is not `active` is dropped from search and the page is shorter than `limit` (`meta.count` 5 of 6) while `hasMore` and `nextCursor` come from the fetched page, as specified.

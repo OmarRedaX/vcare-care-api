@@ -65,7 +65,7 @@ tags:
   - name: records
     description: Medical records, amendments, attachments.
   - name: help-articles
-    description: Help center content (Phase-2 RAG corpus).
+    description: Help center content (Phase-2 RAG corpus). Not clinical data. Every response under /api/help-articles, error responses and the DELETE 204 included, carries Cache-Control private, no-cache, regardless of the no-store header declared on the shared response components.
   - name: audit
     description: Append-only audit log (metadata only).
   - name: internal
@@ -2805,11 +2805,19 @@ paths:
       operationId: listHelpArticles
       tags: [help-articles]
       summary: List help articles
-      description: Patients and doctors see published articles for their audience; admins see drafts too.
+      description: >-
+        Patients and doctors see published articles of their own audience, ordered by `publishedAt` descending, then
+        `id` descending. Admins see drafts too (never deleted articles), ordered by `updatedAt` descending, then `id`
+        descending. The cursor encodes its sort kind: a cursor from the other kind is `400 ValidationFailed`
+        (`cursor: is invalid`). `category` filters for every role. `audience` and `isPublished` are admin filters:
+        they are validated for every role and ignored for patients and doctors. A doctor may read while `pending`,
+        `active` or `rejected` (onboarding needs the platform rules); patients and admins must be `active`. The three
+        write operations require an `active` admin.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
       x-ownership: none
+      x-account-state: 'doctor status in (pending, active, rejected); patient and admin active'
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/Cursor'
@@ -2822,13 +2830,13 @@ paths:
         - name: audience
           in: query
           required: false
-          description: Admin only; other roles are filtered to their own audience.
+          description: Admin only; validated for every role, ignored for others.
           schema:
             $ref: '#/components/schemas/HelpArticleAudience'
         - name: isPublished
           in: query
           required: false
-          description: Admin only.
+          description: Admin only; validated for every role, ignored for others.
           schema:
             type: boolean
       responses:
@@ -2837,6 +2845,8 @@ paths:
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlPrivateNoCache'
           content:
             application/json:
               schema:
@@ -2848,7 +2858,7 @@ paths:
                   data:
                     type: array
                     items:
-                      $ref: '#/components/schemas/HelpArticle'
+                      $ref: '#/components/schemas/HelpArticleSummary'
                   meta:
                     $ref: '#/components/schemas/PaginationMeta'
         '400':
@@ -2903,11 +2913,15 @@ paths:
       operationId: getHelpArticle
       tags: [help-articles]
       summary: Get a help article
-      description: Unpublished or other-audience articles return `404 NotFound` to non-admins.
+      description: >-
+        Unpublished, other-audience, or deleted articles return `404 NotFound` to non-admins. A deleted article is
+        also `404` to admins. A doctor may read while `pending`, `active` or `rejected` (onboarding needs the platform
+        rules); patients and admins must be `active`. The three write operations require an `active` admin.
       security:
         - bearerUser: []
       x-roles: [patient, doctor, admin]
       x-ownership: none
+      x-account-state: 'doctor status in (pending, active, rejected); patient and admin active'
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdPath'
@@ -2928,6 +2942,10 @@ paths:
       operationId: updateHelpArticle
       tags: [help-articles]
       summary: Update or publish/unpublish a help article
+      description: >-
+        Partial update and publish/unpublish. `publishedAt` is set on the first publish and kept afterwards (unpublish
+        keeps it). `category` and `audience` may change on a published article. A request that changes nothing answers
+        `200` with the current article and writes no audit row. A deleted article is `404`.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -2964,6 +2982,7 @@ paths:
       operationId: deleteHelpArticle
       tags: [help-articles]
       summary: Delete a help article (soft delete)
+      description: Soft delete. The title becomes reusable; a repeated delete is `404`.
       security:
         - bearerUser: []
       x-roles: [admin]
@@ -3187,6 +3206,11 @@ components:
       schema:
         type: string
         const: no-store
+    CacheControlPrivateNoCache:
+      description: '`private, no-cache`: not for shared caches; stored copies must be revalidated before reuse.'
+      schema:
+        type: string
+        const: private, no-cache
     RetryAfter:
       description: |
         Seconds to wait before retrying. On `429 RateLimited`: until the limiter allows another request. On
@@ -3653,6 +3677,8 @@ components:
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlPrivateNoCache'
       content:
         application/json:
           schema:
@@ -3668,6 +3694,8 @@ components:
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlPrivateNoCache'
       content:
         application/json:
           schema:
@@ -5725,7 +5753,11 @@ components:
           maxLength: 200
         body:
           type: string
-          description: Markdown.
+          description: >-
+            Markdown, stored and returned verbatim. Care never renders or sanitises it: clients must sanitise and must
+            not render raw HTML. 1 to 50000 code points; U+0000 is rejected (`400`). The request must also fit the 100 kb
+            request-size limit (`400 ValidationFailed`, `body: must not exceed 100kb`), which binds first for text
+            averaging more than about 2 bytes per character.
         category:
           $ref: '#/components/schemas/HelpArticleCategory'
         audience:
@@ -5741,6 +5773,29 @@ components:
         updatedAt:
           type: string
           format: date-time
+    HelpArticleSummary:
+      type: object
+      description: A list item. It never carries `body` or `createdAt`; the full article is `GET /api/help-articles/{id}`.
+      required: [id, title, category, audience, isPublished, publishedAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+          maxLength: 200
+        category:
+          $ref: '#/components/schemas/HelpArticleCategory'
+        audience:
+          $ref: '#/components/schemas/HelpArticleAudience'
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: [string, 'null']
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     HelpArticleCreate:
       type: object
       additionalProperties: false
@@ -5750,10 +5805,18 @@ components:
           type: string
           minLength: 3
           maxLength: 200
+          description: >-
+            Length counts Unicode code points; control characters are rejected (400); not trimmed; unique among live
+            articles of the same audience (409 Conflict).
         body:
           type: string
           minLength: 1
           maxLength: 50000
+          description: >-
+            Markdown, stored and returned verbatim. Care never renders or sanitises it: clients must sanitise and must
+            not render raw HTML. 1 to 50000 code points; U+0000 is rejected (`400`). The request must also fit the 100 kb
+            request-size limit (`400 ValidationFailed`, `body: must not exceed 100kb`), which binds first for text
+            averaging more than about 2 bytes per character.
         category:
           $ref: '#/components/schemas/HelpArticleCategory'
         audience:
@@ -5769,10 +5832,18 @@ components:
           type: string
           minLength: 3
           maxLength: 200
+          description: >-
+            Length counts Unicode code points; control characters are rejected (400); not trimmed; unique among live
+            articles of the same audience (409 Conflict).
         body:
           type: string
           minLength: 1
           maxLength: 50000
+          description: >-
+            Markdown, stored and returned verbatim. Care never renders or sanitises it: clients must sanitise and must
+            not render raw HTML. 1 to 50000 code points; U+0000 is rejected (`400`). The request must also fit the 100 kb
+            request-size limit (`400 ValidationFailed`, `body: must not exceed 100kb`), which binds first for text
+            averaging more than about 2 bytes per character.
         category:
           $ref: '#/components/schemas/HelpArticleCategory'
         audience:

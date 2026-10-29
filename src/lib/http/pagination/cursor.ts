@@ -40,17 +40,42 @@ export function decodeTextCursor(cursor: string, maxLength: number): StringCurso
     return { sortValue: position.sortValue, id: position.id };
 }
 
-/** Keep the exact six microsecond digits that Postgres stored. */
-export function decodeTimestampCursor(cursor: string): StringCursorPosition {
-    const position = decodeTextCursor(cursor, 27);
-    const value = position.sortValue;
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value)) {
+const TIMESTAMP_CURSOR_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+const TIMESTAMP_CURSOR_LENGTH = 27;
+
+/**
+ * A microsecond ISO timestamp with `Z` that is also a real instant (the millisecond prefix round-trips) and one Postgres
+ * `timestamptz` accepts: year 0000 round-trips in JavaScript but is out of range in Postgres (it would end as a 500).
+ */
+function assertTimestampCursorValue(value: string): void {
+    if (!TIMESTAMP_CURSOR_PATTERN.test(value)) {
         throw INVALID_CURSOR;
     }
     const millisecondPrefix = `${value.slice(0, 23)}Z`;
     const parsed = new Date(millisecondPrefix);
-    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== millisecondPrefix) {
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== millisecondPrefix || parsed.getUTCFullYear() < 1) {
         throw INVALID_CURSOR;
     }
+}
+
+/** Keep the exact six microsecond digits that Postgres stored. */
+export function decodeTimestampCursor(cursor: string): StringCursorPosition {
+    const position = decodeTextCursor(cursor, TIMESTAMP_CURSOR_LENGTH);
+    assertTimestampCursorValue(position.sortValue);
     return position;
+}
+
+/**
+ * A position whose sort value is `<kind>:<microsecond timestamp>`. The kind must equal `expectedKind`, so a cursor minted for one
+ * sort order can never position a page of another; the timestamp must be a real instant. Returns the BARE timestamp.
+ */
+export function decodeKindedTimestampCursor(cursor: string, expectedKind: string): StringCursorPosition {
+    const prefix = `${expectedKind}:`;
+    const position = decodeTextCursor(cursor, [...prefix].length + TIMESTAMP_CURSOR_LENGTH);
+    if (!position.sortValue.startsWith(prefix)) {
+        throw INVALID_CURSOR;
+    }
+    const timestamp = position.sortValue.slice(prefix.length);
+    assertTimestampCursorValue(timestamp);
+    return { sortValue: timestamp, id: position.id };
 }
