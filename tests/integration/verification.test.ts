@@ -307,6 +307,16 @@ describe("verification routes (real Postgres, Redis and app)", () => {
         expect((await call("post", admin(`/${id}/documents/${docId}/download-url`), "admin", {})).status).toBe(200);
     });
 
+    it("downloadUrlsAreNoStore: should send Cache-Control no-store on the 200 that carries a presigned URL (doctor and admin)", async () => {
+        const id = await profile(); const docId = await document();
+        const mine = await call("post", path(`${docId}/download-url`), "doctor", {});
+        const theirs = await call("post", admin(`/${id}/documents/${docId}/download-url`), "admin", {});
+        for (const response of [mine, theirs]) {
+            expect(response.status).toBe(200);
+            expect(response.headers["cache-control"]).toBe("no-store");
+        }
+    });
+
     it("downloadFailsClosedOnAuditError: should issue URLs only after committed audit", async () => {
         await profile(); const docId = await document();
         const response = await call("post", path(`${docId}/download-url`), "doctor", {});
