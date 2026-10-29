@@ -3,7 +3,7 @@ title: help-articles — Tasks
 owner: care-team
 service: care-service
 module: help-articles
-status: tested-pending-qa
+status: qa-passed-pending-docs
 last_verified: 2026-10-29
 tags: [tasks, help-articles, help-center]
 related: [help-articles-spec, help-articles-brainstorm, adr-0027-help-articles-shape-and-access, adr-0028-help-corpus-read-path-for-phase-2, specialties-tasks]
@@ -35,7 +35,7 @@ phase (listed in the hand-off).
 - [x] (routes) `routes.ts` — guard → authorize → rate limit → idempotency (POST) → handler
 - [x] (mount) `src/routes.ts` (`buildHelpArticlesRouter`, `PRIVATE_NO_CACHE_PREFIXES`) and `src/app.ts` prefix middleware before the JSON parser
 - [x] (tests) /write-tests (spec section 9): unit + integration green; see the as-built notes
-- [ ] (manual-qa) ← /manual-qa (spec section 9.5)
+- [x] (manual-qa) /manual-qa (spec section 9.5): 352 pass / 0 fail with Redis up, 13 pass / 0 fail with Redis down; see [manual-qa.md](./manual-qa.md)
 - [ ] (docs) ← /update-docs (spec section 13: data-model, api, rbac, help-articles shard, overview, system-design, INDEX, service-card; hub sync)
 
 ## As-built notes (decisions made while implementing)
@@ -47,3 +47,4 @@ phase (listed in the hand-off).
 - Hub contract sync (`../vcare-hub/scripts/sync-from-spoke.sh`) not run here.
 - **Tests (write-tests, 2026-10-29).** Unit: `tests/unit/app/help-articles/` (request DTO, response DTO, service, policies, routes), `tests/unit/contract/help-articles-contract.test.ts`, `tests/unit/lib/logger/redact-help-articles.test.ts`. Integration (`tests/helpers/help-articles-harness.ts` is the shared fake-JWKS/real-app harness): `help-articles-rbac`, `help-articles-reads` (visibility, pagination), `help-articles-writes` (create/patch/delete, idempotency, concurrency, audit rollback), `help-articles-schema` (grants, named checks, unique index, EXPLAIN of both list queries, migration up/down), `help-articles-http` (rate limits including the Redis-down fallback, `Cache-Control`, logs), plus a help-articles case in `boot.test.ts`.
 - **Product bug found and fixed by the tests (listed for review).** `src/app/verification/routes.ts` called a pathless `router.use(noStore())`, so every request that fell through to a router mounted after it (help-articles, among others) got `Cache-Control: no-store`, overriding the `private, no-cache` prefix header (HA-D7, HA-R21, contract `CacheControlPrivateNoCache`). The call is now scoped to `/doctors/me/documents` and `/admin/applications` (the verification router's own prefixes, which `NO_STORE_PREFIXES` and the doctors router already covered, so no verification response changed).
+- **Manual QA (2026-10-29).** `scripts/curl-test-help-articles.sh` against the compiled build with the access fake identity (no Identity dependency): 365 pass, 0 fail, no product defect found. Not exercised by CURL: the in-flight idempotency `409` (replay path taken) and the 429 with Redis down. Record in [manual-qa.md](./manual-qa.md).
