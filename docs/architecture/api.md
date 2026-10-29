@@ -6,7 +6,7 @@ status: draft
 diataxis: reference
 last_verified: 2026-10-29
 tags: [api, reference, routes, rbac]
-related: [rbac, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec, availability, availability-spec]
+related: [rbac, help-articles-spec, help-articles, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec, availability, availability-spec]
 ---
 
 # API — care-service (human view)
@@ -157,15 +157,17 @@ The first four rows are **live** (2026-10-18, `records` module, [spec](../record
 | DELETE | `/api/records/{id}/attachments/{attachmentId}` (live) | doctor | record author; attachment live and in this record | clinical-write `attachment.removed` | 204 (soft delete; the stored object is kept); 400 (a request body), 403, 404 (before the lock verdict), 409 `RecordLocked` (after the 24 h lock), 429 (20/min, shared with complete) |
 
 ## help-articles
-| Method | Path | Roles | Ownership | Audit |
-|---|---|---|---|---|
-| GET | `/api/help-articles` | patient, doctor, admin | none (published + own audience; admins see drafts) | — |
-| GET | `/api/help-articles/{id}` | patient, doctor, admin | none (hidden → 404) | — |
-| POST | `/api/help-articles` | admin | none | admin-action |
-| PATCH | `/api/help-articles/{id}` | admin | none | admin-action |
-| DELETE | `/api/help-articles/{id}` | admin | none (soft delete) | admin-action |
+Live (2026-10-29, `help-articles` module, [spec](../help-articles/spec.md), [shard](./help-articles.md), ADR 0027): the help center, admin-authored Markdown, not clinical data. Every response of the `/api/help-articles` prefix, errors (parser-level `400`, `401`, `404`, `429`) and the `DELETE` `204` included, carries `Cache-Control: private, no-cache`, never `no-store` (the prefix middleware runs before body parsing). Rate limits per user: the two reads share 120/min, the three writes share one bucket of 20/min (the limiter runs after `authorize`, so only admins reach it). A non-admin write is `403` at the role step, before the id is parsed; a non-numeric `{id}` is `404`, not `400`. The list returns `HelpArticleSummary` items (no `body`, no `createdAt`); `GET /{id}` returns the full Markdown `HelpArticle`; unpublished, other-audience or deleted articles are `404` to patients and doctors, and a deleted article is `404` to admins too. A doctor with `pending`, `active` or `rejected` status may read (onboarding needs the platform rules); patients and admins need `active`; the three writes need an `active` admin. Readers page by `(publishedAt, id)` descending, admins by `(updatedAt, id)` descending; a cursor carries its sort kind and one from the other kind is `400 ValidationFailed` (`cursor: is invalid`). `audience` and `isPublished` are admin filters: validated for every role, ignored for patients and doctors; `category` filters for every role.
 
-Not built yet. Design ([help-articles.md](./help-articles.md), ADR 0027): the list returns `HelpArticleSummary` items (no `body`), `GET /{id}` returns the full Markdown article; doctors with `pending`, `active` or `rejected` status may read, patients and admins need `active`. The contract change lands through `/construct-spec`.
+| Method | Path | Roles | Ownership | Idem | Audit | Errors |
+|---|---|---|---|---|---|---|
+| GET | `/api/help-articles` | patient, doctor, admin | none (published + own audience; admins see drafts, never deleted) | — | — | 200 + `meta`; 400 (cursor, `limit`, enum, unknown member), 401, 403, 429 (120/min) |
+| GET | `/api/help-articles/{id}` | patient, doctor, admin | none (hidden, other audience, deleted or non-numeric id → 404) | — | — | 200; 401, 403, 404, 429 (120/min) |
+| POST | `/api/help-articles` | admin | none | opt | admin-action (`help_article.created`) | 201; 400, 401, 403, 409 `Conflict` (live title already used for the audience), 422 `IdempotencyConflict`, 429 (20/min) |
+| PATCH | `/api/help-articles/{id}` | admin | none | — | admin-action (`help_article.updated`; none for a no-op) | 200 (also a no-op, with the current article); 400 (empty body or invalid field), 401, 403, 404 (deleted too), 409 `Conflict`, 429 (20/min) |
+| DELETE | `/api/help-articles/{id}` | admin | none (soft delete) | — | admin-action (`help_article.deleted`) | 204; 401, 403, 404 (a repeat delete is `404`; the title becomes reusable), 429 (20/min) |
+
+Audit `metadata` holds `isPublishedBefore`/`isPublishedAfter` (and `changedFields` on update), never the title or the body. `publishedAt` is set on the first publish and kept when the article is unpublished. `GET /internal/help-articles` for the Phase-2 assistant is designed (ADR 0028) and **not built**.
 
 ## audit
 | Method | Path | Roles | Ownership | Notes |

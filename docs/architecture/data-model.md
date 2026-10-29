@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [data-model, postgresql, schema, indexes, erd]
-related: [scheduling-slots, clinical-records, integration, file-handling, records-spec, record-attachments-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
+related: [help-articles-spec, scheduling-slots, clinical-records, integration, file-handling, records-spec, record-attachments-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function, adr-0002-slots-never-stored, adr-0003-db-exclusion-constraint, adr-0013-verified-direct-upload-lifecycle]
 ---
 
 # Data Model — care-service
@@ -16,9 +16,8 @@ PostgreSQL 17, one database owned by Care. **Built so far:** foundation (2026-09
 `NOLOGIN` group role `vcare_app`), `create_audit_logs`, `create_audit_logs_ensure_partitions` (see `audit_logs`
 below); specialties (2026-10-04) — `20261004120000_create_specialties`, `20261004120100_seed_specialties_starter_catalog`
 (see `specialties` below); doctors (2026-10-05) — `20261005120000_create_doctor_profiles`,
-`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below); records (2026-10-18) — `20261017120000_create_medical_records` (table, lock `CHECK`, trigger, column-level `UPDATE` grant), `20261017120100_create_medical_record_amendments` (append-only by grant), `20261017120200_add_consultations_follow_up_fk` (the deferred FK; no table); see `medical_records` and `medical_record_amendments` below; record-attachments (2026-10-20) — `20261018120000_create_record_attachments` (table, partial index, delete-after-lock trigger, column-level grants), `20261018120100_comment_upload_intents_description` (a column comment only); see `record_attachments` and `upload_intents` below; availability slice 2 (2026-10-23) — `20261021120000_add_doctor_discovery_indexes` (three indexes on existing tables, no table, column, constraint or grant change; see `doctor_profiles` and `doctor_languages` below). `knex_migrations` records migration names without the file extension. Everything else below is the design the
-remaining modules will build (`help_articles` and the remaining tables). Written in the style migrations
-will use (`knex.raw`, see the `write-migration` skill). Conventions:
+`20261005120100_create_doctor_languages`, `20261005120200_create_doctor_specialties`; verification (2026-10-08) — `20261007120000_create_upload_intents`, `20261007120100_create_verification_documents`, `20261007120200_create_identity_sync_jobs`, `20261007120300_add_verification_queue_index` (see `verification_documents`, `upload_intents`, `identity_sync_jobs` below; each grants `vcare_app` explicitly: `upload_intents` SELECT, INSERT, UPDATE, DELETE; `verification_documents` and `identity_sync_jobs` SELECT, INSERT, UPDATE, never DELETE); schedules (2026-10-09) — `20261008120000_create_working_hours`, `20261008120100_create_schedule_exceptions`, `20261008120200_create_consultation_types` (see `working_hours`, `schedule_exceptions`, `consultation_types` below; each grants `vcare_app` SELECT, INSERT, UPDATE and sequence USAGE, never DELETE or TRUNCATE); patients (2026-10-11) — `20261011120000_create_patient_profiles`; consultations (2026-10-12) — `20261011130000_create_consultations` (grants `SELECT, INSERT, UPDATE`, no `DELETE`), `20261011130100_create_notification_outbox` (insert side only: grants `SELECT, INSERT`; see `consultations` and `notification_outbox` below); records (2026-10-18) — `20261017120000_create_medical_records` (table, lock `CHECK`, trigger, column-level `UPDATE` grant), `20261017120100_create_medical_record_amendments` (append-only by grant), `20261017120200_add_consultations_follow_up_fk` (the deferred FK; no table); see `medical_records` and `medical_record_amendments` below; record-attachments (2026-10-20) — `20261018120000_create_record_attachments` (table, partial index, delete-after-lock trigger, column-level grants), `20261018120100_comment_upload_intents_description` (a column comment only); see `record_attachments` and `upload_intents` below; availability slice 2 (2026-10-23) — `20261021120000_add_doctor_discovery_indexes` (three indexes on existing tables, no table, column, constraint or grant change; see `doctor_profiles` and `doctor_languages` below); help-articles (2026-10-29) — `20261029120000_create_help_articles` (see `help_articles` below; grants `vcare_app` `SELECT, INSERT, UPDATE` and sequence `USAGE`, never `DELETE` or `TRUNCATE`). `knex_migrations` records migration names without the file extension. Every table below is built; the DDL is written in the style migrations
+use (`knex.raw`, see the `write-migration` skill). Conventions:
 
 - `id BIGSERIAL` everywhere; FKs `BIGINT` with named constraints and a leading-column index.
 - Identity references are `*_user_id BIGINT` with **no FK** (`-- Identity user id`).
@@ -630,32 +629,39 @@ No foreign key on `target_id` (it points at one of two tables by `kind`); `compl
 target. Rows are hard-deleted by the purge because they are operational, not business data (like the outbox).
 
 ## `help_articles`
+**Built** by `help-articles` (2026-10-29, migration `20261029120000_create_help_articles`; [spec](../help-articles/spec.md) section 2.2, ADR 0027). Admin-authored Markdown, not clinical data. Soft delete only: `vcare_app` holds `SELECT, INSERT, UPDATE` and `USAGE` on `help_articles_id_seq`; no `DELETE`, no `TRUNCATE` (ADR 0018). The table starts empty (no seed).
 ```sql
 CREATE TABLE help_articles (
     id              BIGSERIAL PRIMARY KEY,
     title           VARCHAR(200) NOT NULL,
-    body            TEXT NOT NULL,
+    body            TEXT NOT NULL,                      -- Markdown, stored and returned verbatim; never logged
     category        VARCHAR(32) NOT NULL,
     audience        VARCHAR(16) NOT NULL,
     is_published    BOOLEAN NOT NULL,
-    published_at    TIMESTAMPTZ,
-    created_by      BIGINT NOT NULL,                    -- Identity user id (admin)
-    updated_by      BIGINT NOT NULL,                    -- Identity user id (admin)
+    published_at    TIMESTAMPTZ,                        -- set on the first publish and kept when unpublished
+    created_by      BIGINT NOT NULL,                    -- Identity user id (admin); no FK
+    updated_by      BIGINT NOT NULL,                    -- Identity user id (admin); no FK
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at      TIMESTAMPTZ,
     CONSTRAINT chk_help_articles_category
         CHECK (category IN ('how-it-works', 'preparing-for-consultation', 'cancellation-policy', 'platform-rules')),
     CONSTRAINT chk_help_articles_audience CHECK (audience IN ('patient', 'doctor')),
-    CONSTRAINT chk_help_articles_published CHECK (NOT is_published OR published_at IS NOT NULL)
+    CONSTRAINT chk_help_articles_published CHECK (NOT is_published OR published_at IS NOT NULL),
+    CONSTRAINT chk_help_articles_title_length CHECK (char_length(title) >= 3),
+    CONSTRAINT chk_help_articles_body_length CHECK (char_length(body) BETWEEN 1 AND 50000)
 );
--- Non-admin list GET /help-articles?category=: WHERE audience = $role AND is_published AND deleted_at IS NULL
---   AND category = $2 ORDER BY published_at DESC, id DESC
-CREATE INDEX idx_help_articles_audience_category_published_at_id ON help_articles (audience, category, published_at DESC, id DESC)
+-- Non-admin list GET /help-articles[?category=]: WHERE audience = $1 AND is_published = true AND deleted_at IS NULL
+--   [AND category = $2] [AND (published_at, id) < ($3, $4)] ORDER BY published_at DESC, id DESC LIMIT $n
+CREATE INDEX idx_help_articles_audience_published_at_id ON help_articles (audience, published_at DESC, id DESC)
     WHERE is_published AND deleted_at IS NULL;
--- Unique live title per audience (admin create/update conflict → 409 Conflict)
+-- Admin list GET /help-articles[?audience=&category=&isPublished=]: WHERE deleted_at IS NULL [AND ...filters...]
+--   [AND (updated_at, id) < ($1, $2)] ORDER BY updated_at DESC, id DESC LIMIT $n
+CREATE INDEX idx_help_articles_updated_at_id ON help_articles (updated_at DESC, id DESC) WHERE deleted_at IS NULL;
+-- Unique live title per audience (POST and PATCH): a 23505 on this name is mapped to 409 Conflict
 CREATE UNIQUE INDEX uq_help_articles_audience_title ON help_articles (audience, title) WHERE deleted_at IS NULL;
 ```
+As built (spec decision HA-D12): the earlier design index `(audience, category, published_at DESC, id DESC)` is replaced by `idx_help_articles_audience_published_at_id`, because with `category` second in the key the unfiltered reader list could not read the index in order; a `category` filter is applied to the in-order scan (four categories). Both list queries are EXPLAINed in `tests/integration/help-articles-schema.test.ts`. The unique index is a partial unique **index** (a partial unique cannot be a table constraint); Postgres reports its name as `error.constraint`. `COMMENT ON TABLE` and four `COMMENT ON COLUMN` statements (`body`, `published_at`, `created_by`, `updated_by`) document the rules in the catalog. The migration body avoids the question-mark character (`knex.raw` reads a bare one as a binding).
 
 ## `audit_logs`
 **Built by `access` (2026-10-02)** — migrations `20261002120100_create_audit_logs` and

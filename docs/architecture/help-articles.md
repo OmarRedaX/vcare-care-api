@@ -2,11 +2,11 @@
 title: Help Articles — Design
 owner: care-team
 service: care-service
-status: accepted
+status: built
 diataxis: explanation
 last_verified: 2026-10-29
 tags: [architecture, help-articles, help-center, rag, rbac]
-related: [data-model, api, rbac, future, capacity, system-design, adr-0027-help-articles-shape-and-access, adr-0028-help-corpus-read-path-for-phase-2, hub-data-ownership]
+related: [help-articles-spec, data-model, api, rbac, future, capacity, system-design, adr-0027-help-articles-shape-and-access, adr-0028-help-corpus-read-path-for-phase-2, hub-data-ownership]
 ---
 
 # Help Articles — Design
@@ -14,14 +14,15 @@ related: [data-model, api, rbac, future, capacity, system-design, adr-0027-help-
 The help center: admin-authored articles that patients and doctors read, and the Phase-2 RAG corpus.
 Service-scope (hub ADR 0008). Decided in `/system-design` on 2026-10-29 (ADRs
 [0027](../adr/0027-help-articles-shape-and-access.md) and [0028](../adr/0028-help-corpus-read-path-for-phase-2.md)).
-The module is **not built yet**; it is the last unbuilt module and goes through `/brainstorm` → `/update-docs`.
-Table DDL stays in [data-model.md](./data-model.md) (`help_articles`); routes in [api.md](./api.md) and the contract.
+The module was **built on 2026-10-29** (spec [help-articles/spec.md](../help-articles/spec.md), v0.2.0); `GET /internal/help-articles`
+(section 6) is the only part still designed-not-built. Table DDL stays in [data-model.md](./data-model.md) (`help_articles`); routes in [api.md](./api.md) and the contract.
 
 ## 1. Context
 - PRD 7.10: an admin publishes articles by category and audience (how the platform works, preparing for a
   consultation, cancellation policy, platform rules). PRD 12: the same rows are the Phase-2 help-assistant corpus.
-- The table, indexes and the five operations were already specified; this shard fixes what was still open: body
-  format, edit semantics, the list shape, who may read, and how the AI service will read the corpus.
+- The table, indexes and the five operations were already specified; this shard fixed what was still open: body
+  format, edit semantics, the list shape, who may read, and how the AI service will read the corpus. The spec then
+  decided the remaining details (section 3).
 - Help articles are admin-authored product content. They are **not clinical data**: no PII, no logging redaction
   beyond the standard rules, no `no-store` requirement.
 
@@ -49,18 +50,21 @@ Table DDL stays in [data-model.md](./data-model.md) (`help_articles`); routes in
 `help_article.updated`, `help_article.deleted`. `metadata` holds the article id, the **names** of the changed fields and
 `isPublished` before and after; never `title` or `body`. Reads are not audited.
 
-**Proposed defaults (not decisions; `/construct-spec` confirms or changes them):**
+**Decided by the spec (the former "proposed defaults"):**
 
-- **Pagination:** keyset on `(published_at DESC, id DESC)` for non-admins (the partial index in the DDL); admins list
-drafts too, ordered by `(updated_at DESC, id DESC)`; a cursor encodes the sort kind.
+- **Pagination (HA-D1):** keyset on `(published_at DESC, id DESC)` for non-admins (the partial index in the DDL); admins list
+drafts too, ordered by `(updated_at DESC, id DESC)`; a cursor encodes the sort kind (`published:` or `updated:`), and a cursor of the other kind is `400 ValidationFailed`.
 
-- **Rate limits:** the platform default for authenticated reads; admin writes 20/min per user (as other admin writes).
+- **Rate limits (HA-D2):** reads 120/min per user; admin writes 20/min per user, one bucket shared by `POST`, `PATCH` and `DELETE`.
+
+- **Filters (HA-D10):** `category` applies to every role; `audience` and `isPublished` are validated for every role but applied only for admins.
 
 ## 4. Failure handling
 - Only Postgres is involved. No Identity call, no Redis, no storage, no video: nothing here can return a dependency 5xx
   except Postgres being down.
 - The audit insert and the write are one transaction; an audit failure rolls the write back.
-- Idempotency: `Idempotency-Key` is optional on `POST` (already in the contract); `PATCH` and `DELETE` are naturally idempotent.
+- Idempotency: `Idempotency-Key` is optional on `POST` (already in the contract). `PATCH` is naturally idempotent (a repeat, or a no-op,
+  answers `200` and writes nothing). `DELETE` is not replayable: a repeat answers `404` because a deleted article is `404` to everyone (HA-D4).
 
 ## 5. Security and privacy
 - Deny by default: every route has `authorize(...)`; writes are admin-only.
@@ -87,13 +91,13 @@ No budget of its own: one indexed query per list or detail read, well inside the
 inside the 300 k/day "other reads" line ([capacity.md](./capacity.md) section 2); storage is negligible. No change to the
 headlines.
 
-## 8. Contract changes required (provider: Care)
-Land through `/construct-spec help-articles` + `/develop`, contract first:
-1. Add the `HelpArticleSummary` schema; `listHelpArticles` returns an array of it. `getHelpArticle` keeps `HelpArticle`.
-2. Document in the `body` description that it is Markdown and clients must not render raw HTML.
-3. Document the account statuses allowed per role (D4) and `Cache-Control: private, no-cache`.
-4. State the keyset sort for the admin list and that a cursor carries its sort kind.
-5. **Not now:** `GET /internal/help-articles` (section 6) joins the contract with the AI service.
+## 8. Contract changes (provider: Care) — applied 2026-10-29
+Landed through `/construct-spec help-articles` + `/develop`, contract first (spec changes C1 to C5):
+1. Added the `HelpArticleSummary` schema; `listHelpArticles` returns an array of it. `getHelpArticle` keeps `HelpArticle`.
+2. Documented in the `body` description that it is Markdown and clients must not render raw HTML.
+3. Documented the account statuses allowed per role (D4) (`x-account-state`) and `Cache-Control: private, no-cache` (`CacheControlPrivateNoCache`, plus the `help-articles` tag note that it covers every response, errors and the `DELETE` `204` included).
+4. Stated the keyset sort for the admin list and that a cursor carries its sort kind.
+5. **Not done:** `GET /internal/help-articles` (section 6) joins the contract with the AI service.
 
 ## 9. Deferred
 - Revision history and citations pinned to a revision (add `help_article_revisions` when the assistant needs it).
