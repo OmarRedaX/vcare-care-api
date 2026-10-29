@@ -3,8 +3,8 @@ title: help-articles — Spec
 owner: care-team
 service: care-service
 module: help-articles
-status: ready
-version: 0.1.0
+status: implemented
+version: 0.2.0
 diataxis: reference
 last_verified: 2026-10-29
 tags: [spec, help-articles, help-center, markdown, pagination, keyset, rbac, audit, rate-limit, idempotency, migration]
@@ -826,3 +826,28 @@ Also state in the `help-articles` tag description: "Help center content (Phase-2
 
 Step 0a comes first because the controller and the app wiring use both helpers; each lib step lands with its regression
 tests and leaves typecheck, lint, unit, and integration green on the Docker test stack.
+
+---
+
+## 15. As-built notes (2026-10-29, version 0.2.0)
+
+The module is built, tested (unit and integration), manually QA'd (365 pass, 0 fail; [manual-qa.md](./manual-qa.md)) and code-reviewed clean. Sections 1 to 14 above are the design as specified and are not rewritten; where the code differs, this section is authoritative. The contract (`contracts/openapi.yaml`) was changed only by C1 to C5 and matches the code; no other contract change was needed.
+
+**Intentional deviations from the text above (no behaviour or contract effect):**
+1. **`decodeKindedTimestampCursor` returns the bare timestamp.** It returns `{ sortValue: <µs timestamp>, id }` with the kind prefix already stripped (§3.7 describes it as validating the prefixed value). The service passes the position to the repository unchanged and re-adds the prefix only when it builds the next cursor (`${kind}:${sortCursor}`). The shared timestamp rule was extracted from `decodeTimestampCursor` into `assertTimestampCursorValue` with no behaviour change.
+2. **`listHelpArticles` returns `HelpArticleListEntry[]`** (`{ summary: HelpArticleSummary, sortCursor }`, in `types.ts`), not `HelpArticleSummaryRow[]` (§3.3): the private `toSummary` mapper stays in the repository and the `HelpArticleSummary` entity carries no DB-shaped field. `HelpArticleSummaryRow` still exists and carries `sort_cursor`.
+3. **Four extra `COMMENT ON COLUMN` statements** beyond the `COMMENT ON TABLE` of §2.2: `body` ("Markdown, stored and returned verbatim; never logged"), `published_at` (set on the first publish and kept), `created_by` and `updated_by` ("Identity user id (admin); no FK"). The migration is `src/migrations/20261029120000_create_help_articles.ts`; its function body avoids the question-mark character because `knex.raw` reads a bare one as a binding.
+4. **`audienceOf(role)` throws `Forbidden`** for any role other than patient or doctor. It is unreachable (`authorize` admits only the three roles and admins take the admin branch); it exists so the switch is exhaustive.
+5. **Contract tag sentence (fix-review).** The `help-articles` tag description in the contract now states that every response under `/api/help-articles`, error responses and the `DELETE` `204` included, carries `Cache-Control: private, no-cache`, regardless of the `no-store` header declared on the shared response components. This closes the "accepted, documented difference" of C5 (the shared error responses still declare `CacheControlNoStore`; Care sends `private, no-cache` under this prefix, and the integration tests pin it for the `200`, `201`, `204`, `400`, `401`, `403`, `404`, `409`, `429`, malformed-JSON and `500` cases).
+
+**Shared-code changes made by this module (they affect other modules):**
+6. **Verification router `noStore()` scoping (commit `50f6e6e`).** `src/app/verification/routes.ts` called a pathless `router.use(noStore())`, so every request that fell through to a router mounted after it, help-articles among them, received `Cache-Control: no-store`, overriding the `private, no-cache` prefix header (HA-D7, HA-R21). The call is now two scoped calls, `/doctors/me/documents` and `/admin/applications`. No verification response changed: the admin prefix is also in `NO_STORE_PREFIXES`, and the doctors router stamps `no-store` on `/doctors/me` (so the doctor presigned-URL route `POST /doctors/me/documents/{documentId}/download-url` gets its header from the doctors router's `router.use("/doctors/me", noStore())`, with the verification router's scoped middleware as a second layer).
+7. **Year-0000 cursor fix (fix-review).** `assertTimestampCursorValue` in `src/lib/http/pagination/cursor.ts` now also rejects a year below 0001, so a forged `0000-...` timestamp cursor is `400 ValidationFailed` (`cursor: is invalid`) instead of a Postgres out-of-range `500`. The function is shared, so `GET /api/consultations` and the patient record list are fixed too.
+
+**Behaviours worth stating (all verified in code and by tests):**
+- Every response under `/api/help-articles` carries `Cache-Control: private, no-cache`, set by the `PRIVATE_NO_CACHE_PREFIXES` middleware in `src/app.ts` before body parsing, so parser-level `400`s and guard `401`s carry it too.
+- Rate limits: one named bucket `help-articles-read-user` (120/min per user) for the two reads; one `help-articles-write` bucket (20/min per user) for the three writes. The limiter runs after `authorize`, so a non-admin write is `403` before the id is parsed and before the limiter; a non-numeric `{id}` is `404`.
+- `Idempotency-Key` is optional on `POST` only (`idempotency({ required: false })`); `PATCH` and `DELETE` take none. A no-op `PATCH` answers `200` with the current article and writes no audit row; a repeated `DELETE` is `404` (HA-D4).
+- `GET /internal/help-articles` is **not built** (ADR 0028, owner decision O5).
+
+**Open for the owner (not changed here):** the `CLAUDE.md` status block still lists `help-articles` as unbuilt; add it to the built list after merge.
