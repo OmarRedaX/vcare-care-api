@@ -23,4 +23,6 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-/manual-qa done (365 pass / 0 fail, commit 1e8a110, docs/help-articles/manual-qa.md). Now `/review-code help-articles` (5 parallel candidate reviewers -> one verify-findings; review file under docs/help-articles/reviews/ if anything survives -> `/develop help-articles --fix-review` -> re-run `/review-code`). Then `/update-docs help-articles` (service-card, INDEX rows for tasks.md + manual-qa.md, data-model, api, rbac, shard, overview, system-design), push, open care PR to main (do not merge), then after user merges: hub sync + hub PR + CLAUDE.md Status.
+/review-code first pass done: docs/help-articles/reviews/review-20261029-1915.md (commit 2261349): C1 Medium (year-0000 cursor -> 500; shared cursor.ts, also affects consultations + records list cursors), C4(b) Low (no-store tests for the 2 download-url routes), 2 Docs (availability manual-qa.md:418 stale no-store; contract note that /api/help-articles responses incl. errors/204 are `private, no-cache`). C2/C3 refuted.
+Now `/develop help-articles --fix-review`, then `/review-code help-articles` again (re-review deletes the file when clean), then `/update-docs`.
+OWNER DECISION pending (tell the user at the end): doctor discovery routes (/api/doctors search/profile/slots) lost an accidental `no-store` in 50f6e6e; contract never declared one; give them an explicit Cache-Control or leave header-less?
