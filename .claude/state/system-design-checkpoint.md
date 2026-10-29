@@ -23,6 +23,9 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-Review loop closed: fix-review commits 4e379ec/66b6f57/19f61ee, re-review clean, review file deleted (327a34c). Module clean. Now `/update-docs help-articles` (spec section 13: service-card, INDEX rows for tasks.md + manual-qa.md, data-model DDL, api.md, rbac.md, help-articles shard 'not built yet' wording, overview.md, system-design.md). Small inaccuracy to fix: tasks.md as-built note + comment in tests/integration/no-store.test.ts attribute the doctor download-url no-store to the verification router's scoped middleware; it really comes from the doctors router `router.use("/doctors/me", noStore())`.
-Then: push branch, open care PR to main (do NOT merge), report. After user merges: hub sync + hub PR + CLAUDE.md Status block.
+help-articles is built, tested, QA'd, reviewed clean, docs reconciled. Care PR **#55** (feature/help-articles -> main) is OPEN: user merges (also user merges care #53, #54 and hub #31; #55 contains their commits).
+Gate: typecheck/lint clean; npm test 209 suites/3792; integration 70 files, only the 7 known env failures (db-roles 4, storage-adapter 3).
+After the user merges #55:
+1. `git checkout main && git pull`; `cd ../vcare-hub && git checkout main && git pull && git checkout -b chore/sync-care-help-articles && bash scripts/sync-from-spoke.sh care-service ../vcare-care-api`; commit, push, open hub PR (repo OmarRedaX/Vcare) against main; do not merge.
+2. Edit `CLAUDE.md` Status block: help-articles becomes built (no longer 'the only unbuilt module'); open a small care PR.
 OWNER DECISION pending: doctor discovery routes Cache-Control (lost accidental no-store in 50f6e6e).
