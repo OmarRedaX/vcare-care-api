@@ -17,8 +17,9 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 ## Workflow progress (help-articles)
 - [x] system-design, brainstorm
 - [x] /construct-spec help-articles (docs/help-articles/spec.md v0.1.0, ready)
-- [ ] /develop (next), /write-tests, /manual-qa, /review-code, /update-docs
+- [x] /develop (commits 64dadad..327c606; typecheck+lint clean; migration applied to care_test)
+- [ ] /write-tests (next), /manual-qa, /review-code, /update-docs
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-Run `/develop help-articles` (flow-developer: tasks.md first, contract changes C1..C5 from spec section 12 before code, then migration -> code). Spec decisions to glance at: HA-D12 (index replacement vs data-model.md DDL), HA-D13 (100 kb JSON limit left as is).
+Run `/write-tests help-articles` (flow-test-author). Notes for it: `decodeKindedTimestampCursor` returns the BARE timestamp sortValue (service re-adds the `kind:` prefix); repo `listHelpArticles` returns `HelpArticleListEntry[]` ({summary, sortCursor}); add the HA-D6 logger-redaction test row; tasks.md has (tests) `[ ]`.
