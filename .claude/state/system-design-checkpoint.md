@@ -23,6 +23,6 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-/review-code first pass done: docs/help-articles/reviews/review-20261029-1915.md (commit 2261349): C1 Medium (year-0000 cursor -> 500; shared cursor.ts, also affects consultations + records list cursors), C4(b) Low (no-store tests for the 2 download-url routes), 2 Docs (availability manual-qa.md:418 stale no-store; contract note that /api/help-articles responses incl. errors/204 are `private, no-cache`). C2/C3 refuted.
-Now `/develop help-articles --fix-review`, then `/review-code help-articles` again (re-review deletes the file when clean), then `/update-docs`.
-OWNER DECISION pending (tell the user at the end): doctor discovery routes (/api/doctors search/profile/slots) lost an accidental `no-store` in 50f6e6e; contract never declared one; give them an explicit Cache-Control or leave header-less?
+Review loop closed: fix-review commits 4e379ec/66b6f57/19f61ee, re-review clean, review file deleted (327a34c). Module clean. Now `/update-docs help-articles` (spec section 13: service-card, INDEX rows for tasks.md + manual-qa.md, data-model DDL, api.md, rbac.md, help-articles shard 'not built yet' wording, overview.md, system-design.md). Small inaccuracy to fix: tasks.md as-built note + comment in tests/integration/no-store.test.ts attribute the doctor download-url no-store to the verification router's scoped middleware; it really comes from the doctors router `router.use("/doctors/me", noStore())`.
+Then: push branch, open care PR to main (do NOT merge), report. After user merges: hub sync + hub PR + CLAUDE.md Status block.
+OWNER DECISION pending: doctor discovery routes Cache-Control (lost accidental no-store in 50f6e6e).
