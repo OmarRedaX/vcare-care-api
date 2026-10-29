@@ -5,7 +5,7 @@ import { inProgressRecord } from "../../src/lib/idempotency/idempotency-store";
 import { redis } from "../../src/lib/redis/redis";
 import { expectErrorEnvelope, expectSuccessEnvelope, inlineLists, schemaBlock } from "../helpers/contract";
 import { ownerDb } from "../helpers/db";
-import { BODY_MARKER, LIST, useHelpArticlesHarness, validCreate } from "../helpers/help-articles-harness";
+import { expectObservedStatusesDeclared, BODY_MARKER, LIST, useHelpArticlesHarness, validCreate } from "../helpers/help-articles-harness";
 import type { ArticleBody } from "../helpers/help-articles-harness";
 
 jest.setTimeout(60_000);
@@ -605,6 +605,16 @@ describe("help-articles writes (integration: real wiring, real Postgres as care_
             const created = await h.post(validCreate(), "admin");
             const patched = await h.patch(created.body.data.id, { title: "Synthetic Renamed" }, "admin");
             for (const res of [created, patched]) expect(JSON.stringify(res.body)).not.toMatch(/password|token|secret|hash/i);
+        });
+    });
+
+    describe("contract conformance", () => {
+        it("should have produced only statuses declared by the contract for each operation in this suite", () => {
+            expectObservedStatusesDeclared(h, [
+                ["POST /api/help-articles", "/api/help-articles", "post"],
+                ["PATCH /api/help-articles/{id}", "/api/help-articles/{id}", "patch"],
+                ["DELETE /api/help-articles/{id}", "/api/help-articles/{id}", "delete"],
+            ]);
         });
     });
 });

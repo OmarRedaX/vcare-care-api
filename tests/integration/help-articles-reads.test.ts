@@ -1,7 +1,7 @@
 import { encodeCursor } from "../../src/lib/http/pagination/cursor";
 import { expectErrorEnvelope, expectPaginationMeta, expectSuccessEnvelope, inlineLists, schemaBlock } from "../helpers/contract";
 import { ownerDb } from "../helpers/db";
-import { BODY_MARKER, LIST, padded, useHelpArticlesHarness } from "../helpers/help-articles-harness";
+import { expectObservedStatusesDeclared, BODY_MARKER, LIST, padded, useHelpArticlesHarness } from "../helpers/help-articles-harness";
 import type { ActorName, ArticleBody, SummaryBody } from "../helpers/help-articles-harness";
 
 jest.setTimeout(60_000);
@@ -423,6 +423,15 @@ describe("help-articles reads (integration: real wiring, real Postgres as care_a
             expect(await h.auditRows()).toEqual([]);
             const all = await ownerDb.raw<{ rows: Array<{ count: number }> }>("SELECT count(*)::int AS count FROM audit_logs");
             expect(all.rows[0]?.count).toBe(0);
+        });
+    });
+
+    describe("contract conformance", () => {
+        it("should have produced only statuses declared by the contract for each operation in this suite", () => {
+            expectObservedStatusesDeclared(h, [
+                ["GET /api/help-articles", "/api/help-articles", "get"],
+                ["GET /api/help-articles/{id}", "/api/help-articles/{id}", "get"],
+            ]);
         });
     });
 });

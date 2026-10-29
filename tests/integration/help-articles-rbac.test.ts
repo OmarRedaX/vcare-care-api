@@ -2,7 +2,7 @@ import request from "supertest";
 import { expectErrorEnvelope, expectSuccessEnvelope } from "../helpers/contract";
 import { ownerDb } from "../helpers/db";
 import { signExpiredUserToken } from "../helpers/tokens";
-import { ACTORS, LIST, useHelpArticlesHarness, validCreate } from "../helpers/help-articles-harness";
+import { expectObservedStatusesDeclared, LIST, useHelpArticlesHarness, validCreate } from "../helpers/help-articles-harness";
 import type { ActorName } from "../helpers/help-articles-harness";
 
 jest.setTimeout(30_000);
@@ -221,6 +221,18 @@ describe("help-articles RBAC (integration: real wiring, real Postgres as care_ap
                 expect((await h.get(LIST, actor)).status).toBe(200);
                 expect((await h.get(`${LIST}/${id}`, actor)).status).toBe(200);
             }
+        });
+    });
+
+    describe("contract conformance", () => {
+        it("should have produced only statuses declared by the contract for each operation in this suite", () => {
+            expectObservedStatusesDeclared(h, [
+                ["GET /api/help-articles", "/api/help-articles", "get"],
+                ["GET /api/help-articles/{id}", "/api/help-articles/{id}", "get"],
+                ["POST /api/help-articles", "/api/help-articles", "post"],
+                ["PATCH /api/help-articles/{id}", "/api/help-articles/{id}", "patch"],
+                ["DELETE /api/help-articles/{id}", "/api/help-articles/{id}", "delete"],
+            ]);
         });
     });
 });

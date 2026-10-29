@@ -77,12 +77,12 @@ const input = { title: "Synthetic Article 001", body: "SYNTHETIC-HELP-BODY-7731"
 describe("HelpArticlesService", () => {
     describe("list", () => {
         it.each([
-            ["a patient", patient, "patient"],
-            ["a doctor", doctor, "doctor"],
-        ])("should use the reader scope of the own audience and ignore audience and isPublished when the caller is %s (HA-R5, HA-R7)", async (_label, viewer, audience) => {
+            ["a patient", patient, HelpArticleAudience.Patient, HelpArticleAudience.Doctor],
+            ["a doctor", doctor, HelpArticleAudience.Doctor, HelpArticleAudience.Patient],
+        ])("should use the reader scope of the own audience and ignore audience and isPublished when the caller is %s (HA-R5, HA-R7)", async (_label, viewer, audience, otherAudience) => {
             const { service, db } = setup();
             repoMock.listHelpArticles.mockResolvedValue([]);
-            await service.list(viewer, query({ audience: HelpArticleAudience.Doctor === audience ? HelpArticleAudience.Patient : HelpArticleAudience.Doctor, isPublished: false, category: HelpArticleCategory.PlatformRules }));
+            await service.list(viewer, query({ audience: otherAudience, isPublished: false, category: HelpArticleCategory.PlatformRules }));
             expect(repoMock.listHelpArticles).toHaveBeenCalledWith(
                 { scope: { kind: "reader", audience, category: "platform-rules" }, after: null, fetch: 21 },
                 db,

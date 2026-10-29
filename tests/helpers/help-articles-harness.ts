@@ -4,6 +4,7 @@ import type { Test } from "supertest";
 import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
 import { buildTestApps } from "./app";
+import { contractResponseCodes } from "./contract";
 import { closeDb, ownerDb, truncateAll } from "./db";
 import { buildFakeJwksWiring, startFakeJwks } from "./fake-jwks";
 import { closeRedis, ensureRedisReady, flushByPrefix } from "./redis";
@@ -244,4 +245,14 @@ export function useHelpArticlesHarness(): HelpArticlesHarness {
     });
 
     return harness;
+}
+
+/** Every status a suite observed for an operation must be one the contract declares for it (contract conformance). */
+export function expectObservedStatusesDeclared(h: HelpArticlesHarness, expected: Array<[key: string, path: string, method: "get" | "post" | "patch" | "delete"]>): void {
+    for (const [key, path, method] of expected) {
+        const declared = contractResponseCodes(path, method).map(Number);
+        const seen = h.observed.get(key);
+        expect([key, seen]).toEqual([key, expect.any(Set)]);
+        for (const status of seen ?? []) expect([key, status, declared.includes(status)]).toEqual([key, status, true]);
+    }
 }

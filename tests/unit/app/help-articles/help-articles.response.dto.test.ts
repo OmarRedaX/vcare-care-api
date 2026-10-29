@@ -58,7 +58,7 @@ describe("help-articles response DTOs", () => {
     });
 
     it("should not leak a body even when a summary entity is built from a full article", () => {
-        const leaky = new HelpArticleSummary(article as Partial<HelpArticleSummary>);
+        const leaky = new HelpArticleSummary(article);
         expect(Object.keys(HelpArticleSummaryResponseDto.from(leaky))).not.toContain("body");
         expect(JSON.stringify(HelpArticleSummaryResponseDto.from(leaky))).not.toContain("SYNTHETIC-HELP-BODY-7731");
     });

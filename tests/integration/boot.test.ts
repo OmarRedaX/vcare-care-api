@@ -113,6 +113,16 @@ describe("boot-time route authorization (integration: real app factories)", () =
         }
     });
 
+    it("should answer every real help-articles route without a token with 401 when the real router is mounted", async () => {
+        const { publicApp } = buildTestApps();
+        for (const [method, path] of [["get", "/api/help-articles"], ["get", "/api/help-articles/1"], ["post", "/api/help-articles"], ["patch", "/api/help-articles/1"], ["delete", "/api/help-articles/1"]] as const) {
+            const res = await request(publicApp)[method](path);
+            expect([method, path, res.status]).toEqual([method, path, 401]);
+            expectErrorEnvelope(res.body, "Unauthorized", res.headers["x-request-id"]);
+            expect(res.headers["cache-control"]).toBe("private, no-cache");
+        }
+    });
+
     it("should answer GET /api/doctors/me without a token with 401 when the real router is mounted", async () => {
         const res = await request(buildTestApps().publicApp).get("/api/doctors/me");
         expect(res.status).toBe(401);
