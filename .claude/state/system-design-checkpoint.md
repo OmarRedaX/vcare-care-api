@@ -16,9 +16,9 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 
 ## Workflow progress (help-articles)
 - [x] system-design, brainstorm
-- [ ] /construct-spec help-articles
-- [ ] /develop, /write-tests, /manual-qa, /review-code, /update-docs
+- [x] /construct-spec help-articles (docs/help-articles/spec.md v0.1.0, ready)
+- [ ] /develop (next), /write-tests, /manual-qa, /review-code, /update-docs
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-Run `/construct-spec help-articles` (writes `docs/help-articles/spec.md`; confirm the brainstorm's "call" items and the shard's "proposed defaults": admin list order, 20/min admin write limit, Logger redaction of `body`).
+Run `/develop help-articles` (flow-developer: tasks.md first, contract changes C1..C5 from spec section 12 before code, then migration -> code). Spec decisions to glance at: HA-D12 (index replacement vs data-model.md DDL), HA-D13 (100 kb JSON limit left as is).
