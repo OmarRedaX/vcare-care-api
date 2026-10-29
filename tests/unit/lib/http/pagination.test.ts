@@ -1,5 +1,5 @@
 import { AppError } from "../../../../src/lib/error/AppError";
-import { decodeCursor, decodeTextCursor, decodeTimestampCursor, encodeCursor } from "../../../../src/lib/http/pagination/cursor";
+import { decodeCursor, decodeKindedTimestampCursor, decodeTextCursor, decodeTimestampCursor, encodeCursor } from "../../../../src/lib/http/pagination/cursor";
 import { buildPage, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, resolveLimit } from "../../../../src/lib/http/pagination/page";
 import { PaginationQueryDto } from "../../../../src/lib/http/pagination/pagination.request.dto";
 import { validateQuery } from "../../../../src/lib/validation/validate";
@@ -117,6 +117,34 @@ describe("lib/http/pagination string cursors", () => {
         ["invalid hour", encodeCursor("2026-01-01T24:00:00.000000Z", 3)],
     ] as const)("should reject timestamp cursor when it has %s", (_label, cursor) => {
         expectInvalidDecodedCursor(() => decodeTimestampCursor(cursor));
+    });
+});
+
+describe("lib/http/pagination decodeKindedTimestampCursor", () => {
+    const TIMESTAMP = "2026-10-29T10:00:00.123456Z";
+
+    it("should accept published:<microsecond timestamp> when the expected kind is published", () => {
+        expect(decodeKindedTimestampCursor(encodeCursor(`published:${TIMESTAMP}`, 7), "published")).toEqual({
+            sortValue: TIMESTAMP,
+            id: 7,
+        });
+    });
+
+    it("should accept updated:<microsecond timestamp> when the expected kind is updated", () => {
+        expect(decodeKindedTimestampCursor(encodeCursor(`updated:${TIMESTAMP}`, 9), "updated")).toEqual({ sortValue: TIMESTAMP, id: 9 });
+    });
+
+    it.each([
+        ["the other kind", encodeCursor(`updated:${TIMESTAMP}`, 3)],
+        ["no kind prefix", encodeCursor(TIMESTAMP, 3)],
+        ["a prefix that only starts like the kind", encodeCursor(`publishedX:${TIMESTAMP}`, 3)],
+        ["a millisecond-only timestamp", encodeCursor("published:2026-10-29T10:00:00.123Z", 3)],
+        ["a nonexistent date", encodeCursor("published:2026-02-30T00:00:00.000000Z", 3)],
+        ["a NUL character", encodeCursor(`published:${TIMESTAMP}\u0000`, 3)],
+        ["a value over 40 code points", encodeCursor(`published:${TIMESTAMP}${"x".repeat(4)}`, 3)],
+        ["a numeric sort value", b64([123, 3])],
+    ] as const)("should reject the cursor when it has %s", (_label, cursor) => {
+        expectInvalidDecodedCursor(() => decodeKindedTimestampCursor(cursor, "published"));
     });
 });
 

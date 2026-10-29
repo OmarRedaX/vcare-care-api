@@ -21,8 +21,8 @@ phase (listed in the hand-off).
 
 ## Tasks
 - [x] (contract) C1-C5 in `contracts/openapi.yaml` (`HelpArticleSummary`, body/title descriptions, `x-account-state`, list sort and cursor kind wording, `CacheControlPrivateNoCache`, tag description)
-- [ ] (generic) `lib/http/private-no-cache.ts` `privateNoCache()` + unit test
-- [ ] (generic) `lib/http/pagination/cursor.ts` `decodeKindedTimestampCursor` + unit tests
+- [x] (generic) `lib/http/private-no-cache.ts` `privateNoCache()` + unit test
+- [x] (generic) `lib/http/pagination/cursor.ts` `decodeKindedTimestampCursor` + unit tests
 - [ ] (migration) `<ts>_create_help_articles` (table, named checks, two partial indexes + unique index, comments, explicit grants, real down)
 - [ ] (enums-errors-types) `constants.ts`, `enums.ts`, `errors.ts`, `types.ts`
 - [ ] (entity) `HelpArticle`, `HelpArticleSummary`
