@@ -21,8 +21,9 @@ const PREFIX_PATHS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /**
- * Presigned-URL routes whose no-store is stamped by the verification router's own scoped `noStore()` (after body parsing, so the
- * malformed-JSON probe above cannot reach it): an unauthenticated call is refused by the guard, behind that middleware.
+ * Presigned-URL routes. The doctor route gets no-store from the doctors router's `/doctors/me` middleware, which runs after body
+ * parsing, so the malformed-JSON probe above cannot reach it: an unauthenticated call is refused by the guard, behind that middleware.
+ * The admin route is also covered by `NO_STORE_PREFIXES` (`/api/admin`). The verification router's scoped `noStore()` is a second layer on both.
  */
 const VERIFICATION_URL_PATHS: readonly string[] = [
     "/api/doctors/me/documents/1/download-url",
