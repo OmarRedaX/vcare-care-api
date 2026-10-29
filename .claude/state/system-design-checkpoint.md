@@ -23,5 +23,4 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-Run `/manual-qa help-articles` (flow-qa-runner; one server at a time, Postgres 5499 + Redis 6380 already up; no Identity needed). Then `/review-code`, `/update-docs`.
-Flag for user: tests found a bug in `src/app/verification/routes.ts` (pathless `router.use(noStore())` leaked no-store onto later routers); fixed in 50f6e6e by scoping to its two prefixes. Side effect: `/api/doctors` discovery (search/profile/slots) no longer gets accidental `no-store`; contract never declared it. Decide whether to give it an explicit header.
+/manual-qa done (365 pass / 0 fail, commit 1e8a110, docs/help-articles/manual-qa.md). Now `/review-code help-articles` (5 parallel candidate reviewers -> one verify-findings; review file under docs/help-articles/reviews/ if anything survives -> `/develop help-articles --fix-review` -> re-run `/review-code`). Then `/update-docs help-articles` (service-card, INDEX rows for tasks.md + manual-qa.md, data-model, api, rbac, shard, overview, system-design), push, open care PR to main (do not merge), then after user merges: hub sync + hub PR + CLAUDE.md Status.
