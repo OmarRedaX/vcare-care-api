@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [index, router, care]
 related: [service-card, system-design, runbook, quickstart]
 ---
@@ -36,6 +36,7 @@ Diátaxis type — a label, not a folder tree.
 | [architecture/resilience.md](./architecture/resilience.md) | understand timeouts (Postgres, Redis, HTTP, shutdown), Postgres failure modes, retries, degrade policies, idempotency, durable jobs | explanation |
 | [architecture/infrastructure.md](./architecture/infrastructure.md) | look up env vars (implemented vs planned), database and Redis connection settings, logging and redaction, error envelope, health, request ids, boot and shutdown, worker loops and `--once`, the local compose stack (Postgres, Redis, MinIO) | reference |
 | [architecture/deployment.md](./architecture/deployment.md) | understand components (`care-api`, `care-worker`), availability/RPO/RTO, release smoke, bottlenecks, metrics, alerts | explanation |
+| [architecture/help-articles.md](./architecture/help-articles.md) | design or build the `help-articles` module: body format, edit semantics, list shape, read access, the Phase-2 corpus endpoint, required contract changes | explanation |
 | [architecture/availability.md](./architecture/availability.md) | understand how doctor discovery works: the slots endpoint and `slots:` cache (slice 1), search and the profile preview, the Redis rank index and free-map, the refresh and sweep worker loops, freshness and Redis-down degradation (slice 2), and the derived name index with the index-backed `name` filter (slice 3); all three slices built 2026-10-23 | explanation |
 | [architecture/capacity.md](./architecture/capacity.md) | check Care's load, compute, database, storage, Redis sizing, 10× check | explanation |
 | [architecture/file-handling.md](./architecture/file-handling.md) | understand document/attachment uploads (intent → S3 → verified complete), on-demand download URLs, bucket rules, contract changes, and the as-built verification deviations (§4a) and record-attachment specifics (§4b) | explanation |
@@ -70,6 +71,8 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0024-next-available-rank-index-free-map-and-sweep.md](./adr/0024-next-available-rank-index-free-map-and-sweep.md) | understand why next-available is a Redis sorted-set rank index plus a free-slot bitmap, and how remove-on-change, refresh and the sweep keep it fresh (supersedes 0010) | explanation |
 | [adr/0025-derived-name-index.md](./adr/0025-derived-name-index.md) | understand how the doctor name filter works without copying Identity names into Care's database | explanation |
 | [adr/0026-discovery-degradation-when-redis-is-down.md](./adr/0026-discovery-degradation-when-redis-is-down.md) | understand what doctor search returns when Redis is down (`meta.degraded`) | explanation |
+| [adr/0027-help-articles-shape-and-access.md](./adr/0027-help-articles-shape-and-access.md) | understand why help articles are Markdown, edited in place, listed as summaries and readable by onboarding doctors | explanation |
+| [adr/0028-help-corpus-read-path-for-phase-2.md](./adr/0028-help-corpus-read-path-for-phase-2.md) | understand how the Phase-2 AI service will read the help corpus (`GET /internal/help-articles`, `help:read`) | explanation |
 
 ## Module docs
 Created by the workflow, not ahead of time: `/brainstorm <feature>` creates `docs/<module>/` (brainstorm,
