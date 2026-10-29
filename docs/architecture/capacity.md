@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: accepted
 diataxis: explanation
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [architecture, capacity, sizing, load, storage, redis]
 related: [deployment, infrastructure, data-model, scheduling-slots, availability, adr-0009-audit-logs-monthly-partitions, adr-0010-next-available-lazy-cache-worker-refresh, adr-0024-next-available-rank-index-free-map-and-sweep, adr-0025-derived-name-index, hub-capacity]
 ---
@@ -54,7 +54,7 @@ Case 2 hydration reaching Identity and JWKS/service-token load are platform numb
 
 ## 4. PostgreSQL
 - **Class:** 2 vCPU / 8 GB; single-AZ primary + async replica in a second AZ ([ADR 0005](../adr/0005-availability-and-recovery-targets.md)).
-- **Load at peak:** ≈ 400 queries/s (search 1–2 queries: the bookable candidate query, plus the 4-query loader for inline misses; slots 5 on a cache miss, lists 1–2), ≈ 10 writes/s including
+- **Load at peak:** ≈ 500 queries/s (restated from ≈ 400 on 2026-10-29: a search page costs 6 queries, one candidate or page query plus 5 page-view queries, see §10; slots 5 on a cache miss, lists 1–2; an index miss adds an inline batch of 5), ≈ 10 writes/s including
   audit and outbox rows. The unfiltered candidate query returns up to ≈ 2.5 k narrow rows (id, fee, years) from a partial index.
 - **Connections:** each `care-api` task opens up to `DATABASE_POOL_MAX` request connections **plus 1** for the
   readiness probe pool (`application_name=care-api-probe`, foundation 2026-09-28); the worker is budgeted at 7
@@ -99,7 +99,7 @@ Soft-deleted objects are not purged in MVP (a removed record attachment keeps it
 | Resource | At 10× | Verdict |
 |---|---|---|
 | `care-api` | ≈ 15–20 tasks | holds — raise max; add a connection proxy past ~10 tasks (each task holds up to `DATABASE_POOL_MAX + 1` connections) |
-| PostgreSQL | ≈ 4 000 qps, ≈ 520 GB/year (audit 360 GB) | holds with discovery reads on the replica and a 4–8 vCPU class; audit partitions archived by retention |
+| PostgreSQL | ≈ 5 000 qps, ≈ 520 GB/year (audit 360 GB) | holds with discovery reads on the replica (search alone is ≈ 1 500 qps at ≈ 250 rps) and a 4–8 vCPU class; audit partitions archived by retention |
 | Redis | < 1 GB | holds |
 | Object storage | ≈ 20 TB/year | holds (cost, not architecture) |
 | Worker | ≈ 250 k outbox rows/day | holds with 2 workers |
@@ -131,5 +131,5 @@ reachable only above the 6 k bookable-doctors trigger in section 8, so lifting t
 Measured on a development machine with real Postgres and Redis, 2,500 bookable doctors among 20,000 profiles (the derivation inputs above are unchanged; these are checks, not new inputs):
 - **Search p95** 12 to 48 ms warm index, 68 to 97 ms with a cold index (inline cap of 20), against the 400 ms budget; `/slots` 14 ms on a miss and 7 ms on a hit against 300 ms.
 - **Sweep:** one full pass over 2,500 doctors took 6.4 to 6.7 s of wall time on an unconstrained dev CPU. The 15 to 20 s per cycle planning figure for the 0.5 vCPU worker in §3 stays as the conservative derivation (it was not re-measured on a 0.5 vCPU limit); the revisit trigger `availability_sweep_duration_ms` > 60 000 still applies.
-- **Postgres query cost of a search is higher than §4 assumed.** A search page costs one candidate or page query plus 5 page-view queries (profiles, languages, specialty links, specialties, active types), so 6 queries in steady state, and an index miss adds an inline batch of 5. §4 counted search at 1 to 2 queries; at 25 rps peak that is about 100 more queries per second than the ≈ 400 qps headline assumed. The statements are all indexed and narrow, and the 2 vCPU / 8 GB class still holds with room; the headline in this section and in the hub's Care row (≈ 400 qps) is **not** changed here and is flagged for `/system-design` to decide whether to restate (hub `architecture/capacity.md`).
+- **Postgres query cost of a search is higher than §4 assumed.** A search page costs one candidate or page query plus 5 page-view queries (profiles, languages, specialty links, specialties, active types), so 6 queries in steady state, and an index miss adds an inline batch of 5. §4 counted search at 1 to 2 queries; at 25 rps peak that is about 100 more queries per second than the ≈ 400 qps headline assumed. The statements are all indexed and narrow, and the 2 vCPU / 8 GB class still holds with room; the headline was therefore **restated to ≈ 500 qps on 2026-10-29** (§4, §7 and the hub's Care row in `architecture/capacity.md`, decided in `/system-design`).
 - **Redis:** `free-map:*` is 173 bytes per bookable doctor and the rank index one sorted-set member each, as sized in §5.

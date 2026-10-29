@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-20
+last_verified: 2026-10-29
 tags: [rbac, authorization, ownership, privacy, security]
 related: [api, record-attachments-spec, consultations-spec, schedules-spec, clinical-records, integration, infrastructure, file-handling, records-spec, access-spec, specialties-spec, doctors-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -121,7 +121,7 @@ not a policy check (`FOR SHARE` on the profile row, so it serializes with a susp
 | `POST /records/:id/attachments/:attachmentId/download-url` (**live**, 2026-10-20) | patient, doctor (admin `403`) | the same `record_reader` resolver as `GET /records/:id` (suspended doctor `deny-not-found`); the attachment must be live and belong to this record (`404`) | clinical-read: `attachment.url_issued`, committed before the URL is signed; a failed audit insert means no URL |
 | `POST /doctors/me/documents/uploads`, `…/uploads/:uploadId/complete`, `POST /doctors/me/documents/:documentId/download-url` (live) | doctor (pending, active, or rejected) | self; uploads only while the application is `draft`/`rejected`; intent owner = caller | `verification.document_uploaded` / `verification.document_url_issued` |
 | `POST /admin/applications/:id/documents/:documentId/download-url` (live) | admin | none; document must belong to the application | admin-action (`verification.document_url_issued`) |
-| `GET /help-articles`, `GET /help-articles/:id` | patient, doctor, admin | none (published and own audience; admins see drafts) | — |
+| `GET /help-articles`, `GET /help-articles/:id` | patient, doctor, admin | none (published and own audience; admins see drafts; doctors may be `pending`/`active`/`rejected`, patients and admins `active`; ADR 0027) | — |
 | `POST/PATCH/DELETE /help-articles*` | admin | none | admin-action |
 | `GET /audit-logs` | admin | none | — |
 | `GET /internal/doctors/:userId/summary` | service | scope `doctors:read` | — |

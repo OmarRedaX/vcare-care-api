@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [api, reference, routes, rbac]
 related: [rbac, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec, availability, availability-spec]
 ---
@@ -164,6 +164,8 @@ The first four rows are **live** (2026-10-18, `records` module, [spec](../record
 | POST | `/api/help-articles` | admin | none | admin-action |
 | PATCH | `/api/help-articles/{id}` | admin | none | admin-action |
 | DELETE | `/api/help-articles/{id}` | admin | none (soft delete) | admin-action |
+
+Not built yet. Design ([help-articles.md](./help-articles.md), ADR 0027): the list returns `HelpArticleSummary` items (no `body`), `GET /{id}` returns the full Markdown article; doctors with `pending`, `active` or `rejected` status may read, patients and admins need `active`. The contract change lands through `/construct-spec`.
 
 ## audit
 | Method | Path | Roles | Ownership | Notes |
