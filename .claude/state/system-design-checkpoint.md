@@ -18,8 +18,10 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 - [x] system-design, brainstorm
 - [x] /construct-spec help-articles (docs/help-articles/spec.md v0.1.0, ready)
 - [x] /develop (commits 64dadad..327c606; typecheck+lint clean; migration applied to care_test)
-- [ ] /write-tests (next), /manual-qa, /review-code, /update-docs
+- [x] /write-tests (commits 4b05ff1..7632a79; npm test 209 suites/3790 tests verified; help-articles integration 5 suites/254 tests)
+- [ ] /manual-qa, /review-code, /update-docs
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-Run `/write-tests help-articles` (flow-test-author). Notes for it: `decodeKindedTimestampCursor` returns the BARE timestamp sortValue (service re-adds the `kind:` prefix); repo `listHelpArticles` returns `HelpArticleListEntry[]` ({summary, sortCursor}); add the HA-D6 logger-redaction test row; tasks.md has (tests) `[ ]`.
+Run `/manual-qa help-articles` (flow-qa-runner; one server at a time, Postgres 5499 + Redis 6380 already up; no Identity needed). Then `/review-code`, `/update-docs`.
+Flag for user: tests found a bug in `src/app/verification/routes.ts` (pathless `router.use(noStore())` leaked no-store onto later routers); fixed in 50f6e6e by scoping to its two prefixes. Side effect: `/api/doctors` discovery (search/profile/slots) no longer gets accidental `no-store`; contract never declared it. Decide whether to give it an explicit header.
