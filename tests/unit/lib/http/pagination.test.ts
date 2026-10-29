@@ -115,6 +115,7 @@ describe("lib/http/pagination string cursors", () => {
         ["seven digits", encodeCursor("2026-01-01T00:00:00.0000000Z", 3)],
         ["nonexistent date", encodeCursor("2026-02-30T00:00:00.000000Z", 3)],
         ["invalid hour", encodeCursor("2026-01-01T24:00:00.000000Z", 3)],
+        ["year 0000 (out of range for Postgres timestamptz)", encodeCursor("0000-01-01T00:00:00.000000Z", 3)],
     ] as const)("should reject timestamp cursor when it has %s", (_label, cursor) => {
         expectInvalidDecodedCursor(() => decodeTimestampCursor(cursor));
     });
@@ -140,6 +141,7 @@ describe("lib/http/pagination decodeKindedTimestampCursor", () => {
         ["a prefix that only starts like the kind", encodeCursor(`publishedX:${TIMESTAMP}`, 3)],
         ["a millisecond-only timestamp", encodeCursor("published:2026-10-29T10:00:00.123Z", 3)],
         ["a nonexistent date", encodeCursor("published:2026-02-30T00:00:00.000000Z", 3)],
+        ["year 0000 (out of range for Postgres timestamptz)", encodeCursor("published:0000-01-01T00:00:00.000000Z", 3)],
         ["a NUL character", encodeCursor(`published:${TIMESTAMP}\u0000`, 3)],
         ["a value over 40 code points", encodeCursor(`published:${TIMESTAMP}${"x".repeat(4)}`, 3)],
         ["a numeric sort value", b64([123, 3])],

@@ -392,6 +392,8 @@ describe("help-articles reads (integration: real wiring, real Postgres as care_a
             ["a sort value with no kind prefix", encodeCursor("2026-10-29T10:00:00.123456Z", 1)],
             ["a millisecond-only timestamp", encodeCursor("published:2026-10-29T10:00:00.123Z", 1)],
             ["a nonexistent date", encodeCursor("published:2026-02-30T00:00:00.000000Z", 1)],
+            ["year 0000 on a reader cursor (out of range for Postgres, never a 500)", encodeCursor("published:0000-01-01T00:00:00.000000Z", 1)],
+            ["year 0000 on an admin cursor (out of range for Postgres, never a 500)", encodeCursor("updated:0000-01-01T00:00:00.000000Z", 1)],
             ["a NUL character", encodeCursor("published:2026-10-29T10:00:00.123456Z\u0000", 1)],
             ["an over-long sort value", encodeCursor(`published:2026-10-29T10:00:00.123456Z${"x".repeat(10)}`, 1)],
         ])("should answer 400 on the cursor field for %s and read nothing", async (_label, cursor) => {

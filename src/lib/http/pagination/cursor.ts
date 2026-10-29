@@ -43,14 +43,17 @@ export function decodeTextCursor(cursor: string, maxLength: number): StringCurso
 const TIMESTAMP_CURSOR_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 const TIMESTAMP_CURSOR_LENGTH = 27;
 
-/** A microsecond ISO timestamp with `Z` that is also a real instant (the millisecond prefix round-trips). */
+/**
+ * A microsecond ISO timestamp with `Z` that is also a real instant (the millisecond prefix round-trips) and one Postgres
+ * `timestamptz` accepts: year 0000 round-trips in JavaScript but is out of range in Postgres (it would end as a 500).
+ */
 function assertTimestampCursorValue(value: string): void {
     if (!TIMESTAMP_CURSOR_PATTERN.test(value)) {
         throw INVALID_CURSOR;
     }
     const millisecondPrefix = `${value.slice(0, 23)}Z`;
     const parsed = new Date(millisecondPrefix);
-    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== millisecondPrefix) {
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== millisecondPrefix || parsed.getUTCFullYear() < 1) {
         throw INVALID_CURSOR;
     }
 }

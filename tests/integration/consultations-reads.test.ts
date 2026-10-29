@@ -38,6 +38,14 @@ describe("consultations read side (integration: real routes, Postgres, Redis; Id
         return { ids, pages };
     }
 
+    it("should answer 400 on the cursor field (not 500) for a forged cursor with year 0000", async () => {
+        const forged = Buffer.from('["0000-01-01T00:00:00.000000Z",1]').toString("base64url");
+        const res = await h.call("get", `/api/consultations?cursor=${encodeURIComponent(forged)}`, "patient");
+        expect(res.status).toBe(400);
+        expectErrorEnvelope(res.body, "ValidationFailed");
+        expect(res.body.error.details).toEqual([{ field: "cursor", issue: "is invalid" }]);
+    });
+
     describe("pagination by scope", () => {
         const future = { patient: [] as number[], other: [] as number[] };
         const past: number[] = [];
