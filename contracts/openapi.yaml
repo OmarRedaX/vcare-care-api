@@ -65,7 +65,7 @@ tags:
   - name: records
     description: Medical records, amendments, attachments.
   - name: help-articles
-    description: Help center content (Phase-2 RAG corpus). Not clinical data.
+    description: Help center content (Phase-2 RAG corpus). Not clinical data. Every response under /api/help-articles, error responses and the DELETE 204 included, carries Cache-Control private, no-cache, regardless of the no-store header declared on the shared response components.
   - name: audit
     description: Append-only audit log (metadata only).
   - name: internal
