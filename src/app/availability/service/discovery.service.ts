@@ -9,6 +9,7 @@ import type { AuthContext, Clock } from "../../../lib/types/types";
 import { localDateOf } from "../../../pkg/slots/local-date";
 import { testFreeMap } from "../../../pkg/slots/free-map";
 import type { SlotRange } from "../../../pkg/slots/types";
+import { normalizeName } from "../../../pkg/utils/name";
 import { DoctorDiscoveryReader } from "../../doctors/service/doctor-discovery.reader";
 import { DoctorsService } from "../../doctors/service/doctors.service";
 import { CandidateOrder } from "../../doctors/enums";
@@ -16,7 +17,7 @@ import type { Candidate, CandidateFilters, PublicDoctorView } from "../../doctor
 import { DAY_MS, LOG_CANDIDATES_TRUNCATED, LOOKAHEAD_DAYS, METRIC_DEGRADED, METRIC_INDEX_MISS, METRIC_INLINE_COMPUTE_MS, NONE_SCORE, PREVIEW_SLOT_COUNT } from "../constants";
 import { decodeDiscoveryCursor, encodeDiscoveryCursor } from "../discovery-cursor";
 import { DegradedPart, DiscoveryCursorKind, WindowMatchVerdict } from "../enums";
-import { applyCursor, assertFeeRange, cursorValueOf, effectiveKind, matchBySchedule, orderCandidates, resolveNamePrefix, resolveSearchWindow } from "../rules";
+import { applyCursor, assertFeeRange, assertNamePrefix, cursorValueOf, effectiveKind, matchBySchedule, orderCandidates, resolveSearchWindow } from "../rules";
 import type { ComputedEntry, DiscoveryCursor, DiscoveryItem, GetDoctorQuery, PageSelection, ProfileResult, SearchDoctorsQuery, SearchResult, SlotWindow } from "../types";
 import { AvailabilityService } from "./availability.service";
 import { NextAvailableComputer } from "./next-available.computer";
@@ -47,9 +48,13 @@ export class DiscoveryService {
         const nowMs = this.clock.now();
         assertFeeRange(query.minFee, query.maxFee);
         const window = resolveSearchWindow(query.availableFrom, query.availableTo, nowMs);
-        const filters: CandidateFilters = { specialty: query.specialty, language: query.language, minFee: query.minFee, maxFee: query.maxFee, namePrefix: resolveNamePrefix(query.name) };
-        const indexed = this.index.isUsable() ? await this.selectIndexed(query, filters, window, nowMs) : undefined;
-        const selection = indexed ?? await this.selectDegraded(query, filters, window, nowMs);
+        const namePrefix = query.name === undefined ? undefined : assertNamePrefix(normalizeName(query.name));
+        const nameMatches = namePrefix === undefined ? undefined : await this.index.readNameMatches(namePrefix);
+        // AV-R27: a requested name filter whose index is missing, expired or unreadable matched headlines only, and the response says so.
+        const nameFellBack = namePrefix !== undefined && nameMatches === undefined;
+        const filters: CandidateFilters = { specialty: query.specialty, language: query.language, minFee: query.minFee, maxFee: query.maxFee, namePrefix, nameMatchedUserIds: nameMatches };
+        const indexed = this.index.isUsable() ? await this.selectIndexed(query, filters, window, nameFellBack, nowMs) : undefined;
+        const selection = indexed ?? await this.selectDegraded(query, filters, window, nameFellBack, nowMs);
         const userIds = selection.rows.map((row) => row.userId);
         const [views, hydrated] = await Promise.all([this.doctors.findPublicViews(userIds), hydrateUsersOrEmpty(this.identity, this.logger, userIds)]);
         const items: DiscoveryItem[] = [];
@@ -95,10 +100,11 @@ export class DiscoveryService {
      * The plan for a usable index. Plain price and experience without a window page with a SQL keyset (path A); every other case pages the
      * in-memory candidate array (path B). Returns `undefined` when an index command fails, so the request reruns degraded.
      */
-    private async selectIndexed(query: SearchDoctorsQuery, filters: CandidateFilters, window: SlotWindow | undefined, nowMs: number): Promise<PageSelection | undefined> {
+    private async selectIndexed(query: SearchDoctorsQuery, filters: CandidateFilters, window: SlotWindow | undefined, nameFellBack: boolean,
+        nowMs: number): Promise<PageSelection | undefined> {
         const kind = effectiveKind(query.sort, true);
         const after = query.cursor === undefined ? null : decodeDiscoveryCursor(query.cursor, this.env.SERVICE_CLIENT_SECRET, kind);
-        const degraded = this.nameDegradation(query);
+        const degraded = new Set<DegradedPart>(nameFellBack ? [DegradedPart.NameFilter] : []);
         if (window !== undefined || kind === DiscoveryCursorKind.Earliest) return this.pageInMemory(query, filters, kind, after, window, degraded, nowMs);
         const { rows, hasMore } = await this.keysetRows(query, filters, kind, after);
         const stored = await this.index.scores(rows.map((row) => row.userId));
@@ -109,21 +115,17 @@ export class DiscoveryService {
     }
 
     /** Redis unusable (or failed mid-request): price order, no window filter, positions computed inline up to the cap (AV-R20). */
-    private async selectDegraded(query: SearchDoctorsQuery, filters: CandidateFilters, window: SlotWindow | undefined, nowMs: number): Promise<PageSelection> {
+    private async selectDegraded(query: SearchDoctorsQuery, filters: CandidateFilters, window: SlotWindow | undefined, nameFellBack: boolean,
+        nowMs: number): Promise<PageSelection> {
         const kind = effectiveKind(query.sort, false);
         const after = query.cursor === undefined ? null : decodeDiscoveryCursor(query.cursor, this.env.SERVICE_CLIENT_SECRET, kind);
-        const degraded = this.nameDegradation(query);
+        const degraded = new Set<DegradedPart>(nameFellBack ? [DegradedPart.NameFilter] : []);
         if (kind === DiscoveryCursorKind.Degraded) degraded.add(DegradedPart.Sort);
         if (window !== undefined) degraded.add(DegradedPart.AvailabilityFilter);
         const { rows, hasMore } = await this.keysetRows(query, filters, kind, after);
         const fresh = new Map<number, number>();
         await this.fillMisses(rows, fresh, undefined, nowMs);
         return this.selection(rows, hasMore, kind, fresh, degraded);
-    }
-
-    /** Slice 2 has no name index: a name filter always matches headlines only and says so. */
-    private nameDegradation(query: SearchDoctorsQuery): Set<DegradedPart> {
-        return new Set(query.name === undefined ? [] : [DegradedPart.NameFilter]);
     }
 
     /** Path A: one SQL keyset page in price or experience order (`limit + 1` fetched). */

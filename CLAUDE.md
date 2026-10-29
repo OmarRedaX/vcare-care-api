@@ -12,7 +12,7 @@ not need another repo's CLAUDE.md to follow it.
 
 > Status: **in build** (as of 2026-10-23). Built modules: `specialties`, `doctors`, `verification`, `admin-doctors`,
 > `identity-sync`, `upload-intents`, `schedules`, `consultations`, `sessions`, `patients`, `records`, `record-attachments`,
-> `notifications`, `audit`, `health`. `availability` is built for slots, search and the public profile (slices 1 and 2: the Redis rank index, the `availability-refresh` and `availability-sweep` worker loops); its name index (slice 3) is not built. Not built yet: `help-articles`.
+> `notifications`, `audit`, `health`. `availability` is built for slots, search, the public profile and the name filter (slices 1 to 3: the Redis rank index, the `availability-refresh` and `availability-sweep` worker loops, the derived `name-index`). Not built yet: `help-articles` (the only unbuilt module).
 > Modules are created through the workflow (`/system-design` → `/brainstorm` → … → `/update-docs`). Do not scaffold `src/`
 > outside that workflow. `docs/architecture/overview.md` carries the live module map.
 

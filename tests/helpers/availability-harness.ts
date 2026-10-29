@@ -7,9 +7,11 @@ import { AvailabilityRefreshService } from "../../src/app/availability/service/a
 import { AvailabilitySweepService } from "../../src/app/availability/service/availability-sweep.service";
 import { AvailabilityService } from "../../src/app/availability/service/availability.service";
 import { DiscoveryService } from "../../src/app/availability/service/discovery.service";
+import { NameIndexBuilder } from "../../src/app/availability/service/name-index.builder";
 import type { NextAvailableComputer } from "../../src/app/availability/service/next-available.computer";
 import type { NextAvailableIndex } from "../../src/app/availability/service/next-available.index";
 import type { DoctorDiscoveryReader } from "../../src/app/doctors/service/doctor-discovery.reader";
+import { getEnv } from "../../src/lib/config/env";
 import { container } from "../../src/lib/di/container";
 import { TOKENS } from "../../src/lib/di/tokens";
 import type { IdentityClient } from "../../src/lib/identity-client/identity-client";
@@ -26,7 +28,7 @@ import { createUnreachableRedis, flushByPrefix } from "./redis";
 import type { LogCapture } from "./types";
 
 /** Every Redis prefix the discovery module (and its callers) derives or counts; flushed before each test. */
-export const DISCOVERY_PREFIXES = ["slots:", "slots-ver:", "next-available:", "free-map:", "rl:", "idem:", "identity:"];
+export const DISCOVERY_PREFIXES = ["slots:", "slots-ver:", "next-available:", "free-map:", "name-index", "rl:", "idem:", "identity:"];
 
 export interface AvailabilityHarness {
     h: ConsultationsHarness;
@@ -114,7 +116,8 @@ export function useAvailabilityHarness(suite: string, options: { captureLogs?: b
         profile(userId, actor = "patient", timezone) {
             return harness.get(`/api/doctors/${userId}${timezone === undefined ? "" : `?timezone=${encodeURIComponent(timezone)}`}`, actor);
         },
-        sweepService: () => new AvailabilitySweepService(db, harness.reader, harness.computer, harness.index, logger, h.clock),
+        sweepService: () => new AvailabilitySweepService(db, harness.reader, harness.computer, harness.index, logger, h.clock,
+            new NameIndexBuilder(container.resolve<IdentityClient>(TOKENS.IDENTITY_CLIENT), harness.index, logger, h.clock), getEnv().AVAILABILITY_NAME_REFRESH_SECONDS),
         refreshService: () => new AvailabilityRefreshService(harness.reader, harness.computer, harness.index, logger, h.clock),
         sweep: (signal = new AbortController().signal) => harness.sweepService().tick(signal),
         refresh: () => harness.refreshService().tick(new AbortController().signal),

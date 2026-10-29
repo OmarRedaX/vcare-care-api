@@ -20,6 +20,7 @@ export const INDEX_DOCTOR_COLUMNS = ["dp.id", "dp.user_id", "dp.timezone"] as co
 const BOOKABLE_PREDICATE = `dp.verification_status = '${VerificationStatus.Approved}' AND dp.identity_sync_status = '${IdentitySyncStatus.Synced}' AND dp.suspended_at IS NULL AND dp.is_accepting_patients AND dp.deleted_at IS NULL`;
 const ACTIVE_TYPE_EXISTS = "EXISTS (SELECT 1 FROM consultation_types ct WHERE ct.doctor_profile_id = dp.id AND ct.is_active AND ct.deleted_at IS NULL)";
 const SPECIALTY_EXISTS = "EXISTS (SELECT 1 FROM doctor_specialties ds WHERE ds.doctor_profile_id = dp.id AND ds.specialty_id = (SELECT s.id FROM specialties s WHERE s.slug = ?))";
+const HEADLINE_PREFIX = "starts_with(lower(dp.headline), ?)";
 const LANGUAGE_EXISTS = "EXISTS (SELECT 1 FROM doctor_languages dl WHERE dl.doctor_profile_id = dp.id AND dl.language_code = ?)";
 
 function toSlotDoctor(row: SlotDoctorRow): SlotDoctor {
@@ -50,7 +51,12 @@ function candidateBase(filters: CandidateFilters, conn: Knex): Knex.QueryBuilder
     if (filters.maxFee !== undefined) query.whereRaw("dp.consultation_fee <= ?", [filters.maxFee]);
     if (filters.specialty !== undefined) query.whereRaw(SPECIALTY_EXISTS, [filters.specialty]);
     if (filters.language !== undefined) query.whereRaw(LANGUAGE_EXISTS, [filters.language]);
-    if (filters.namePrefix !== undefined) query.whereRaw("starts_with(lower(dp.headline), ?)", [filters.namePrefix]);
+    if (filters.namePrefix !== undefined) {
+        const matched = filters.nameMatchedUserIds ?? [];
+        // The name index adds doctors whose display name matched; display names themselves never reach Postgres (only the matched ids do).
+        if (matched.length === 0) query.whereRaw(HEADLINE_PREFIX, [filters.namePrefix]);
+        else query.whereRaw(`(${HEADLINE_PREFIX} OR dp.user_id = ANY(?::bigint[]))`, [filters.namePrefix, [...matched]]);
+    }
     return query;
 }
 

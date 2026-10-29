@@ -1,4 +1,4 @@
-// Loopback-only, synthetic Identity for scripts/curl-test-availability.sh (availability slices 1 and 2).
+// Loopback-only, synthetic Identity for scripts/curl-test-availability.sh (availability slices 1 to 3).
 // Serves: JWKS, a token mint (/mint?case=...), the client-credentials token (POST /internal/auth/token) and the batch user
 // summary Care hydrates with (GET /internal/users?ids=...). Display names and avatar URLs are synthetic and unique per id so the
 // QA script can scan Care's log for them. A small control surface (loopback only) lets the script flip Identity "down" without
@@ -20,7 +20,7 @@ const actors = {
   'admin-1': ['1', 'admin', 'active'],
   expired: ['101', 'patient', 'active'],
 };
-const state = { usersMode: 'up', statusOverride: new Map(), userCalls: 0, lastIdsCount: 0, maxIdsCount: 0, tokenCalls: 0 };
+const state = { usersMode: 'up', statusOverride: new Map(), nameOverride: new Map(), userCalls: 0, lastIdsCount: 0, maxIdsCount: 0, tokenCalls: 0 };
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
@@ -42,22 +42,27 @@ const server = http.createServer((req, res) => {
     state.lastIdsCount = ids.length;
     state.maxIdsCount = Math.max(state.maxIdsCount, ids.length);
     const reply = () => json(200, { success: true, data: ids.map((id) => ({
-      id, fullName: `Synthetic QA Doctor ${id}`, avatarUrl: `https://avatars.example.test/qa/${id}.png`, role: 'doctor',
+      id, fullName: state.nameOverride.get(id) ?? `Synthetic QA Doctor ${id}`, avatarUrl: `https://avatars.example.test/qa/${id}.png`, role: 'doctor',
       status: state.statusOverride.get(id) ?? 'active', timezone: 'UTC', locale: 'en' })) });
     if (state.usersMode === 'slow') return void setTimeout(reply, 4000);
     return reply();
   }
 
-  // Control surface (QA only): /control/mode?users=up|down|slow, /control/user?id=&status=, /control/stats, /control/reset
+  // Control surface (QA only): /control/mode?users=up|down|slow, /control/user?id=&status= and/or &name= (a missing or empty
+  // value restores the default; a call with only `name` leaves the status alone), /control/stats, /control/reset
   if (url.pathname === '/control/mode') { state.usersMode = url.searchParams.get('users') ?? 'up'; return json(200, { usersMode: state.usersMode }); }
   if (url.pathname === '/control/user') {
     const id = Number(url.searchParams.get('id'));
     const status = url.searchParams.get('status');
-    if (status === 'active' || status === null) state.statusOverride.delete(id); else state.statusOverride.set(id, status);
-    return json(200, { id, status: status ?? 'active' });
+    const name = url.searchParams.get('name');
+    if (url.searchParams.has('name')) { if (name) state.nameOverride.set(id, name); else state.nameOverride.delete(id); }
+    if (url.searchParams.has('status') || !url.searchParams.has('name')) {
+      if (status === 'active' || status === null) state.statusOverride.delete(id); else state.statusOverride.set(id, status);
+    }
+    return json(200, { id, status: status ?? 'active', renamed: state.nameOverride.has(id) });
   }
   if (url.pathname === '/control/stats') return json(200, { usersMode: state.usersMode, userCalls: state.userCalls, lastIdsCount: state.lastIdsCount, maxIdsCount: state.maxIdsCount, tokenCalls: state.tokenCalls });
-  if (url.pathname === '/control/reset') { state.userCalls = 0; state.lastIdsCount = 0; state.maxIdsCount = 0; state.tokenCalls = 0; state.usersMode = 'up'; state.statusOverride.clear(); return json(200, {}); }
+  if (url.pathname === '/control/reset') { state.userCalls = 0; state.lastIdsCount = 0; state.maxIdsCount = 0; state.tokenCalls = 0; state.usersMode = 'up'; state.statusOverride.clear(); state.nameOverride.clear(); return json(200, {}); }
 
   const requested = url.searchParams.get('case') ?? '';
   const generic = /^(doctor|patient)-(\d{3,5})$/.exec(requested);

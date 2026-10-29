@@ -5,14 +5,14 @@ service: care-service
 module: availability
 status: active
 diataxis: reference
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [availability, slots, search, tasks, slice-1, slice-2, slice-3]
 related: [availability-spec, availability-brainstorm, availability-architecture, availability-manual-qa, scheduling-slots]
 ---
 
 # Availability — tasks
 
-Build order tags refer to CLAUDE.md → Build order for a new module. Slice 1 first, slice 2 (search, profile, loops) below the slice 1 gate status. Slice 3 (name index) is planned and has no section here yet; it is a separate `/develop` pass after slice 2 is merged (spec 13.3).
+Build order tags refer to CLAUDE.md → Build order for a new module. Slice 1 first, slice 2 (search, profile, loops) below the slice 1 gate status. Slice 3 (name index and name filter) has its own section at the end (branch feature/availability-slice3).
 
 - [x] S1-01 [0] Apply contract edits C1 to C3 (spec §3.0) and write `availability-contract.test.ts` (S1 part).
 - [x] S1-02 [2] `env.ts` + `Env` type: `SLOT_CACHE_TTL_SECONDS`; availability constants, enums, types; `DoctorChangeKind` + port types in doctors.
@@ -44,11 +44,11 @@ Slice 1 gate met; all tasks above are `[x]`.
 
 - `docs/availability/spec.md` (v0.1.1, section 14 as-built notes), `docs/INDEX.md`, `docs/service-card.md`, `docs/architecture/{availability,scheduling-slots,overview,api,infrastructure,resilience,consultation-lifecycle}.md`, `docs/runbook.md`, `docs/quickstart.md`, `.env.example`, and the `CLAUDE.md` Status block (plus the `slots:` key text in Performance rules, which gained `<ver>`).
 - Contract: `getDoctorSlots` (C1 to C3) matches the as-built controller, DTOs and policy; no drift. S2 edits C4 to C8 are not applied yet (slice 2).
-- Slice 2 and 3 docs (search, profile, rank index, free-map, loops, name index) stay as designed; the architecture shard and spec describe them as planned.
+- Slice 2 and 3 docs (search, profile, rank index, free-map, loops, name index) stay as designed; the architecture shard and spec describe them as planned. (History: slice 2 and slice 3 were reconciled later, see their sections below.)
 
 ## Pending outside this repo
 
-- Sync `contracts/openapi.yaml` and `docs/service-card.md` to the hub with `cd ../vcare-hub && scripts/sync-from-spoke.sh care-service ../vcare-care-api` (the hub copies predate C1-C3 and the slice 1 card text; slice 2 adds C4-C8 and the search/profile/worker card text, so the sync is due again after this branch is merged). Hub edits other than the sync belong to `/system-design`.
+- Sync `contracts/openapi.yaml` and `docs/service-card.md` to the hub with `cd ../vcare-hub && scripts/sync-from-spoke.sh care-service ../vcare-care-api` (the hub copies predate C1-C3 and the slice 1 card text; slice 2 adds C4-C8 and the search/profile/worker card text, so the sync is due again after this branch is merged; slice 3 adds the corrected `NameFilter` description and the name-index card text, so the sync is due once more after the slice 3 PR is retargeted to `main` and merged). Hub edits other than the sync belong to `/system-design`.
 
 ## Slice 2 — Search, profile, loops, degradation (branch feature/availability-slice2)
 
@@ -85,6 +85,31 @@ Slice 2 gate met; all S2 tasks above are `[x]`. Every number below was re-run by
 - `/review-code`: five parallel dimension reviewers, 24 candidates, 5 verified findings (1 Medium, 3 Low, 1 Docs), all fixed (S2-FR); the re-review verified each fix, found nothing new and deleted the review file.
 - Follow-up: `scripts/curl-test-consultations.sh` did hit `trg_notification_outbox_delete_sent_only` (its `reset` and a mid-run delete removed pending outbox rows). Fixed by marking the fixture rows `sent` first; the trigger is unchanged. Re-run: 382 pass / 2 fail. The 2 failures are stale expectations unrelated to the trigger: case 96 (`followUpOfRecordId-not-supported` now returns 404 because follow-up bookings exist) and case 361 (expects `vcare_app` to lack DELETE on `notification_outbox`; migration `20261012120000` grants it).
 
-## Slice 3 — Name index and name filter (planned, separate pass)
+## Slice 3 — Name index and name filter (branch feature/availability-slice3)
 
-Not started. Scope and tasks S3-01 to S3-04 are in spec 13.3; it needs its own `/develop` pass after slice 2 is merged. Known hooks left by slice 2: `resolveNamePrefix` in `rules.ts` is replaced by `normalizeName`; `DiscoveryService.nameDegradation` becomes conditional; `AVAILABILITY_NAME_REFRESH_SECONDS` is already declared in `env.ts`.
+Legend: [ ] todo, [~] in progress, [x] done (typecheck and the task's tests green). Slice 3 was built in passes: code and unit tests first (S3-01, S3-02), then integration tests (S3-03), then manual QA and docs (S3-04). All S3 tasks are `[x]`; the gate numbers are the orchestrator's to record below.
+
+- [x] S3-01 [pkg/lib] `pkg/utils/name.ts` `normalizeName` (NFC, trim, whitespace collapse, lower-case) and `lib/redis/lex.ts` `prefixRange`; slice 2's local `resolveNamePrefix` is gone (`rules.ts` keeps only the `>= 2` code-point check as `assertNamePrefix`, same `400` with `details[].field = "name"`). Unit tests: `tests/unit/pkg/utils/name.test.ts`, `tests/unit/lib/redis/lex.test.ts`, `rules.test.ts` updated.
+- [x] S3-02 [7] Name index code (2026-10-23):
+  - `NextAvailableIndex.readNameMatches(prefix)` (one `MULTI` of `EXISTS` + `ZRANGEBYLEX ... LIMIT 0 5001`, first 5000 used, a cut is logged count-only `availability_name_index_truncated`; absent key, Redis unusable or a command error -> `undefined`), `replaceNameIndex(members, builtAtMs)` (side key `name-index:building`, chunks of 500 each in a `MULTI` with `EXPIRE 600`, key deleted on any failure; then `EXPIRE 900`, plain `RENAME`, and `SET name-index:built-at EX 900` only after the `RENAME` succeeded; an empty list deletes the index and still stamps), `readNameBuiltAt()`. Keys and limits in `keys.ts` / `constants.ts`.
+  - `NameIndexBuilder` (`service/name-index.builder.ts`): hydrates the bookable doctors through `IdentityClient.getUsersBatch` in calls of 100 ids (cache-first inside the client), stops at the first degraded chunk and keeps the previous build (`availability_name_index_stale`), indexes only Identity-`active` users with a non-blank name, swaps in, logs `availability_name_index_built {members}`.
+  - `AvailabilitySweepService` takes the builder and `AVAILABILITY_NAME_REFRESH_SECONDS`; after stamping `swept-at` it rebuilds when `name-index:built-at` is absent or at least that old; any error is caught and logged `availability_name_index_failed {reason}` (error class only) and never fails the sweep. `worker-loops.ts` builds the `NameIndexBuilder` from the worker's `IdentityClient` (which already uses the worker Redis for the `identity:user:*` cache).
+  - `DiscoveryService`: with `name`, `normalizeName` -> `assertNamePrefix` -> `index.readNameMatches`; the matched user ids go to the candidate SQL as `nameMatchedUserIds` (`starts_with(lower(headline), $p) OR user_id = ANY($ids)`, intersected with the bookable candidates); `meta.degraded` gets `nameFilter` only when the index was missing, expired or Redis unusable (the slice 2 always-on flag is removed).
+  - Unit tests: `next-available.index.name.test.ts`, `name-index.builder.test.ts`, `availability-sweep.service.test.ts` (name step), `discovery.service.test.ts` (name paths), `doctor-discovery.repo.test.ts` (SQL shape). Test helpers: `name-index` added to `DERIVED_AVAILABILITY_PREFIXES` (`tests/helpers/redis.ts`) and to the harness flush list; the harness sweep builds a `NameIndexBuilder`.
+  - Integration suites touched: `availability-search` (renamed name describe, plus one index-backed case: display-name prefix after a sweep, no `meta.degraded`). `availability-search-pagination`, `-degradation`, `-freshness`, `-worker`, `records-privacy` and `record-attachments-privacy` are unchanged and green.
+- [x] S3-03 [12] Integration tests of spec 9.3 (2026-10-23): `tests/integration/availability-name.test.ts` (26 tests, real Postgres and Redis, fake Identity): index-backed prefix on display name and headline (union, intersection with candidates and other filters, Latin and Arabic NFC, case, whitespace), rename visible only after the next due rebuild, no repeat rebuild inside the refresh interval, Identity call count and `identity:user:*` reuse per rebuild (chunks of 100), Identity down keeps the previous build without extending its TTL and falls back to headline-only with `meta.degraded:["nameFilter"]` once it expires, Redis down fallback, who is indexed, empty bookable set deletes the index, a failing rebuild never fails the sweep, pagination page 2/3 on both sorts, `400` below two code points, no names or avatar URLs in logs, full-database and Redis scan for fixture names.
+- [x] S3-04 [13/14] Manual QA and docs (2026-10-23).
+  - QA: manual QA of the name filter in `docs/availability/manual-qa.md` (slice 3 section) and `scripts/curl-test-availability.sh` + `scripts/availability-qa-fake-identity.mjs` (rows 66, 69, 70, 79 re-based on the index-absent / Redis-down fallback; 61 new Redis-up and 3 new Redis-down assertions; final runs 254 pass / 0 fail / 1 skipped with Redis up and 167 pass / 0 fail / 1 skipped with Redis down; no real failure).
+  - Docs reconciled by `/update-docs` (2026-10-23): spec v0.3.0 (slice table, 12.3, 13.3, new "Slice 3 as-built notes" in section 14, slice 2 deviation 1 marked resolved), `docs/architecture/{availability,overview,deployment,api,infrastructure,resilience,capacity,integration}.md`, `docs/{runbook,service-card,INDEX,system-design,quickstart}.md`, the `CLAUDE.md` Status block, `.claude/state/system-design-checkpoint.md`. `data-model.md` needs no change (Redis keys are not listed there). Contract: no drift (only the `NameFilter` description changed in the slice 3 review, already in the contract and in spec 3.0 C6).
+  - Review: `/review-code` slice 3 findings were fixed (building key TTL and atomic swap, env bound for the name refresh, truncation warning, rename-lag wording); the re-review verifies them and removes the review file (no review file = clean module).
+
+### Gate status (slice 3, 2026-10-23)
+
+Slice 3 gate met; all S3 tasks above are `[x]`. Every number was re-run by the orchestrator, not copied from an agent report.
+
+- `npm run typecheck` and `npm run lint` clean.
+- `npm test`: 201 suites / 3,629 tests pass (slice 2 baseline 197 / 3,578).
+- Full `npm run test:integration` in 7 batches of up to 10 files (real Postgres 5499, real Redis 6380): 65 files, 63 pass, 2 fail. 1,944 tests: 1,934 passed, 7 failed, 3 skipped. The 7 failures are the known environment-only ones: `db-roles` (4 password cases) and `storage-adapter` (3 MinIO cases; no Docker). The privacy suites (`records-privacy`, `record-attachments-privacy`) pass inside these batches. The new `availability-name` suite: 26 tests.
+- `npm run test:bench`: 4 suites pass on the final run. Search at 2,500 bookable doctors (p95, budget 400 ms): warm earliest 45.1 ms; cold earliest 170.4 ms; Redis down 89.5 ms. Slots 14 days with 150 busy (budget 300 ms): miss 18.4 ms, hit 10.0 ms. Full sweep of 2,500 doctors about 9.3 s (slice 2: about 7 s). One earlier run directly after the integration batches failed the budget (warm earliest p95 1,154 ms, sweep 14 s, slots 35 ms): the machine was visibly slow at that moment (every figure roughly doubled or worse) and two immediate re-runs gave 53.7 ms and 45.1 ms; treat the bench as sensitive to host load and run it on an idle machine.
+- Manual QA (QA agent): `Availability CURL QA (Redis up): 254 passed, 0 failed, 1 skipped`; `(Redis down): 167 passed, 0 failed, 1 skipped`. The one skip in each is the unreachable more-than-14-days span.
+- `/review-code`: five parallel dimension reviewers, 18 merged candidates, 5 verified findings (4 Low, 1 Docs), all fixed (building-key TTL and atomic swap, env bound for the name refresh, cap warning, rename-lag wording); the re-review verified each fix, found nothing new and deleted the review file.

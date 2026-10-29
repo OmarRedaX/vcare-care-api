@@ -38,12 +38,10 @@ export function assertFeeRange(minFee: number | undefined, maxFee: number | unde
 }
 
 /**
- * The lower-cased headline prefix of the `name` filter: NFC, trimmed, whitespace runs collapsed, then at least 2 code points (else `400`).
- * Slice 3 replaces this with the shared `normalizeName` used by the name index.
+ * The `name` filter after `normalizeName` (NFC, trim, whitespace collapse, lower-case): at least 2 code points are left, else `400`. Returns the
+ * prefix that is matched against both the name index and the lower-cased headline.
  */
-export function resolveNamePrefix(name: string | undefined): string | undefined {
-    if (name === undefined) return undefined;
-    const prefix = name.normalize("NFC").trim().replace(/\s+/gu, " ").toLowerCase();
+export function assertNamePrefix(prefix: string): string {
     if ([...prefix].length < SEARCH_NAME_MIN_CODE_POINTS) throw invalid("name", "must have at least 2 characters");
     return prefix;
 }

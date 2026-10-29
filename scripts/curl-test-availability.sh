@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# availability CURL QA, slice 1 (GET /api/doctors/{id}/slots) and slice 2 (GET /api/doctors search, GET /api/doctors/{id} profile,
-# the availability-refresh / availability-sweep worker loops) against a disposable *_test database, a running Care API and the
-# availability fake Identity (scripts/availability-qa-fake-identity.mjs: JWKS, token mint, batch users, control surface).
+# availability CURL QA, slice 1 (GET /api/doctors/{id}/slots), slice 2 (GET /api/doctors search, GET /api/doctors/{id} profile,
+# the availability-refresh / availability-sweep worker loops) and slice 3 (name index and the `name` filter: AV-R27..AV-R29)
+# against a disposable *_test database, a running Care API and the availability fake Identity
+# (scripts/availability-qa-fake-identity.mjs: JWKS, token mint, batch users, control surface incl. rename).
 #
 # Required: CARE_OWNER_DATABASE_URL (owner login to a disposable *_test database).
 # Optional:
@@ -27,7 +28,11 @@
 # Fixture ids (cannot collide with other scripts): slice 1 doctor 208; slice 2 doctors 8201-8208 and 8210-8234; specialties
 # qa-avail-a|b|c. Redis keys touched: slots:/slots-ver:/free-map:/identity:user: of those doctors, their members of
 # next-available:index / next-available:refresh, rl:doctors-* and the write-limiter counters of the fixture users (rate limiter
-# counters), the idem:* keys of its own booking/cancel calls, and next-available:swept-at when this run created it. Everything is removed on exit. audit_logs rows written by the doctor API calls are append-only and stay.
+# counters), the idem:* keys of its own booking/cancel calls, name-index* (slice 3; deleted at the start of a Redis-up run so the
+# "index absent before any sweep" cases are deterministic) and next-available:swept-at when this run created it. Everything is
+# removed on exit. audit_logs rows written by the doctor API calls are append-only and stay.
+# Slice 3 (Redis-up run) additionally needs the worker env exported (it runs `--once availability-sweep` several times, with
+# LOG_LEVEL=info so the availability_name_index_* lines are written) and uses pg_dump (optional) for the "no names in Postgres" scan.
 set -euo pipefail
 
 CARE_URL="${CARE_URL:-http://127.0.0.1:3001}"
@@ -81,6 +86,8 @@ const del = async (ks) => { for (let i = 0; i < ks.length; i += 100) await r.del
     await r.zrem("next-available:index", ...members); await r.srem("next-available:refresh", ...members);
   } else if (cmd === "delidem") { const ks = (await scan("idem:")).filter((k) => args.some((u) => k.endsWith(":" + u))); await del(ks); }
   else if (cmd === "rlreset") await del(await scan("rl:doctors-"));
+  else if (cmd === "cleanupnames") await del([...(await scan("name-index")), ...(await scan("identity:user:82")), ...(await scan("identity:user:208"))]);
+  else if (cmd === "cleanupidentity") await del(await scan("identity:user:82"));
   else if (cmd === "raw") { const v = await r[args[0]](...args.slice(1)); console.log(Array.isArray(v) ? v.join(",") : (v ?? "")); }
   await r.quit();
 })().catch((e) => { console.error(e.message); process.exit(1); });' "$@" | tr -d '\r'
@@ -109,6 +116,14 @@ reset_fixture2() {
        DELETE FROM specialties WHERE slug IN ('qa-avail-a','qa-avail-b','qa-avail-c');
        DELETE FROM patient_profiles WHERE user_id = 8301;" >/dev/null
 }
+# release_lock: end the session that holds the sweep advisory lock. `kill` of the background psql is not enough on Git Bash for Windows (it
+# kills the wrapper, the native psql keeps the lock for the whole pg_sleep and starves the next sweep), so terminate the backend itself.
+release_lock() {
+  [ -n "$LOCK_PID" ] || return 0
+  kill "$LOCK_PID" 2>/dev/null || true
+  sql "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_advisory_lock(hashtextextended%' AND pid <> pg_backend_pid()" >/dev/null 2>&1 || true
+  LOCK_PID=""
+}
 worker_stop() {
   [ -n "$WORKER_PID" ] || return 0
   local win=""
@@ -120,7 +135,7 @@ summary() { printf 'Availability CURL QA (%s): %s passed, %s failed, %s skipped\
 cleanup() {
   local code=$?
   worker_stop
-  [ -z "$LOCK_PID" ] || kill "$LOCK_PID" 2>/dev/null || true
+  release_lock
   curl -fsS "$FAKE_IDENTITY_URL/control/reset" >/dev/null 2>&1 || true
   if [ "${KEEP_FIXTURE:-0}" = 1 ]; then rm -rf "$tmp"; summary; echo '(KEEP_FIXTURE=1: fixture rows and Redis keys left in place)'; exit "$code"; fi
   reset_fixture 2>/dev/null || true
@@ -128,6 +143,7 @@ cleanup() {
   if [ -n "$REDIS_URL" ]; then
     rds cleanup208 >/dev/null 2>&1 || true
     rds cleanup82 >/dev/null 2>&1 || true
+    rds cleanupnames >/dev/null 2>&1 || true
     [ "${#IDEM_KEYS[@]}" -eq 0 ] || rds delidem "${IDEM_KEYS[@]}" >/dev/null 2>&1 || true
     [ -n "$SWEPT_AT_PRE" ] || rds raw del next-available:swept-at >/dev/null 2>&1 || true
   fi
@@ -295,7 +311,7 @@ printf 'Slice 1: %s cases passed so far\n' "$passed"
 echo
 echo '== slice 2: fixture =='
 reset_fixture2
-[ -z "$REDIS_URL" ] || rds cleanup82 >/dev/null
+[ -z "$REDIS_URL" ] || { rds cleanup82 >/dev/null; rds cleanupnames >/dev/null; }
 sql "INSERT INTO specialties (slug, name, is_active) VALUES ('qa-avail-a','QA Availability A',true),('qa-avail-b','QA Availability B',true),('qa-avail-c','QA Availability C',true);
 INSERT INTO doctor_profiles (user_id, headline, years_experience, consultation_fee, currency, default_slot_minutes, timezone, is_accepting_patients, verification_status, identity_sync_status, decided_at, suspended_at, suspension_reason) VALUES
  (8201,'QA Alpha Cardiology',10,300,'EGP',30,'UTC',true,'approved','synced',NOW(),NULL,NULL),
@@ -556,12 +572,16 @@ t 'minFee=-1 -> 400' "/api/doctors?$MAIN&minFee=-1" "$patient" 400 ValidationFai
 t 'minFee=abc -> 400' "/api/doctors?$MAIN&minFee=abc" "$patient" 400 ValidationFailed
 t 'maxFee above int range -> 400' "/api/doctors?$MAIN&maxFee=2147483648" "$patient" 400 ValidationFailed
 tids 'combined: spec a + language ar + fee 100..150 -> 8202, 8208, 8205' "/api/doctors?$MAIN&language=ar&minFee=100&maxFee=150&sort=price&limit=100" "$patient" '8202,8208,8205'
-# name: headline prefix only (the display-name index is slice 3)
-tids 'name=QA Alpha (headline prefix, case-insensitive) -> 8201 with meta.degraded nameFilter' "/api/doctors?$MAIN&name=qa%20alpha&limit=100" "$patient" '8201' "$(degjs "$(degr 1 0 1)")"
+# name, before any sweep: Redis up -> the name index is absent (deleted at the fixture start), Redis down -> unusable; either way the filter is
+# headline-only and meta.degraded carries nameFilter (AV-R27). The index-backed cases are the slice 3 section below.
+if [ -n "$REDIS_URL" ]; then
+  [ -z "$(rds keys 'name-index')" ] && ok 'name index is absent before the first sweep (no name-index* key)' || bad 'name-index* key present before the first sweep'
+fi
+tids 'name=QA Alpha (headline prefix, case-insensitive) -> 8201; index absent (up) or Redis unusable (down): meta.degraded nameFilter' "/api/doctors?$MAIN&name=qa%20alpha&limit=100" "$patient" '8201' "$(degjs "$(degr 1 0 1)")"
 tids 'name with repeated and surrounding spaces is trimmed and collapsed -> 8201' "/api/doctors?$MAIN&name=%20%20qa%20%20%20alpha%20&limit=100" "$patient" '8201'
 tids 'name=QA%20ALPHA upper case -> 8201' "/api/doctors?$MAIN&name=QA%20ALPHA&limit=100" "$patient" '8201'
-tids 'name=QA Cardiology is not a prefix -> empty, still degraded nameFilter' "/api/doctors?$MAIN&name=cardiology&limit=100" "$patient" '' "$(degjs "$(degr 1 0 1)")"
-tids 'name on the Identity display name does not match yet (headline-only, S3 pending) -> empty + nameFilter' "/api/doctors?$MAIN&name=synthetic%20qa%20doctor&limit=100" "$patient" '' "$(degjs "$(degr 1 0 1)")"
+tids 'name=cardiology is not a prefix -> empty; headline-only fallback keeps degraded nameFilter' "/api/doctors?$MAIN&name=cardiology&limit=100" "$patient" '' "$(degjs "$(degr 1 0 1)")"
+tids 'name on the Identity display name before any sweep: headline-only fallback -> empty + nameFilter' "/api/doctors?$MAIN&name=synthetic%20qa%20doctor&limit=100" "$patient" '' "$(degjs "$(degr 1 0 1)")"
 t 'name of one character -> 400' "/api/doctors?$MAIN&name=a" "$patient" 400 ValidationFailed
 t 'name with a control character -> 400' "/api/doctors?$MAIN&name=qa%0Aalpha" "$patient" 400 ValidationFailed
 t 'name of 101 characters -> 400' "/api/doctors?$MAIN&name=$(printf 'a%.0s' $(seq 1 101))" "$patient" 400 ValidationFailed
@@ -571,7 +591,7 @@ t 'search: duplicate sort parameter -> 400 (array rejected)' "/api/doctors?$MAIN
 t 'search: duplicate language parameter -> 400' "/api/doctors?$MAIN&language=ar&language=en" "$patient" 400 ValidationFailed
 t 'search: cursor longer than 1024 characters -> 400' "/api/doctors?$MAIN&cursor=$(printf 'a%.0s' $(seq 1 1100))" "$patient" 400 ValidationFailed
 tids 'search: SQL metacharacters in specialty are bound, not executed -> empty 200' "/api/doctors?specialty=%27%20OR%201%3D1%20--&limit=100" "$patient" ''
-tids 'search: non-ASCII name prefix (2 code points) -> empty 200 with nameFilter marker' "/api/doctors?$MAIN&name=%D8%A7%D9%84&limit=100" "$patient" '' "$(degjs "$(degr 1 0 1)")"
+tids 'search: non-ASCII name prefix (2 code points) -> empty 200 with the headline-only nameFilter marker' "/api/doctors?$MAIN&name=%D8%A7%D9%84&limit=100" "$patient" '' "$(degjs "$(degr 1 0 1)")"
 tids 'search: candidate parity -- sync pending, no active type, soft-deleted, submitted doctors (8240-8243, spec a) are absent' "/api/doctors?$MAIN&sort=price&limit=100" "$patient" "$PO" "b.data.every(x=>x.userId<8240)"
 
 # ---- availability window filter ---------------------------------------------------------------------------------------------------
@@ -834,7 +854,7 @@ if [ -n "$REDIS_URL" ]; then
     LOCK_PID=$!
     sleep 2
     worker_once availability-sweep
-    kill "$LOCK_PID" 2>/dev/null || true; LOCK_PID=""
+    release_lock
     if [ "$wcode" = 1 ] && grep -q worker_once_incomplete "$tmp/worker-availability-sweep.log" && [ "$(rds get next-available:swept-at)" = "$swept_before" ]; then ok 'sweep singleton: session advisory lock (namespace 1104, id 0) held elsewhere -> --once exits 1 (incomplete), swept-at not advanced'; else bad "sweep with lock held: exit $wcode swept-at changed=$([ "$(rds get next-available:swept-at)" = "$swept_before" ] && echo no || echo yes): $(tail -2 "$tmp/worker-availability-sweep.log" | cut -c1-200)"; fi
     sleep 1
     (cd "$ROOT" && REDIS_URL=redis://127.0.0.1:6399/14 $WORKER_CMD --once availability-sweep >"$tmp/worker-sweep-noredis.log" 2>&1) && wcode=0 || wcode=$?
@@ -877,8 +897,192 @@ if [ -n "$REDIS_URL" ]; then
     skip 'long-running worker cases: DATABASE_URL (worker env) not exported'
   fi
 
-  # --- Redis state: derived keys carry TTLs and no keys hold names ---
-  if [ -z "$(rds keys 'name-index')" ]; then ok 'no name-index key exists (slice 3 not built)'; else skip 'name-index key present (slice 3 built)'; fi
+fi
+
+# raw_name_probes <label>: odd `name` values (lex-range metacharacters, NUL, U+10FFFF, lone surrogates, invalid UTF-8, bidi override) must end in
+# a handled 200 or 400 with the envelope and the request id echoed, never a 5xx (the prefix is sent to Redis as a lex range).
+raw_name_probes() {
+  local raw failures=""
+  for raw in '%5Ba' '%28%28' '%25%25' '%2B%2B' '..' '%2A%2A' '%F4%8F%BF%BF%F4%8F%BF%BF' '%ED%A0%80%ED%A0%80' '%C0%AF%C0%AF' '%00%00' 'a%00b' '%E2%80%AE%E2%80%AE'; do
+    dget "/api/doctors?$MAIN&name=$raw&limit=100" "$patient"
+    if { [ "$status" = 200 ] || [ "$status" = 400 ]; } && rid_echoed && jt "$tmp/body" "typeof b.success==='boolean'"; then :; else failures="${failures}${raw}=>${status} "; fi
+  done
+  if [ -z "$failures" ]; then ok "$1"; else bad "$1: $failures"; fi
+}
+u() { node -e 'process.stdout.write(process.argv[1].replace(/<([0-9a-f]{4})>/gi,(m,h)=>String.fromCharCode(parseInt(h,16))))' "$1"; }   # u 'Jos<00e9>' prints the real characters (the script stays ASCII)
+
+# ================================================================================================================================
+# Slice 3: name index and name filter (AV-R27..AV-R29). Redis up only; the Redis-down answers are in the Redis-down section below.
+# The fake Identity names are `Synthetic QA Doctor <id>`; `rename` goes through /control/user?id=&name=.
+# ================================================================================================================================
+if [ -n "$REDIS_URL" ]; then
+  echo; echo '== slice 3: name index and name filter (Redis up) =='
+  if [ "$worker_ready" = 1 ] && curl -fsS "$FAKE_IDENTITY_URL/control/stats" >/dev/null 2>&1; then
+    nq() { node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1"; }
+    sweep_s3() { # sweep_s3 <tag>: one full --once sweep (sets wcode); the log is kept as worker-s3-<tag>.log for the privacy scan
+      worker_once availability-sweep; cp "$tmp/worker-availability-sweep.log" "$tmp/worker-s3-$1.log"
+    }
+    s3_log_has() { grep -q "$2" "$tmp/worker-s3-$1.log"; }
+    zlex() { rds raw zlexcount name-index "[$1" "[$1~"; }   # members whose normalised name starts with $1
+    name_path() { printf '/api/doctors?%s&name=%s&sort=price&limit=100' "$1" "$(nq "$2")"; }
+    NDEG='["nameFilter"]'
+    # walk_path <label> <base path incl. limit> <expected ids csv> <expected pages> <js over b each page>
+    walk_path() {
+      local label="$1" base="$2" want="$3" want_pages="$4" extra="$5" cursor="" got="" pages=0 flags=""
+      while :; do
+        dget "$base${cursor:+&cursor=$cursor}" "$patient"
+        [ "$status" = 200 ] || { bad "$label page $((pages+1)): status $status $(head -c 150 "$tmp/body")"; return; }
+        rid_echoed || flags="${flags}rid;"
+        jt "$tmp/body" "b.meta.count===b.data.length && b.meta.hasMore===(b.meta.nextCursor!==null) && ($extra)" || flags="${flags}meta;"
+        got="${got:+$got,}$(jv "$tmp/body" 'b.data.map(x=>x.userId).join(",")')"
+        pages=$((pages+1))
+        [ "$pages" -ne 2 ] || [ "$(jv "$tmp/body" 'b.data.length>0')" = true ] || flags="${flags}page2empty;"
+        cursor="$(jv "$tmp/body" 'b.meta.nextCursor??""')"
+        [ -n "$cursor" ] || break
+        [ "$pages" -lt 10 ] || { flags="${flags}runaway;"; break; }
+      done
+      if [ "$got" = "$want" ] && [ "$pages" = "$want_pages" ] && [ -z "$flags" ]; then ok "$label: $pages pages, ids $got, hasMore/nextCursor exact, request id echoed"; else bad "$label: got '$got' (want '$want') pages=$pages flags=$flags"; fi
+    }
+
+    ident reset; rds cleanupnames >/dev/null
+    fetch_oracle 8201 8202 8203 8204 8205 8208
+    N_BOOKABLE="$(sql "SELECT count(*) FROM doctor_profiles dp WHERE dp.user_id BETWEEN 8200 AND 8299 AND dp.verification_status='approved' AND dp.identity_sync_status='synced' AND dp.suspended_at IS NULL AND dp.is_accepting_patients AND dp.deleted_at IS NULL AND EXISTS (SELECT 1 FROM consultation_types ct WHERE ct.doctor_profile_id=dp.id AND ct.is_active AND ct.deleted_at IS NULL)")"
+
+    # --- 1. before any sweep the index is absent: headline-only, nameFilter reported -----------------------------------------------
+    [ -z "$(rds keys 'name-index')" ] && ok 'S3 before any sweep: no name-index* key exists' || bad 'S3 before any sweep: a name-index* key exists'
+    tids 'S3 index absent: a display-name prefix finds nothing and meta.degraded=["nameFilter"]' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '' "$(degjs "$NDEG")"
+    tids 'S3 index absent: the headline prefix still matches (8201) and meta.degraded=["nameFilter"]' "$(name_path "$MAIN" 'qa alpha')" "$patient" '8201' "$(degjs "$NDEG")"
+
+    # --- 2. one sweep builds the index -------------------------------------------------------------------------------------------
+    sweep_s3 first
+    nz="$(rds raw zcard name-index)"; nttl="$(rds ttl name-index)"; bat="$(rds get name-index:built-at)"; nb="$(rds keys 'name-index:building')"
+    if [ "$wcode" = 0 ] && [ "$nz" = "$N_BOOKABLE" ] && [ "$nttl" -gt 0 ] && [ "$nttl" -le 900 ] && [ -n "$bat" ] && [ -z "$nb" ] && s3_log_has first availability_name_index_built; then
+      ok "S3 sweep builds the index: exit 0, name-index holds $nz members (= the $N_BOOKABLE bookable doctors), TTL ${nttl}s <= 900, built-at stamped, no leftover building key, availability_name_index_built logged"
+    else
+      bad "S3 sweep build: exit $wcode members=$nz (want $N_BOOKABLE) ttl=$nttl built-at='$bat' building='$nb': $(tail -3 "$tmp/worker-s3-first.log" | cut -c1-200)"
+    fi
+
+    # --- 3. index-backed prefix on the display name ---------------------------------------------------------------------------------
+    tids 'S3 display-name prefix "synthetic qa doctor 82" within spec a -> all six bookable doctors in price order, NO meta.degraded' "$(name_path "$MAIN" 'synthetic qa doctor 82')" "$patient" "$PO" \
+      "$DEG_NONE && b.meta.count===6 && new Set(b.data.map(x=>x.userId)).size===b.data.length"
+    tids 'S3 display-name prefix, default sort (earliest) -> the six doctors in oracle order, NO meta.degraded' "/api/doctors?$MAIN&name=$(nq 'synthetic qa doctor 82')&limit=100" "$patient" "$(oracle order earliest_availability "$ALL8")" "$DEG_NONE"
+    tids 'S3 narrower display-name prefix "synthetic qa doctor 8203" -> 8203 only' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '8203' "$DEG_NONE"
+    tids 'S3 case-insensitive: SYNTHETIC QA DOCTOR 8203 -> 8203' "$(name_path "$MAIN" 'SYNTHETIC QA DOCTOR 8203')" "$patient" '8203' "$DEG_NONE"
+    tids 'S3 whitespace is trimmed and collapsed: "  Synthetic   QA Doctor 8203 " -> 8203' "$(name_path "$MAIN" '  Synthetic   QA Doctor 8203 ')" "$patient" '8203' "$DEG_NONE"
+    tids 'S3 a name that is not a prefix ("qa doctor 8203") -> empty, still NO meta.degraded' "$(name_path "$MAIN" 'qa doctor 8203')" "$patient" '' "$DEG_NONE"
+    tids 'S3 the headline prefix still matches with the index present (qa alpha -> 8201), NO meta.degraded' "$(name_path "$MAIN" 'qa alpha')" "$patient" '8201' "$DEG_NONE"
+    tids 'S3 admin sees the same index-backed match' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$admin" '8203' "$DEG_NONE"
+
+    # --- 4. union of display-name and headline matches, no duplicates ------------------------------------------------------------------
+    sql "UPDATE doctor_profiles SET headline = 'Synthetic QA Doctor 8203 Delta' WHERE user_id = 8204; UPDATE doctor_profiles SET headline = 'Synthetic QA Doctor 8202 Beta' WHERE user_id = 8202" >/dev/null
+    tids 'S3 union: 8203 matches by display name and 8204 by headline only -> both, price order' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" "$(oracle order price '8203,8204')" "$DEG_NONE && b.meta.count===2"
+    tids 'S3 union without duplicates: 8202 matches by BOTH its display name and its headline -> listed once' "$(name_path "$MAIN" 'synthetic qa doctor 8202')" "$patient" '8202' "$DEG_NONE && b.meta.count===1"
+    tids 'S3 union without duplicates over the whole prefix: six distinct doctors' "$(name_path "$MAIN" 'synthetic qa doctor 82')" "$patient" "$PO" "$DEG_NONE && b.meta.count===6"
+    sql "UPDATE doctor_profiles SET headline = 'QA Delta Dermatology' WHERE user_id = 8204; UPDATE doctor_profiles SET headline = 'QA Beta Cardiology' WHERE user_id = 8202" >/dev/null
+
+    # --- 5. intersection with the candidate set -------------------------------------------------------------------------------------
+    sql "UPDATE doctor_profiles SET is_accepting_patients = false WHERE user_id = 8208" >/dev/null     # SQL only: the index is not told
+    [ "$(zlex 'synthetic qa doctor 8208')" = 1 ] && ok 'S3 intersection precondition: the name index still holds 8208 after it stopped accepting patients' || bad 'S3 intersection precondition: 8208 missing from the index'
+    tids 'S3 intersection: 8208 (in the index, no longer a candidate) is absent from a matching name search' "$(name_path "$MAIN" 'synthetic qa doctor 8208')" "$patient" '' "$DEG_NONE"
+    tids 'S3 intersection: the broad prefix returns the five remaining candidates, not 8208' "$(name_path "$MAIN" 'synthetic qa doctor 82')" "$patient" '8202,8205,8203,8204,8201' "$DEG_NONE"
+    sql "UPDATE doctor_profiles SET is_accepting_patients = true WHERE user_id = 8208" >/dev/null
+    tids 'S3 intersection: once accepting again 8208 is back (same index, no rebuild)' "$(name_path "$MAIN" 'synthetic qa doctor 8208')" "$patient" '8208' "$DEG_NONE"
+    [ "$(zlex 'synthetic qa doctor 8206')" = 0 ] && [ "$(zlex 'synthetic qa doctor 8207')" = 0 ] && ok 'S3 non-bookable doctors (8206 not accepting, 8207 suspended) were never indexed' || bad 'S3 a non-bookable doctor is in the name index'
+    tids 'S3 a non-bookable doctor whose Identity name matches (8206) is absent' "$(name_path "$MAIN" 'synthetic qa doctor 8206')" "$patient" '' "$DEG_NONE"
+
+    # --- 6. combined with other filters ------------------------------------------------------------------------------------------------
+    tids 'S3 name + specialty qa-avail-b -> 8203, 8204' "$(name_path 'specialty=qa-avail-b' 'synthetic qa doctor 82')" "$patient" '8203,8204' "$DEG_NONE"
+    tids 'S3 name + specialty qa-avail-b, narrower prefix -> 8204' "$(name_path 'specialty=qa-avail-b' 'synthetic qa doctor 8204')" "$patient" '8204' "$DEG_NONE"
+    tids 'S3 name + specialty: a matching name outside the specialty (cap doctors are in qa-avail-c) -> empty' "$(name_path "$MAIN" 'synthetic qa doctor 821')" "$patient" '' "$DEG_NONE"
+    tids 'S3 name + specialty + language + fee range -> 8202, 8208, 8205' "$(name_path "$MAIN&language=ar&minFee=100&maxFee=150" 'synthetic qa doctor 82')" "$patient" '8202,8208,8205' "$DEG_NONE"
+
+    # --- 7. pagination: page 2 with nextCursor over a name search --------------------------------------------------------------------------
+    walk_path 'S3 pagination name search sort=price limit=4 (qa-avail-c, prefix "synthetic qa doctor 821")' "$(name_path 'specialty=qa-avail-c' 'synthetic qa doctor 821' | sed 's/limit=100/limit=4/')" \
+      '8210,8211,8212,8213,8214,8215,8216,8217,8218,8219' 3 "$DEG_NONE"
+    walk_path 'S3 pagination name search default sort (earliest) limit=4 (same set)' "/api/doctors?specialty=qa-avail-c&name=$(nq 'synthetic qa doctor 821')&limit=4" \
+      '8210,8211,8212,8213,8214,8215,8216,8217,8218,8219' 3 "$DEG_NONE"
+    # page 2 of a name search whose cursor is replayed with a different name is a position, not a grant (200, never 5xx)
+    dget "$(name_path 'specialty=qa-avail-c' 'synthetic qa doctor 821' | sed 's/limit=100/limit=4/')" "$patient"; c3="$(jv "$tmp/body" 'b.meta.nextCursor')"
+    t 'S3 a name-search cursor replayed with another name is accepted as a position (200, never 5xx)' "$(name_path 'specialty=qa-avail-c' 'synthetic qa doctor 8215' | sed 's/limit=100/limit=4/')&cursor=$c3" "$patient" 200 'Array.isArray(b.data)'
+
+    # --- 8. validation -----------------------------------------------------------------------------------------------------------------
+    t 'S3 name of 1 character -> 400 (index present)' "/api/doctors?$MAIN&name=a" "$patient" 400 ValidationFailed
+    jt "$tmp/body" "b.error.details.some(d=>d.field==='name')" && ok 'S3 one-character name: details[].field = name' || bad "S3 name detail: $(head -c 200 "$tmp/body")"
+    t 'S3 name with a control character -> 400 (index present)' "/api/doctors?$MAIN&name=synthetic%0Aqa" "$patient" 400 ValidationFailed
+
+    raw_name_probes 'S3 raw name probes (lex metacharacters, NUL, U+10FFFF, lone surrogates, invalid UTF-8, bidi override) with the index present: handled 200/400, never 5xx'
+
+    # --- 9. rename: the old name matches until the next DUE rebuild ---------------------------------------------------------------------------
+    curl -fsS "$FAKE_IDENTITY_URL/control/user?id=8203&name=Renamed%20QA%20Physician" >/dev/null
+    tids 'S3 rename at Identity: before the next due rebuild the OLD name still matches (derived index, stale by at most the refresh period)' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '8203' "$DEG_NONE"
+    tids 'S3 rename at Identity: the NEW name does not match yet' "$(name_path "$MAIN" 'renamed qa')" "$patient" '' "$DEG_NONE"
+    sweep_s3 fresh
+    if [ "$wcode" = 0 ] && ! s3_log_has fresh availability_name_index_built; then ok 'S3 a sweep inside the refresh period (built-at fresh) does not rebuild: exit 0, no availability_name_index_built'; else bad "S3 fresh sweep rebuilt or failed: exit $wcode"; fi
+    tids 'S3 after that sweep the old name still matches (no rebuild was due)' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '8203' "$DEG_NONE"
+    rds raw del name-index:built-at >/dev/null; rds raw del identity:user:8203 >/dev/null     # make the rebuild due; the builder reads through the 300 s identity cache
+    sweep_s3 rename
+    if [ "$wcode" = 0 ] && s3_log_has rename availability_name_index_built; then ok 'S3 due rebuild (built-at deleted, identity:user:8203 cache deleted): exit 0, availability_name_index_built'; else bad "S3 due rebuild: exit $wcode: $(tail -3 "$tmp/worker-s3-rename.log" | cut -c1-200)"; fi
+    tids 'S3 after the rebuild the NEW name matches (8203, hydrated with the new name), NO meta.degraded' "$(name_path "$MAIN" 'renamed qa')" "$patient" '8203' "$DEG_NONE && b.data[0].displayName==='Renamed QA Physician'"
+    tids 'S3 after the rebuild the OLD name no longer matches' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '' "$DEG_NONE"
+
+    # --- 10. Identity down + due rebuild: the previous build is kept and still served ------------------------------------------------------------
+    ttl_before="$(rds ttl name-index)"
+    curl -fsS "$FAKE_IDENTITY_URL/control/mode?users=down" >/dev/null
+    rds cleanupidentity >/dev/null; rds raw del name-index:built-at >/dev/null
+    sweep_s3 down
+    ttl_after="$(rds ttl name-index)"; bat_after="$(rds get name-index:built-at)"
+    if [ "$wcode" = 0 ] && s3_log_has down availability_name_index_stale && ! s3_log_has down availability_name_index_built && [ "$ttl_after" -gt 0 ] && [ "$ttl_after" -le "$ttl_before" ] && [ -z "$bat_after" ]; then
+      ok "S3 Identity down + due rebuild: sweep still exit 0, availability_name_index_stale logged, previous build kept (TTL ${ttl_before}s -> ${ttl_after}s, not extended), built-at not re-stamped"
+    else
+      bad "S3 Identity down rebuild: exit $wcode ttl $ttl_before -> $ttl_after built-at='$bat_after': $(tail -3 "$tmp/worker-s3-down.log" | cut -c1-200)"
+    fi
+    tids 'S3 Identity down: the previous build is still served (renamed qa -> 8203) with NO meta.degraded' "$(name_path "$MAIN" 'renamed qa')" "$patient" '8203' "$DEG_NONE"
+    ident reset; rds cleanupidentity >/dev/null          # Identity back up (this also restores the original name of 8203)
+    sweep_s3 recover
+    if [ "$wcode" = 0 ] && s3_log_has recover availability_name_index_built && [ -n "$(rds get name-index:built-at)" ]; then ok 'S3 Identity back up: the next sweep rebuilds (built-at was left absent) and re-stamps'; else bad "S3 recovery rebuild: exit $wcode"; fi
+    tids 'S3 after recovery the original name matches again' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '8203' "$DEG_NONE"
+    tids 'S3 after recovery the renamed value is gone' "$(name_path "$MAIN" 'renamed qa')" "$patient" '' "$DEG_NONE"
+
+    # --- 11. only Identity-active users are indexed ------------------------------------------------------------------------------------------------
+    curl -fsS "$FAKE_IDENTITY_URL/control/user?id=8205&status=suspended" >/dev/null
+    rds cleanupidentity >/dev/null; rds raw del name-index:built-at >/dev/null
+    sweep_s3 status
+    if [ "$wcode" = 0 ] && [ "$(zlex 'synthetic qa doctor 8205')" = 0 ] && [ "$(zlex 'synthetic qa doctor 8201')" = 1 ]; then ok 'S3 an Identity-suspended user (8205) is not indexed on rebuild; the others are'; else bad "S3 status filter: exit $wcode 8205=$(zlex 'synthetic qa doctor 8205') 8201=$(zlex 'synthetic qa doctor 8201')"; fi
+    ident reset; rds cleanupidentity >/dev/null; rds raw del name-index:built-at >/dev/null
+    sweep_s3 restore
+    [ "$wcode" = 0 ] && [ "$(zlex 'synthetic qa doctor 8205')" = 1 ] && ok 'S3 after Identity reactivates 8205, the next due rebuild indexes it again' || bad "S3 status restore: exit $wcode"
+
+    # --- 11b. Unicode: NFC/NFD and case folding on both sides, Arabic prefix --------------------------------------------------------------------------
+    curl -fsS "$FAKE_IDENTITY_URL/control/user?id=8204&name=$(nq "$(u 'Jos<00e9> QA Physician')")" >/dev/null
+    curl -fsS "$FAKE_IDENTITY_URL/control/user?id=8201&name=$(nq "$(u '<062f>. <0623><062d><0645><062f> QA')")" >/dev/null
+    rds cleanupidentity >/dev/null; rds raw del name-index:built-at >/dev/null
+    sweep_s3 unicode
+    if [ "$wcode" = 0 ] && s3_log_has unicode availability_name_index_built; then ok 'S3 Unicode names (accented Latin, Arabic) indexed on a due rebuild: exit 0'; else bad "S3 Unicode rebuild: exit $wcode"; fi
+    tids 'S3 Unicode: NFC prefix "jos<e acute> qa" -> 8204' "$(name_path "$MAIN" "$(u 'jos<00e9> qa')")" "$patient" '8204' "$DEG_NONE"
+    tids 'S3 Unicode: NFD query (e + combining acute) matches the NFC name -> 8204' "$(name_path "$MAIN" "$(u 'jose<0301> qa')")" "$patient" '8204' "$DEG_NONE"
+    tids 'S3 Unicode: upper-case E-acute (JOS<E acute>) -> 8204' "$(name_path "$MAIN" "$(u 'JOS<00c9>')")" "$patient" '8204' "$DEG_NONE"
+    tids 'S3 Unicode: the unaccented "jose qa" is not a prefix of the accented name -> empty' "$(name_path "$MAIN" 'jose qa')" "$patient" '' "$DEG_NONE"
+    tids 'S3 Unicode: Arabic prefix (2 code points, dot, space, 2 letters) -> 8201' "$(name_path "$MAIN" "$(u '<062f>. <0623><062d>')")" "$patient" '8201' "$DEG_NONE"
+    ident reset; rds cleanupidentity >/dev/null; rds raw del name-index:built-at >/dev/null
+    sweep_s3 unicoderestore
+    tids 'S3 Unicode restore: after the next rebuild the original name of 8204 matches again and the accented one does not' "$(name_path "$MAIN" 'synthetic qa doctor 8204')" "$patient" '8204' "$DEG_NONE"
+
+    # --- 12. index expired / deleted: headline-only fallback again --------------------------------------------------------------------------------
+    rds raw pexpire name-index 1 >/dev/null; sleep 0.3
+    tids 'S3 index expired (PEXPIRE 1): a display-name prefix finds nothing, meta.degraded=["nameFilter"]' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '' "$(degjs "$NDEG")"
+    tids 'S3 index expired: the headline prefix still matches (8201), meta.degraded=["nameFilter"]' "$(name_path "$MAIN" 'qa alpha')" "$patient" '8201' "$(degjs "$NDEG")"
+    rds raw del name-index:built-at >/dev/null
+    sweep_s3 afterexpiry
+    tids 'S3 the next sweep rebuilds an expired index: name matches again, NO meta.degraded' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '8203' "$DEG_NONE"
+    rds raw del name-index >/dev/null; rds raw del name-index:built-at >/dev/null
+    [ -z "$(rds keys 'name-index')" ] && ok 'S3 name-index and name-index:built-at deleted' || bad 'S3 name-index keys still present after DEL'
+    tids 'S3 index deleted: display-name prefix finds nothing, meta.degraded=["nameFilter"]' "$(name_path "$MAIN" 'synthetic qa doctor 8203')" "$patient" '' "$(degjs "$NDEG")"
+    tids 'S3 index deleted: headline prefix matches 8201, meta.degraded=["nameFilter"]' "$(name_path "$MAIN" 'qa alpha')" "$patient" '8201' "$(degjs "$NDEG")"
+    tids 'S3 searches without a name filter never report nameFilter, with or without the index' "/api/doctors?$MAIN&sort=price&limit=100" "$patient" "$PO" "$DEG_NONE"
+    ident reset; rds cleanupnames >/dev/null
+  else
+    skip 'slice 3 name-index cases: worker env (DATABASE_URL) not exported or the availability fake Identity control surface is not served'
+  fi
 fi
 
 # ================================================================================================================================
@@ -935,6 +1139,9 @@ if [ -z "$REDIS_URL" ]; then
   tids 'Redis down: window + default sort -> filter ignored, meta.degraded=["sort","availabilityFilter"] (ordered)' "/api/doctors?$MAIN&availableFrom=${tomorrow}T21:45:00Z&availableTo=${tomorrow}T22:30:00Z&limit=100" "$patient" "$exp_all" "$(degjs '["sort","availabilityFilter"]')"
   tids 'Redis down: window + sort=price -> meta.degraded=["availabilityFilter"]' "/api/doctors?$MAIN&availableFrom=${tomorrow}T21:45:00Z&availableTo=${tomorrow}T22:30:00Z&sort=price&limit=100" "$patient" "$PO" "$(degjs '["availabilityFilter"]')"
   tids 'Redis down: window + name + default sort -> all three markers in the documented order' "/api/doctors?$MAIN&name=qa%20alpha&availableFrom=${tomorrow}T21:45:00Z&limit=100" "$patient" '8201' "$(degjs '["sort","availabilityFilter","nameFilter"]')"
+  tids 'S3 Redis down: a display-name prefix finds nothing (no index reachable), meta.degraded=["nameFilter"] exactly (sort=price)' "/api/doctors?$MAIN&name=synthetic%20qa%20doctor%2082&sort=price&limit=100" "$patient" '' "$(degjs '["nameFilter"]')"
+  tids 'S3 Redis down: the headline prefix still matches (8201), search is 200 (never 5xx), meta.degraded=["nameFilter"]' "/api/doctors?$MAIN&name=qa%20alpha&sort=price&limit=100" "$patient" '8201' "$(degjs '["nameFilter"]')"
+  raw_name_probes 'S3 Redis down: raw name probes (lex metacharacters, NUL, U+10FFFF, lone surrogates, invalid UTF-8) are handled 200/400, never 5xx'
   t 'Redis down: window validation still applies (past availableFrom -> 400)' "/api/doctors?$MAIN&availableFrom=2020-01-01T00:00:00Z" "$patient" 400 ValidationFailed
   # page walk in degraded mode
   walk earliest_availability "$exp_all"
@@ -962,18 +1169,26 @@ if [ -z "$REDIS_URL" ]; then
 fi
 
 # ================================================================================================================================
-echo; echo '== slice 2: privacy (server log) =='
+echo; echo '== slice 2/3: privacy (server log, worker logs, Postgres) =='
 if [ -n "$CARE_LOG_FILE" ] && [ -r "$CARE_LOG_FILE" ]; then
-  hits="$(grep -c -e 'Synthetic QA Doctor' -e 'avatars.example.test' -e 'qa alpha' -e 'QA Alpha' "$CARE_LOG_FILE" || true)"
+  hits="$(grep -c -i -e 'Synthetic QA Doctor' -e 'avatars.example.test' -e 'qa alpha' -e 'renamed qa' -e 'qa doctor 82' "$CARE_LOG_FILE" || true)"
   [ "$hits" = 0 ] && ok 'server log: no hydrated display name, avatar URL or name-filter value' || bad "server log contains $hits fixture name/avatar/name-query line(s)"
   errs="$(grep -c -e '"level":"error"' -e '"status":5[0-9][0-9]' "$CARE_LOG_FILE" || true)"
   [ "$errs" = 0 ] && ok 'server log: no error-level or 5xx entries' || bad "server log has $errs error-level or 5xx entries"
   tok="$(grep -c 'eyJ' "$CARE_LOG_FILE" || true)"
   [ "$tok" = 0 ] && ok 'server log: no bearer token material' || bad "server log has $tok line(s) with JWT material"
-  wh=0; for f in "$tmp"/worker-*.log; do [ -e "$f" ] && wh=$((wh + $(grep -c -e 'Synthetic QA Doctor' -e 'avatars.example.test' "$f" || true))); done
-  [ "$wh" = 0 ] && ok 'worker logs: no display names or avatar URLs' || bad "worker logs contain $wh name/avatar line(s)"
+  wh=0; for f in "$tmp"/worker-*.log; do [ -e "$f" ] && wh=$((wh + $(grep -c -i -e 'Synthetic QA Doctor' -e 'avatars.example.test' -e 'renamed qa' "$f" || true))); done
+  [ "$wh" = 0 ] && ok 'worker logs: no display names, avatar URLs or renamed values (slice 3 sweeps included)' || bad "worker logs contain $wh name/avatar line(s)"
 else
   skip 'privacy log scan: CARE_LOG_FILE not set or unreadable'
+fi
+# AV-R29: names exist only in Redis, never in Postgres (the whole fixture database is dumped and scanned; synthetic headlines do not contain these strings)
+if command -v pg_dump >/dev/null 2>&1 && pg_dump --data-only "$CARE_OWNER_DATABASE_URL" > "$tmp/pgdump.sql" 2>"$tmp/pgdump.err" && [ -s "$tmp/pgdump.sql" ]; then
+  dump_hits="$(grep -c -i -e 'synthetic qa doctor' -e 'renamed qa physician' -e 'avatars.example.test' "$tmp/pgdump.sql" || true)"
+  [ "$dump_hits" = 0 ] && ok 'postgres: a full data dump of the test database contains no Identity display name or avatar URL' || bad "postgres dump contains $dump_hits display-name/avatar line(s)"
+  rm -f "$tmp/pgdump.sql"
+else
+  skip 'postgres name scan: pg_dump not available or failed'
 fi
 
 # ================================================================================================================================

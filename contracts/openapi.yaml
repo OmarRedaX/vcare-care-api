@@ -3304,9 +3304,11 @@ components:
       in: query
       required: false
       description: >-
-        Case-insensitive prefix match on the whole display name (through a derived index rebuilt every 5 minutes, so a renamed doctor
-        matches the old name for up to that long) or on the headline. When the name index is unavailable only the headline is matched
-        and `meta.degraded` contains `nameFilter`. Control characters are rejected.
+        Case-insensitive prefix match on the whole display name or on the headline. The name index is rebuilt by the worker about every
+        5 minutes at sweep granularity from Identity data that is itself cached for up to 5 minutes, so a renamed or newly bookable doctor
+        can take up to about 11 minutes to appear under the new name. A missing or expired index falls back to the headline only and
+        `meta.degraded` contains `nameFilter`. Control characters are rejected, and at least 2 code points must remain after trimming
+        and collapsing whitespace, else `400 ValidationFailed`.
       schema:
         type: string
         minLength: 2

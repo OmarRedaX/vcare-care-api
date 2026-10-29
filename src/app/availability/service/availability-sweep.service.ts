@@ -4,14 +4,20 @@ import type { Logger } from "../../../lib/logger/logger";
 import type { Clock } from "../../../lib/types/types";
 import type { TickOutcome } from "../../../lib/worker/types";
 import type { DoctorDiscoveryReader } from "../../doctors/service/doctor-discovery.reader";
-import { LOG_CANDIDATES_TRUNCATED, LOG_SWEEP_DONE, LOG_SWEEP_SKIPPED, METRIC_SWEEP_DURATION_MS, SWEEP_BATCH, SWEEP_LOCK_ID, SWEEP_LOCK_NAMESPACE } from "../constants";
+import type { IndexDoctor } from "../../doctors/types";
+import {
+    LOG_CANDIDATES_TRUNCATED, LOG_NAME_INDEX_FAILED, LOG_SWEEP_DONE, LOG_SWEEP_SKIPPED, METRIC_SWEEP_DURATION_MS, SWEEP_BATCH, SWEEP_LOCK_ID, SWEEP_LOCK_NAMESPACE,
+} from "../constants";
+import { NameIndexOutcome } from "../enums";
+import type { NameIndexBuilder } from "./name-index.builder";
 import type { NextAvailableComputer } from "./next-available.computer";
 import type { NextAvailableIndex } from "./next-available.index";
 
 /**
  * `availability-sweep` (AV-R23): recomputes every bookable doctor, removes index members that are no longer bookable, then stamps
  * `next-available:swept-at`. A singleton by session advisory lock. Anything short of a full pass (lock held, Redis unreachable, aborted,
- * a truncated doctor list) is `"incomplete"` and leaves the stamp alone, so the alert measures real freshness.
+ * a truncated doctor list) is `"incomplete"` and leaves the stamp alone, so the alert measures real freshness. After the stamp, when the name index is
+ * absent or older than `nameRefreshSeconds`, it is rebuilt (AV-R28); that step can never fail the sweep.
  */
 export class AvailabilitySweepService {
     constructor(
@@ -21,6 +27,8 @@ export class AvailabilitySweepService {
         private readonly index: NextAvailableIndex,
         private readonly logger: Logger,
         private readonly clock: Clock,
+        private readonly names: NameIndexBuilder,
+        private readonly nameRefreshSeconds: number,
     ) {}
 
     async tick(signal: AbortSignal): Promise<TickOutcome | void> {
@@ -50,10 +58,23 @@ export class AvailabilitySweepService {
         const stale = candidates.length === 0 ? candidates : await this.withoutBookable(candidates);
         if (stale.length > 0 && !(await this.index.remove(stale))) return "incomplete";
         if (!(await this.index.markSwept(this.clock.now()))) return "incomplete";
+        await this.rebuildNamesIfDue(listed.items, signal);
         const durationMs = this.clock.now() - startedAt;
         this.logger.metric(METRIC_SWEEP_DURATION_MS, durationMs);
         this.logger.info(LOG_SWEEP_DONE, { doctors: listed.items.length, batches, durationMs });
         return "done";
+    }
+
+    /** AV-R28: rebuild the name index when its stamp is absent or older than the refresh period. Any error is logged (never the cause text) and swallowed. */
+    private async rebuildNamesIfDue(doctors: readonly IndexDoctor[], signal: AbortSignal): Promise<void> {
+        try {
+            const builtAt = await this.index.readNameBuiltAt();
+            if (builtAt === undefined) { this.logger.warn(LOG_NAME_INDEX_FAILED, { reason: "RedisUnavailable" }); return; }
+            if (builtAt !== null && this.clock.now() - builtAt < this.nameRefreshSeconds * 1000) return;
+            if ((await this.names.rebuild(doctors, signal)) === NameIndexOutcome.Failed) this.logger.warn(LOG_NAME_INDEX_FAILED, { reason: "RedisWriteFailed" });
+        } catch (error) {
+            this.logger.warn(LOG_NAME_INDEX_FAILED, { reason: error instanceof Error ? error.name : "Unknown" });
+        }
     }
 
     private async withoutBookable(userIds: readonly number[]): Promise<number[]> {

@@ -1,6 +1,9 @@
-// Rules covered: AV-R23 (singleton by advisory lock, batches of 100, stale removal, swept-at only on a full pass, incomplete cases).
+// Rules covered: AV-R23 (singleton by advisory lock, batches of 100, stale removal, swept-at only on a full pass, incomplete cases),
+// AV-R28 (name-index rebuild when the stamp is absent or older than the refresh period; a failed rebuild never fails the sweep).
 import type { Knex } from "knex";
 import { AvailabilitySweepService } from "../../../../src/app/availability/service/availability-sweep.service";
+import { NameIndexOutcome } from "../../../../src/app/availability/enums";
+import type { NameIndexBuilder } from "../../../../src/app/availability/service/name-index.builder";
 import type { NextAvailableComputer } from "../../../../src/app/availability/service/next-available.computer";
 import type { NextAvailableIndex } from "../../../../src/app/availability/service/next-available.index";
 import type { DoctorDiscoveryReader } from "../../../../src/app/doctors/service/doctor-discovery.reader";
@@ -30,13 +33,14 @@ function setup(options: { acquired?: boolean; list?: IndexDoctor[]; truncated?: 
     const computer = { refresh: jest.fn().mockResolvedValue({ entries: [], removed: [], stored: 0, failed: [] }) };
     const index = {
         isUsable: jest.fn(() => true), members: jest.fn().mockResolvedValue([1001, 1002, 1003]), remove: jest.fn().mockResolvedValue(true),
-        markSwept: jest.fn().mockResolvedValue(true),
+        markSwept: jest.fn().mockResolvedValue(true), readNameBuiltAt: jest.fn().mockResolvedValue(null),
     };
+    const names = { rebuild: jest.fn().mockResolvedValue(NameIndexOutcome.Built) };
     const logger = { info: jest.fn(), debug: jest.fn(), warn: jest.fn(), metric: jest.fn() };
     let tickNow = 1_800_000_000_000;
     const service = new AvailabilitySweepService(db, reader as unknown as DoctorDiscoveryReader, computer as unknown as NextAvailableComputer,
-        index as unknown as NextAvailableIndex, logger as unknown as Logger, { now: () => (tickNow += 500) });
-    return { service, reader, computer, index, logger, unlocked, released };
+        index as unknown as NextAvailableIndex, logger as unknown as Logger, { now: () => (tickNow += 500) }, names as unknown as NameIndexBuilder, 300);
+    return { service, reader, computer, index, names, logger, unlocked, released, now: () => tickNow };
 }
 const signal = (): AbortSignal => new AbortController().signal;
 
@@ -148,5 +152,57 @@ describe("AvailabilitySweepService.tick (AV-R23)", () => {
         await expect(s.service.tick(signal())).rejects.toThrow("postgres down");
         expect(s.unlocked).toHaveBeenCalledTimes(1);
         expect(s.released).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("AvailabilitySweepService name-index step (AV-R28)", () => {
+    it("should rebuild the name index from the swept doctors when no build stamp exists, after stamping the sweep", async () => {
+        const s = setup({ list: doctors(3) });
+        expect(await s.service.tick(signal())).toBe("done");
+        expect(s.names.rebuild).toHaveBeenCalledTimes(1);
+        expect(s.names.rebuild).toHaveBeenCalledWith(doctors(3), expect.any(AbortSignal));
+        expect(s.index.markSwept.mock.invocationCallOrder[0]).toBeLessThan(s.names.rebuild.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it("should rebuild when the stamp is exactly as old as the refresh period or older, and skip it when younger", async () => {
+        const old = setup();
+        old.index.readNameBuiltAt.mockImplementation(() => Promise.resolve(old.now() - 300_000));
+        await old.service.tick(signal());
+        expect(old.names.rebuild).toHaveBeenCalledTimes(1);
+        const fresh = setup();
+        fresh.index.readNameBuiltAt.mockImplementation(() => Promise.resolve(fresh.now() - 100_000));
+        await fresh.service.tick(signal());
+        expect(fresh.names.rebuild).not.toHaveBeenCalled();
+    });
+
+    it("should not fail the sweep when the rebuild throws: it logs availability_name_index_failed with the error class only", async () => {
+        const s = setup();
+        s.names.rebuild.mockRejectedValue(new TypeError("message that must not be logged"));
+        expect(await s.service.tick(signal())).toBe("done");
+        expect(s.logger.warn).toHaveBeenCalledWith("availability_name_index_failed", { reason: "TypeError" });
+        expect(JSON.stringify(s.logger.warn.mock.calls)).not.toContain("must not be logged");
+        expect(s.logger.info).toHaveBeenCalledWith("availability_sweep_done", expect.any(Object));
+    });
+
+    it("should log a failed rebuild that could not be written and still finish the sweep", async () => {
+        const s = setup();
+        s.names.rebuild.mockResolvedValue(NameIndexOutcome.Failed);
+        expect(await s.service.tick(signal())).toBe("done");
+        expect(s.logger.warn).toHaveBeenCalledWith("availability_name_index_failed", { reason: "RedisWriteFailed" });
+    });
+
+    it("should skip the rebuild and log when the stamp cannot be read, without failing the sweep", async () => {
+        const s = setup();
+        s.index.readNameBuiltAt.mockResolvedValue(undefined);
+        expect(await s.service.tick(signal())).toBe("done");
+        expect(s.names.rebuild).not.toHaveBeenCalled();
+        expect(s.logger.warn).toHaveBeenCalledWith("availability_name_index_failed", { reason: "RedisUnavailable" });
+    });
+
+    it("should not touch the name index when the sweep itself is incomplete", async () => {
+        const s = setup({ truncated: true });
+        expect(await s.service.tick(signal())).toBe("incomplete");
+        expect(s.index.readNameBuiltAt).not.toHaveBeenCalled();
+        expect(s.names.rebuild).not.toHaveBeenCalled();
     });
 });
