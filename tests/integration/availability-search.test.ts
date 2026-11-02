@@ -446,6 +446,20 @@ describe("availability search and profile (integration)", () => {
         });
     });
 
+    describe("Cache-Control private, no-cache on every discovery response", () => {
+        it("should send it on search, profile, slots and the 401, never no-store", async () => {
+            await doctor({ userId: 1101 });
+            const responses = [
+                await a.search({}),
+                await a.profile(1101),
+                await a.get("/api/doctors/1101/slots"),
+                await a.getWith("/api/doctors"),
+            ];
+            expect(responses.map((response) => response.status)).toContain(401);
+            for (const response of responses) expect(response.headers["cache-control"]).toBe("private, no-cache");
+        });
+    });
+
     describe("contract conformance", () => {
         it("should return the DoctorProfile shape, the PaginationMeta, the request id and only declared status codes", async () => {
             const specialty = await seedSpecialty("cardiology", "Synthetic Cardiology");

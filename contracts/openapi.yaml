@@ -51,7 +51,7 @@ tags:
   - name: doctors-onboarding
     description: A doctor's own profile, verification documents, and application.
   - name: doctors-discovery
-    description: Patient and admin search, doctor profile, computed slots.
+    description: Patient and admin search, doctor profile, computed slots. Not clinical data, but per viewer: every response under these three operations, error responses included, carries Cache-Control private, no-cache.
   - name: schedules
     description: A doctor's working hours, schedule exceptions, and consultation types.
   - name: admin-verification
