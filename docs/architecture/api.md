@@ -169,6 +169,8 @@ Live (2026-10-29, `help-articles` module, [spec](../help-articles/spec.md), [sha
 
 Audit `metadata` holds `isPublishedBefore`/`isPublishedAfter` (and `changedFields` on update), never the title or the body. `publishedAt` is set on the first publish and kept when the article is unpublished. `GET /internal/help-articles` for the Phase-2 assistant is designed (ADR 0028) and **not built**.
 
+Not built yet. Design ([help-articles.md](./help-articles.md), ADR 0027): the list returns `HelpArticleSummary` items (no `body`), `GET /{id}` returns the full Markdown article; doctors with `pending`, `active` or `rejected` status may read, patients and admins need `active`. The contract change lands through `/construct-spec`.
+
 ## audit
 | Method | Path | Roles | Ownership | Notes |
 |---|---|---|---|---|
