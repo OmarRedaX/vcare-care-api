@@ -276,9 +276,10 @@ never changes `status` or the HTTP code (Identity has no equivalent field — a 
   5. `shutdown_complete`, then exit 0 (1 after any timeout or an `uncaught_error`).
 
   A second signal logs `shutdown_forced` and exits 1. An uncaught exception or unhandled rejection logs
-  `uncaught_error` and runs the same sequence with exit 1. Not yet fixed: a request aborted by its client leaves the
-  in-flight count at its `close` event while its handler may still be running, so shutdown can close the pools under
-  it ([#12](https://github.com/OmarRedaX/vcare-care-api/issues/12)).
+  `uncaught_error` and runs the same sequence with exit 1. A request aborted by its client stays counted until its
+  handler ends the response (Node emits `close` but never `finish` for it), so shutdown cannot close the pools under a
+  write that is still running ([#12](https://github.com/OmarRedaX/vcare-care-api/issues/12), 2026-11-02). A handler that
+  never ends its response holds the drain until `SHUTDOWN_TIMEOUT_MS`, which then forces the exit.
 - **`care-worker`:** `worker_stopping`, then every loop finishes its current tick and the worker pool is destroyed,
   both bounded by `SHUTDOWN_TIMEOUT_MS` (`worker_stop_timeout` and exit 1 on overrun). `node dist/worker.js --once
   <loop>` runs exactly one tick of that loop, closes the pool, and exits 0 (`worker_loop_unknown` / `worker_tick_failed`
