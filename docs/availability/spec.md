@@ -6,7 +6,7 @@ module: availability
 status: ready
 version: 0.3.0
 diataxis: reference
-last_verified: 2026-10-23
+last_verified: 2026-11-02
 tags: [spec, availability, search, slots, discovery, redis, worker, rank-index, free-map, name-index, degradation, listeners]
 related: [availability-brainstorm, availability-architecture, scheduling-slots, consultations-spec, schedules-spec, doctors-spec, admin-doctors-spec, verification-spec, data-model, api, capacity, infrastructure, resilience, adr-0002-slots-never-stored, adr-0006-health-split-redis-tier-2, adr-0008-care-worker-component, adr-0024-next-available-rank-index-free-map-and-sweep, adr-0025-derived-name-index, adr-0026-discovery-degradation-when-redis-is-down]
 contracts: [contracts/openapi.yaml]
@@ -156,8 +156,8 @@ CREATE INDEX idx_doctor_languages_language_code_doctor_profile_id ON doctor_lang
 All three routes: tag `doctors-discovery`, `security: bearerUser`, **guard `user`**, **roles `patient`, `admin`**,
 **ownership `none`** (discovery data is public to those roles; the doctor role is `403` by `authorize`), account state
 default (`status=active`; **no email-verified requirement**, that gates booking only), **idempotency: none** (all `GET`),
-audit: none (no clinical data). No `Cache-Control` header beyond the application default: these routes are not in
-`NO_STORE_PREFIXES` (non-clinical). Every response uses the standard envelope and echoes `X-Request-Id`.
+audit: none (no clinical data). Every response, errors included, is `Cache-Control: private, no-cache` (owner decision 2026-11-02: non-clinical
+but per viewer and stale within a minute; set per route in `availability/routes.ts` via `privateNoCache()`, not in `NO_STORE_PREFIXES`, never `no-store`). Every response uses the standard envelope and echoes `X-Request-Id`.
 
 ### 3.0 Contract edits (step 0 of each slice; the contract wins, these land in `contracts/openapi.yaml` first)
 Each edit is applied by the slice named; the contract test `tests/unit/contract/availability-contract.test.ts` reads them back.
@@ -483,7 +483,7 @@ Every rule AV-R1..AV-R29 has at least one named test above; the mapping is kept 
 Booking, reschedule, cancel (built); doctor-initiated follow-up booking; ratings and reviews; geo or "near me" search; free-text search over bio; word-internal name matching;
 per-type availability in search (the index uses the shortest active type; `/slots` is exact per type); a Postgres table of derived values; read replicas (the reads may move to
 `DATABASE_READ_URL` later); the Phase-2 booking agent's tools; currency-aware fee filtering; `help-articles`; any hub deployment, capacity or ownership change (already rolled up);
-`Cache-Control: no-store` (non-clinical routes); a real email, video or storage change.
+`Cache-Control: no-store` (non-clinical routes; they send `private, no-cache`); a real email, video or storage change.
 
 ---
 

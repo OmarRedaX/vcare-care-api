@@ -1,4 +1,5 @@
-// Rules covered: AV-R2 (authorize on every route), AV-R26 (limiter pair per route, IP before the guard, user after authorize).
+// Rules covered: AV-R2 (authorize on every route), AV-R26 (limiter pair per route, IP before the guard, user after authorize), and the
+// Cache-Control private, no-cache middleware first on every route so 401/403/429 carry it too (decision 2026-11-02).
 import type { RequestHandler, Router } from "express";
 import { buildAvailabilityRouter } from "../../../../src/app/availability/routes";
 import { assertRoutesAuthorized } from "../../../../src/lib/rbac/assert-routes-authorized";
@@ -16,8 +17,8 @@ const kind = (handler: RequestHandler): string => isPreAuthHandler(handler) ? "p
 describe("buildAvailabilityRouter", () => {
     const router = buildAvailabilityRouter();
 
-    it.each(["/doctors", "/doctors/:doctorUserId", "/doctors/:doctorUserId/slots"])("should compose GET %s as IP limiter, guard, authorize, user limiter, handler", (path) => {
-        expect(chain(router, "get", path).map(kind)).toEqual(["preauth", "guard", "authorize", "preauth", "other"]);
+    it.each(["/doctors", "/doctors/:doctorUserId", "/doctors/:doctorUserId/slots"])("should compose GET %s as cache header, IP limiter, guard, authorize, user limiter, handler", (path) => {
+        expect(chain(router, "get", path).map(kind)).toEqual(["preauth", "preauth", "guard", "authorize", "preauth", "other"]);
     });
 
     it("should expose only GET routes, with no idempotency", () => {
