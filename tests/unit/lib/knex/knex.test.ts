@@ -1,7 +1,7 @@
 import type { Knex } from "knex";
 import { types as pgTypes } from "pg";
 import { buildKnexLog } from "../../../../src/lib/knex/knex-log";
-import { buildConnectionConfig, createKnex, parseInt8 } from "../../../../src/lib/knex/knex";
+import { buildConnectionConfig, createKnex, parseInt8, parseInt8Array } from "../../../../src/lib/knex/knex";
 import { MigrationFiles, migrationConfig } from "../../../../src/lib/knex/knexfile";
 import { probeDatabase } from "../../../../src/lib/knex/probe";
 import type { KnexOptions } from "../../../../src/lib/knex/types";
@@ -133,6 +133,27 @@ describe("lib/knex/buildKnexLog", () => {
         expect(String(lines[1]?.summary)).toHaveLength(200);
         expect(lines[2]).toMatchObject({ method: "json(true)", alternative: "jsonb()" });
         expect(JSON.stringify(lines[3])).not.toContain("select");
+    });
+});
+
+describe("lib/knex/parseInt8Array (#17)", () => {
+    it("should parse an int8[] into numbers, keeping NULL entries", () => {
+        expect(parseInt8Array("{1,22,333}")).toEqual([1, 22, 333]);
+        expect(parseInt8Array("{5,NULL,-7}")).toEqual([5, null, -7]);
+        expect(parseInt8Array("{}")).toEqual([]);
+    });
+
+    it("should refuse an element above Number.MAX_SAFE_INTEGER, like a scalar int8", () => {
+        expect(() => parseInt8Array("{1,9007199254740993}")).toThrow("MAX_SAFE_INTEGER");
+    });
+
+    it("should refuse a multi-dimensional array and a non-array value", () => {
+        expect(() => parseInt8Array("{{1,2},{3,4}}")).toThrow("unsupported int8[] shape");
+        expect(() => parseInt8Array("1,2")).toThrow("unsupported int8[] shape");
+    });
+
+    it("should register the parser for OID 1016 on the pg type registry", () => {
+        expect(pgTypes.getTypeParser(1016 as never)("{4,5}")).toEqual([4, 5]);
     });
 });
 
