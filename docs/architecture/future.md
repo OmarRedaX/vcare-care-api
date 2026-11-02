@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-09-15
+last_verified: 2026-10-29
 tags: [future, roadmap, events, ai, out-of-scope]
 related: [integration, clinical-records, resilience, system-design]
 ---
@@ -47,7 +47,7 @@ never reads Care's database.
 | Complaint parsing (LLM) | reads `complaintText` at booking time through a scoped internal endpoint; writes a **draft** structured complaint and suggested specialty for the doctor to confirm |
 | Pre-consultation summary (LLM) | reads the patient timeline through a scoped internal endpoint; produces a draft brief shown to the assigned doctor only |
 | Diagnosis → ICD-10 (embeddings retrieval) | suggests real codes from retrieval for the doctor's diagnosis text; the doctor picks and confirms; only confirmed codes land in `medical_records.diagnosis_code` |
-| Help assistant (RAG over `help_articles`) | indexes published articles (by audience and category), answers with citations, escalates to an admin when nothing relevant is found |
+| Help assistant (RAG over `help_articles`) | indexes published articles (by audience and category), answers with citations, escalates to an admin when nothing relevant is found; reads the corpus through the future `GET /internal/help-articles` (scope `help:read`, [ADR 0028](../adr/0028-help-corpus-read-path-for-phase-2.md)) |
 | Booking agent (tool calling) | tools `searchDoctors`, `getAvailableSlots`, `bookConsultation`, `rescheduleConsultation`, `requestInfo`, `escalateUrgent` map to Care's existing rules — bookings still pass Domain rules 1–8, `Idempotency-Key`, and the exclusion constraint; acting for a patient requires that patient's explicit confirmation |
 
 **Boundary (non-negotiable):** AI never diagnoses, never prescribes, never decides treatment. Red-flag symptoms
