@@ -8,6 +8,8 @@ import { isConnectionIdle } from "./pg-connection-state";
 import type { KnexOptions, PgConnectionConfig } from "./types";
 
 const INT8_OID = 20;
+/** `int8[]` (`array_agg(id)`): without a parser it arrives as string ids. (`pg`'s `TypeId` union omits array OIDs, hence the cast.) */
+const INT8_ARRAY_OID = 1016 as Parameters<typeof pgTypes.setTypeParser>[0];
 const DATE_OID = 1082;
 
 /** A connect that never completes (black-holed network, failover without RST) fails instead of hanging. */
@@ -26,7 +28,20 @@ export function parseInt8(value: string): number {
     return parsed;
 }
 
+/** `{1,2,NULL}` as numbers, each through `parseInt8`'s overflow check; a nested (multi-dimensional) array is refused. */
+export function parseInt8Array(value: string): Array<number | null> {
+    if (!value.startsWith("{") || !value.endsWith("}") || value.startsWith("{{")) {
+        throw new Error("unsupported int8[] shape");
+    }
+    const inner = value.slice(1, -1);
+    if (inner === "") {
+        return [];
+    }
+    return inner.split(",").map((entry) => (entry === "NULL" ? null : parseInt8(entry)));
+}
+
 pgTypes.setTypeParser(INT8_OID, parseInt8);
+pgTypes.setTypeParser(INT8_ARRAY_OID, parseInt8Array);
 // DATE stays a plain "YYYY-MM-DD" string: converting it to a Date would shift it by the process timezone.
 pgTypes.setTypeParser(DATE_OID, (value: string) => value);
 

@@ -125,8 +125,9 @@ owner-defined `SECURITY DEFINER` function `audit_logs_ensure_partitions(int)`.
 - Knex never interpolates bindings into an error message (`compileSqlOnError: false`), and its own warnings go
   through the JSON logger (`knex_warn` / `knex_error` / `knex_deprecated`), never `console`.
 - Type parsers: `int8` → `number` (throws beyond `Number.MAX_SAFE_INTEGER`; hub ADR 0004); `date` → raw
-  `YYYY-MM-DD` string; `TIMESTAMPTZ` → `Date`. **Not yet:** `int8[]` (OID 1016) has no parser, so `array_agg(id)`
-  returns string ids ([#17](https://github.com/OmarRedaX/vcare-care-api/issues/17)).
+  `YYYY-MM-DD` string; `TIMESTAMPTZ` → `Date`. `int8[]` (OID 1016) → `Array<number | null>` through `parseInt8Array`
+  (same overflow check; a multi-dimensional array is refused), so `array_agg(id)` returns numbers
+  ([#17](https://github.com/OmarRedaX/vcare-care-api/issues/17), 2026-11-02).
 - **Connection poolers:** before PgBouncer, RDS Proxy, or another pooler is introduced ([deployment.md](./deployment.md)
   → Bottlenecks 4), verify that it forwards the `options` and `statement_timeout` startup parameters. PgBouncer, for
   example, refuses startup parameters it does not track unless they are listed in `ignore_startup_parameters`, and

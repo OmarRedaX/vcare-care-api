@@ -1123,7 +1123,7 @@ in the last column.
 | [#14](https://github.com/OmarRedaX/vcare-care-api/issues/14) | §3.4.10 | with a key on a clinical route (the contract allows one on `POST /consultations/{id}/record`), the full response body sits in Redis for 24 h and a replay returns it without an audit row | the `records` module (needs a spec decision) |
 | [#15](https://github.com/OmarRedaX/vcare-care-api/issues/15) | §3.4.11 | `warn rate_limited` takes `route` from the matched route; a limiter mounted with `router.use`/`app.use` has no `req.route`, and the label can carry the concrete path (ids) | the first router-level limiter |
 | [#16](https://github.com/OmarRedaX/vcare-care-api/issues/16) | §3.4.1, §3.4.6 | `TRUST_PROXY_HOPS` defaults to `0`, with no production value recorded and no boot guard; behind the edge every caller resolves to the proxy address | the first production deploy with per-IP limits (the hop count is a hub `deployment.md` fact) |
-| [#17](https://github.com/OmarRedaX/vcare-care-api/issues/17) | §3.4.8 | only OID 20 (`int8`) has a parser; `int8[]` (OID 1016) returns string ids, e.g. from `array_agg(id)` | the first query that aggregates ids (e.g. `ScheduleConflictsUnconfirmed`) |
+| [#17](https://github.com/OmarRedaX/vcare-care-api/issues/17) | §3.4.8 | only OID 20 (`int8`) has a parser; `int8[]` (OID 1016) returns string ids, e.g. from `array_agg(id)` | the first query that aggregates ids (e.g. `ScheduleConflictsUnconfirmed`) _RESOLVED 2026-11-02: `parseInt8Array` is registered for OID 1016 (numbers, NULL kept, overflow refused, nested arrays refused); integration test `pg-type-parsers`._ |
 
 ### 13.4 Verification (2026-09-28)
 - `npm run typecheck` 0 errors · `npm run lint` 0 problems · `npm test` 34 suites / 442 passed ·
