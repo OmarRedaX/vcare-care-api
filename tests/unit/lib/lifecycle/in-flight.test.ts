@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import http from "node:http";
 import type { NextFunction, Request, Response } from "express";
 import { container } from "../../../../src/lib/di/container";
 import { TOKENS } from "../../../../src/lib/di/tokens";
@@ -32,12 +33,76 @@ describe("lib/lifecycle/InFlightCounter + inFlight()", () => {
         expect(counter.count).toBe(1);
     });
 
-    it("should decrement when only close fires (client aborted)", () => {
+    it("should decrement on close when the response object has no end (minimal fake)", () => {
         const counter = new InFlightCounter();
         const res = fakeRes();
         inFlight(counter)({} as Request, res, jest.fn());
         res.emit("close");
         expect(counter.count).toBe(0);
+    });
+
+    it("should keep counting an aborted request until its handler ends the response (#12)", () => {
+        const counter = new InFlightCounter();
+        const end = jest.fn();
+        const res = Object.assign(fakeRes(), { writableEnded: false, end });
+        inFlight(counter)({} as Request, res, jest.fn());
+
+        res.emit("close"); // the client went away; the handler is still running
+        expect(counter.count).toBe(1);
+
+        res.end("late"); // the handler finishes
+        expect(end).toHaveBeenCalledWith("late");
+        expect(counter.count).toBe(0);
+        res.end("again");
+        expect(counter.count).toBe(0);
+    });
+
+    it("should decrement on close when the response had already ended", () => {
+        const counter = new InFlightCounter();
+        const res = Object.assign(fakeRes(), { writableEnded: true, end: jest.fn() });
+        inFlight(counter)({} as Request, res, jest.fn());
+        res.emit("close");
+        expect(counter.count).toBe(0);
+    });
+
+    it("should not wait for a close when the response finishes normally", () => {
+        const counter = new InFlightCounter();
+        const res = Object.assign(fakeRes(), { writableEnded: false, end: jest.fn() });
+        inFlight(counter)({} as Request, res, jest.fn());
+        res.end();
+        expect(counter.count).toBe(1); // still flushing: finish releases it
+        res.emit("finish");
+        expect(counter.count).toBe(0);
+    });
+
+    it("should keep an aborted request in flight until its real handler ends the response (#12, real http server)", async () => {
+        const counter = new InFlightCounter();
+        let endResponse: () => void = () => undefined;
+        let handlerEntered: () => void = () => undefined;
+        const entered = new Promise<void>((resolve) => { handlerEntered = resolve; });
+        const server = http.createServer((req, res) => {
+            inFlight(counter)(req as unknown as Request, res as unknown as Response, () => {
+                endResponse = () => res.end("late");
+                handlerEntered();
+            });
+        });
+        await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
+        try {
+            const { port } = server.address() as { port: number };
+            const client = http.get({ host: "127.0.0.1", port, path: "/" });
+            client.on("error", () => undefined);
+            await entered;
+            expect(counter.count).toBe(1);
+
+            client.destroy(); // the client aborts while the handler is still running
+            await new Promise<void>((resolve) => { setTimeout(resolve, 100); }); // `close` has fired by now
+            expect(counter.count).toBe(1);
+
+            endResponse();
+            expect(counter.count).toBe(0);
+        } finally {
+            server.close();
+        }
     });
 
     it("should resolve whenIdle when the count returns to zero", async () => {

@@ -55,7 +55,12 @@ function closeConnectionWhenDraining(res: Response, state: ShutdownState): void 
     }) as Response["writeHead"];
 }
 
-/** Counts live requests so shutdown can drain them. Decrements exactly once per request. */
+/**
+ * Counts live requests so shutdown can drain them. Decrements exactly once per request, when the HANDLER is done:
+ * `finish` on the normal path, or the handler's own `res.end()` after the client already went away. A client abort emits
+ * `close` while the handler keeps running (Node never emits `finish` for it), so releasing on `close` alone would let shutdown
+ * destroy the pools and quit Redis under a write that is still in progress (#12).
+ */
 export function inFlight(counter?: InFlightCounter, state?: ShutdownState): RequestHandler {
     return markPreAuth((_req, res, next) => {
         const target =
@@ -84,7 +89,26 @@ export function inFlight(counter?: InFlightCounter, state?: ShutdownState): Requ
             target.decrement();
         };
         res.on("finish", release);
-        res.on("close", release);
+        if (typeof res.end !== "function") {
+            res.on("close", release);
+            next();
+            return;
+        }
+        let closed = false;
+        res.on("close", () => {
+            closed = true;
+            if (res.writableEnded) {
+                release();
+            }
+        });
+        const originalEnd = res.end.bind(res) as (...args: unknown[]) => Response;
+        res.end = ((...args: unknown[]) => {
+            const result = originalEnd(...args);
+            if (closed) {
+                release();
+            }
+            return result;
+        }) as Response["end"];
 
         next();
     });
