@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import { clientIp } from "../../../../src/lib/http/client-ip";
+import { clientIp, trustProxyHopsUnset } from "../../../../src/lib/http/client-ip";
 
 function fakeReq(remoteAddress: string | undefined, forwardedFor?: string | string[]): Request {
     return {
@@ -23,6 +23,19 @@ describe("lib/http/clientIp", () => {
         expect(clientIp(req, 1)).toBe("192.0.2.44");
         expect(clientIp(req, 2)).toBe("203.0.113.9");
         expect(clientIp(req, 3)).toBe("198.51.100.1");
+    });
+
+    it("should resolve the real viewer behind CloudFront and an ALB when the caller spoofs the left-most X-Forwarded-For entry", () => {
+        // spoofed entry from the caller, then the viewer address CloudFront appended, then the CloudFront address the ALB appended
+        const req = fakeReq("10.0.0.5", "6.6.6.6, 203.0.113.9, 192.0.2.44");
+        expect(clientIp(req, 2)).toBe("203.0.113.9");
+    });
+
+    it("should flag a production process with TRUST_PROXY_HOPS 0 and nothing else", () => {
+        expect(trustProxyHopsUnset("production", 0)).toBe(true);
+        expect(trustProxyHopsUnset("production", 2)).toBe(false);
+        expect(trustProxyHopsUnset("development", 0)).toBe(false);
+        expect(trustProxyHopsUnset("test", 0)).toBe(false);
     });
 
     it("should join repeated X-Forwarded-For headers when the header is an array", () => {

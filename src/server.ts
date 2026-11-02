@@ -6,6 +6,7 @@ import type { JwksCache } from "./lib/auth/jwks-cache";
 import { getEnv } from "./lib/config/env";
 import { container } from "./lib/di/container";
 import { TOKENS } from "./lib/di/tokens";
+import { trustProxyHopsUnset } from "./lib/http/client-ip";
 import { createInternalApp } from "./internal-app";
 import { db, probeDb } from "./lib/knex/knex";
 import { createGracefulShutdown } from "./lib/lifecycle/graceful-shutdown";
@@ -48,6 +49,9 @@ function main(): void {
     const publicServer = applyTimeouts(createPublicApp().listen(env.PORT, "0.0.0.0"));
     const internalServer = applyTimeouts(createInternalApp().listen(env.INTERNAL_PORT, env.INTERNAL_HOST));
 
+    if (trustProxyHopsUnset(env.NODE_ENV, env.TRUST_PROXY_HOPS)) {
+        logger.warn("trust_proxy_hops_unset");
+    }
     logger.info("server_started", { port: env.PORT, internalPort: env.INTERNAL_PORT });
 
     const shutdown = createGracefulShutdown({

@@ -12,6 +12,14 @@ function normalise(value: string | undefined): string {
 }
 
 /**
+ * True when a production process runs with `TRUST_PROXY_HOPS = 0`: behind the edge (CloudFront then ALB) every caller then resolves to the proxy
+ * address and the per-IP limits (public search 60/min per IP) trip for all users together. Boot logs a warning; it never blocks boot.
+ */
+export function trustProxyHopsUnset(nodeEnv: string, trustProxyHops: number): boolean {
+    return nodeEnv === "production" && trustProxyHops === 0;
+}
+
+/**
  * The ONE client-IP rule (Express `trust proxy` stays off). With `TRUST_PROXY_HOPS = n > 0` the n-th entry
  * from the right of `X-Forwarded-For` is the client — entries further left are caller-controlled and
  * must never be trusted.
