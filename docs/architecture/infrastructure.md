@@ -185,7 +185,7 @@ replaced by `"[REDACTED]"`, recursively through objects and arrays; depth > 8 â†
 `downloadUrl`, `uploadUrl`, `joinToken`, `authorization`, `cookie`, `setCookie`, `fullName`, `displayName`,
 `firstName`, `lastName`, `email`, `phone`, `password`, `token`, `accessToken`, `refreshToken`, `serviceToken`,
 `clientSecret`, `body`, `requestBody`, `connectionString`, `databaseUrl`, `migrationDatabaseUrl`, `headline`, `bio`,
-`reviewNote`. Tests assert that captured logs contain no clinical fixture strings. Doctors validate IANA zones with
+`reviewNote`, and the database internals `detail`, `where`, `hint`, `parameters`, `bindings`, `query`, `sql` (#13, 2026-11-02). An `Error` found under any other key or depth (`cause`, `err`, a nested list) is also replaced by its `serializeError` form, so a pg error's `detail` never leaves the process. Tests assert that captured logs contain no clinical fixture strings. Doctors validate IANA zones with
 `luxon` and canonicalize them before storage (ADR 0019). Profile writes audit changed field names in the same
 database transaction, without logging field values.
 

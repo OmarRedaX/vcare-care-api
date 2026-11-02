@@ -1,3 +1,5 @@
+import { serializeError } from "./serialize-error";
+
 /**
  * Key-name redaction — defence in depth for CLAUDE.md → "Privacy and logging".
  * Never rely on it: do not pass clinical data or PII to the logger in the first place.
@@ -55,6 +57,14 @@ export const REDACTED_KEYS: readonly string[] = [
     "connectionString",
     "databaseUrl",
     "migrationDatabaseUrl",
+    // database error and query internals: a pg error under any key (`cause`, `err`, …) carries the failing row in `detail` and the SQL in `query`.
+    "detail",
+    "where",
+    "hint",
+    "parameters",
+    "bindings",
+    "query",
+    "sql",
 ];
 
 const MAX_DEPTH = 8;
@@ -79,6 +89,10 @@ function redactValue(value: unknown, depth: number, path: Set<object>): unknown 
     }
     if (value instanceof Date) {
         return value.toISOString();
+    }
+    // An Error under any key or depth: only the fixed-category fields of `serializeError` leave the process (never `message`, `detail`, `where`).
+    if (value instanceof Error) {
+        return serializeError(value);
     }
     if (path.has(value)) {
         return "[Circular]";

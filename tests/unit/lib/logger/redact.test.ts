@@ -53,6 +53,14 @@ const EXPECTED_KEYS = [
     "connectionString",
     "databaseUrl",
     "migrationDatabaseUrl",
+    // database error and query internals (#13)
+    "detail",
+    "where",
+    "hint",
+    "parameters",
+    "bindings",
+    "query",
+    "sql",
 ];
 
 describe("lib/logger/redact", () => {
@@ -151,6 +159,17 @@ describe("lib/logger/redact", () => {
     it("should leave the message string unchanged", () => {
         expect(redact({ message: "email token password" })).toEqual({ message: "email token password" });
         expect(redact("a plain string")).toBe("a plain string");
+    });
+
+    it("should serialize an Error found under a key other than error, at any depth, without its message or pg detail (#13)", () => {
+        const pgError = Object.assign(new Error('duplicate key value violates unique constraint (SYNTHETIC-ROW-VALUE)'), {
+            code: "23505", detail: "Key (email)=(SYNTHETIC-PII) already exists.", where: "SYNTHETIC-WHERE", hint: "SYNTHETIC-HINT", constraint: "uq_example", table: "examples",
+        });
+        const output = redact({ cause: pgError, nested: { list: [{ err: pgError }] } });
+        const text = JSON.stringify(output);
+        expect(text).not.toContain("SYNTHETIC");
+        expect(output).toMatchObject({ cause: { message: "pg_error:23505", code: "23505", constraint: "uq_example", table: "examples" } });
+        expect(output).toMatchObject({ nested: { list: [{ err: { message: "pg_error:23505" } }] } });
     });
 
     it("should convert dates to ISO strings and pass primitives through", () => {
