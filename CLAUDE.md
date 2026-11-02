@@ -10,9 +10,9 @@ not need another repo's CLAUDE.md to follow it.
 - **Citing this file:** always cite sections **by name** (e.g. "CLAUDE.md → Domain rules"), never by number.
 - **Architect trigger:** when the user says **"let's system design"** (or runs `/system-design <topic>`), run the `/system-design` command inline — see "Architect mode — /system-design".
 
-> Status: **in build** (as of 2026-10-23). Built modules: `specialties`, `doctors`, `verification`, `admin-doctors`,
+> Status: **all planned modules built** (as of 2026-11-02). Built modules: `specialties`, `doctors`, `verification`, `admin-doctors`,
 > `identity-sync`, `upload-intents`, `schedules`, `consultations`, `sessions`, `patients`, `records`, `record-attachments`,
-> `notifications`, `audit`, `health`. `availability` is built for slots, search, the public profile and the name filter (slices 1 to 3: the Redis rank index, the `availability-refresh` and `availability-sweep` worker loops, the derived `name-index`). Not built yet: `help-articles` (the only unbuilt module).
+> `notifications`, `audit`, `health`, `help-articles`. `availability` is built for slots, search, the public profile and the name filter (slices 1 to 3: the Redis rank index, the `availability-refresh` and `availability-sweep` worker loops, the derived `name-index`). `help-articles` is built (admin-managed; `GET /internal/help-articles` for the Phase-2 assistant is designed in ADR 0028, not built). No module is left unbuilt.
 > Modules are created through the workflow (`/system-design` → `/brainstorm` → … → `/update-docs`). Do not scaffold `src/`
 > outside that workflow. `docs/architecture/overview.md` carries the live module map.
 

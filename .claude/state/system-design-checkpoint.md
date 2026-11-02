@@ -23,9 +23,7 @@ No `gh` CLI: use the GitHub MCP tools. Hub repo is `OmarRedaX/Vcare`; care repo 
 - [ ] PR to main, hub sync, CLAUDE.md Status
 
 ## ▶ NEXT STEP
-help-articles is built, tested, QA'd, reviewed clean, docs reconciled. Care PR **#55** (feature/help-articles -> main) is OPEN: user merges (also user merges care #53, #54 and hub #31; #55 contains their commits).
-Gate: typecheck/lint clean; npm test 209 suites/3792; integration 70 files, only the 7 known env failures (db-roles 4, storage-adapter 3).
-After the user merges #55:
-1. `git checkout main && git pull`; `cd ../vcare-hub && git checkout main && git pull && git checkout -b chore/sync-care-help-articles && bash scripts/sync-from-spoke.sh care-service ../vcare-care-api`; commit, push, open hub PR (repo OmarRedaX/Vcare) against main; do not merge.
-2. Edit `CLAUDE.md` Status block: help-articles becomes built (no longer 'the only unbuilt module'); open a small care PR.
-OWNER DECISION pending: doctor discovery routes Cache-Control (lost accidental no-store in 50f6e6e).
+All planned Care modules are built and merged (care #53, #54, #55 merged 2026-11-02; hub #31 closed).
+Done: hub sync branch `chore/sync-care-help-articles` pushed (commit 09bda57) - hub PR open for the user to merge; CLAUDE.md Status flipped (this branch `docs/claude-md-help-articles-built`).
+Remaining before MVP: user merges the hub sync PR and the care CLAUDE.md PR; OWNER DECISIONS pending: doctor discovery routes Cache-Control (lost accidental no-store in 50f6e6e), latent issues #14 and #16 (then #6, #10-#13, #15, #17); close stale issues #27 and #38 after checking; hub TODO: bucket IaC + web CSP; the 7 known env integration failures (db-roles 4, storage-adapter 3) need a clean environment.
+Not in MVP: Phase-2 AI service (`GET /internal/help-articles`, `help:read`), events/RabbitMQ, admin MFA, PII erasure, follow-up booking.
