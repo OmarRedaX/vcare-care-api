@@ -4,9 +4,9 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-23
+last_verified: 2026-10-29
 tags: [architecture, overview, modules, layering]
-related: [system-design, record-attachments-spec, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping, availability, adr-0024-next-available-rank-index-free-map-and-sweep]
+related: [system-design, help-articles, help-articles-spec, record-attachments-spec, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping, availability, adr-0024-next-available-rank-index-free-map-and-sweep]
 ---
 
 # Architecture Overview — care-service
@@ -92,7 +92,7 @@ flowchart LR
 | `patients` (built: profile 2026-10-11, doctor read 2026-10-12; timeline route lives in `records`) | patient profile (`GET/PATCH /api/patients/me`, `GET /api/patients/{patientUserId}`); `PatientsService.findProfile` serves the records timeline | `patient_profiles` | `consultations` (relationship check) |
 | `records` (built 2026-10-18; attachment metadata plugged in 2026-10-20) | medical records, amendments, the patient timeline (`GET /api/patients/{patientUserId}/records`), `Consultation.hasRecord` and the follow-up link through `RecordLinksService`; reads `RecordAttachmentLinksService` for `MedicalRecord.attachments` | `medical_records`, `medical_record_amendments` | `consultations` (parties lookup, relationship port), `doctors` (suspension), `patients` (profile), `record-attachments` (metadata list), `audit`. No Identity call, no storage call |
 | `record-attachments` (built 2026-10-20) | files on a medical record: upload intent, verified `complete`, audited 60 s `download-url`, soft `DELETE` before the 24 h lock, the cap of 20; the record views' attachment metadata (`RecordAttachmentLinksService`, database only); author-only writes, admin denied | `record_attachments` (plus `upload_intents` rows of kind `record_attachment`, operated by `upload-intents`) | `upload-intents` (shared `complete` flow), `records` (`RecordLinksService.findAccessRow` / `lockForNoKeyUpdate`, the exported `record_reader` resolver), `doctors` (suspension, also re-checked inside `complete`), `patients` (relationship port), `audit`, storage (`presignDownload`). No Identity call |
-| `help-articles` | help center content | `help_articles` | — |
+| `help-articles` (built 2026-10-29; [shard](./help-articles.md), [spec](../help-articles/spec.md)) | the help center and the Phase-2 corpus: `GET /api/help-articles` (summaries, keyset), `GET /api/help-articles/{id}`, admin `POST`, `PATCH`, `DELETE` (soft); audit actions `help_article.created`, `.updated`, `.deleted` (admin-action class); every response `private, no-cache`; not clinical data. `GET /internal/help-articles` for the Phase-2 assistant is designed (ADR 0028), not built | `help_articles` | `audit` (`AuditRecorder`), `lib/http/pagination`; no Identity call, no Redis cache, no worker loop |
 | `audit` (read API built 2026-10-09) | append-only audit log (written through `lib/audit`) and `GET /api/audit-logs`: admin-only, time-bounded `[from, to)`, keyset page with a signed cursor; no table of its own beyond three read indexes, no audit row for the read | `audit_logs` | — (written by every module through `lib/audit`; the read module calls nothing) |
 | `identity-client` (lib) | outbound Identity calls and their policies | — | identity-service |
 
@@ -115,6 +115,8 @@ src/lib/            built (foundation): config, di, error, logger, request-id, h
                       storage (S3 port + adapter), knex/session-advisory-lock, http/pagination signed-cursor
                     built (sessions, 2026-10-15): video (room-provider port, deterministic fake adapter,
                       factory refusing the fake in production), identity-client/hydrate
+                    built (help-articles, 2026-10-29): http/private-no-cache (`privateNoCache()`, `Cache-Control: private, no-cache`),
+                      http/pagination kind-tagged timestamp cursor (`decodeKindedTimestampCursor`)
                     planned: email
                     may import pkg/; never app/<module>
 src/pkg/            pure functions: utils/time.ts, utils/canonical-json.ts, utils/uuid.ts, utils/id.ts (built);
@@ -156,7 +158,7 @@ sequenceDiagram
 1. **request-id** — adopt a valid UUID `X-Request-Id` (lower-cased) or generate one; echo it; open the
    `AsyncLocalStorage` request context, so every log line written anywhere downstream (services, repositories,
    promise continuations) carries `requestId` without passing a logger around.
-2. **helmet** (+ CORS allowlist in local development only — production is a single origin, hub ADR 0005); `Cache-Control: no-store` on clinical and consultation routes.
+2. **helmet** (+ CORS allowlist in local development only — production is a single origin, hub ADR 0005); `Cache-Control: no-store` on clinical and consultation routes, `private, no-cache` on `/api/help-articles` (per-audience, non-clinical).
 3. **rate-limit** — search/slots 60/min per IP and 120/min per user; booking writes 10/min per user; uploads 20/h per user.
 4. **user-guard** — verifies the EdDSA token locally against Identity's JWKS; no network call per request.
 5. **authorize(policy)** — deny by default, in this order: role → token status (onboarding: `pending|active|rejected`; everything else: `active`; `suspended` never) → `emailVerified` (booking) → policy checks (practising doctors: not locally suspended) → ownership resolved from the database ([rbac.md](./rbac.md) → Principles).

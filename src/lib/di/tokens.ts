@@ -20,6 +20,8 @@ export const TOKENS = {
     HealthController: Symbol.for("HealthController"),
     SpecialtiesService: Symbol.for("SpecialtiesService"),
     SpecialtiesController: Symbol.for("SpecialtiesController"),
+    HelpArticlesService: Symbol.for("HelpArticlesService"),
+    HelpArticlesController: Symbol.for("HelpArticlesController"),
     DoctorsService: Symbol.for("DoctorsService"),
     DoctorsController: Symbol.for("DoctorsController"),
     DoctorChangeListener: Symbol.for("DoctorChangeListener"),

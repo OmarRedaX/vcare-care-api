@@ -515,7 +515,7 @@ describe("records: update, lock, amendments, reads and the timeline (integration
                 expect([limit, res.status]).toEqual([limit, 400]);
                 expect(res.body.error.details.map((detail: { field: string }) => detail.field)).toEqual(["limit"]);
             }
-            for (const cursor of ["not-a-cursor", Buffer.from("[1,2]").toString("base64url"), Buffer.from('["2030-01-01T00:00:00Z",5]').toString("base64url")]) {
+            for (const cursor of ["not-a-cursor", Buffer.from("[1,2]").toString("base64url"), Buffer.from('["2030-01-01T00:00:00Z",5]').toString("base64url"), Buffer.from('["0000-01-01T00:00:00.000000Z",5]').toString("base64url")]) {
                 const res = await timeline(h, PATIENT, "patient", `?cursor=${cursor}`);
                 expect([cursor, res.status]).toEqual([cursor, 400]);
                 expect(res.body.error.details).toEqual([{ field: "cursor", issue: "is invalid" }]);

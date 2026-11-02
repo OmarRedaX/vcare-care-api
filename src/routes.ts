@@ -4,6 +4,7 @@ import { buildAvailabilityRouter } from "./app/availability/routes";
 import { buildAuditRouter } from "./app/audit/routes";
 import { buildConsultationsRouter } from "./app/consultations/routes";
 import { buildDoctorsRouter } from "./app/doctors/routes";
+import { buildHelpArticlesRouter } from "./app/help-articles/routes";
 import { buildPatientsRouter } from "./app/patients/routes";
 import { buildRecordAttachmentsRouter } from "./app/record-attachments/routes";
 import { buildRecordsRouter } from "./app/records/routes";
@@ -14,6 +15,9 @@ import { buildVerificationRouter } from "./app/verification/routes";
 
 /** Prefixes whose every response is `Cache-Control: no-store`; `app.ts` applies it before body parsing. */
 export const NO_STORE_PREFIXES: readonly string[] = ["/api/patients", "/api/consultations", "/api/records", "/api/admin", "/api/audit-logs"];
+
+/** Prefixes whose every response is `Cache-Control: private, no-cache` (per-audience, non-clinical content); `app.ts` applies it before body parsing. */
+export const PRIVATE_NO_CACHE_PREFIXES: readonly string[] = ["/api/help-articles"];
 
 /** Public module routers are mounted here (under `/api`). Health is mounted separately in `app.ts`. */
 export function buildPublicRoutes(): Router {
@@ -36,5 +40,7 @@ export function buildPublicRoutes(): Router {
     router.use(buildRecordsRouter());
     // Attachments after the records router: longer paths under `/records/:id/attachments`, no collision with `/records/:id`.
     router.use(buildRecordAttachmentsRouter());
+    // Help articles: one collection and one `/:id` path, no sibling literal under `/help-articles`, so the position is free.
+    router.use(buildHelpArticlesRouter());
     return router;
 }

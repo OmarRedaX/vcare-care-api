@@ -22,7 +22,10 @@ export function buildVerificationRouter(): Router {
     const intentLimit = () => rateLimit({ name: "verification-intent", limit: 20, windowMs: 3_600_000, subject: byUser });
     // No idempotency on routes that return signed URLs or POST policies: Redis must never store them, and each issue needs its own audit row.
     const key = () => idempotency({ required: false });
-    router.use(noStore());
+    // Scoped to this router's own prefixes: a pathless `use` would stamp no-store on every request that falls through to routers mounted after it
+    // (it overrode the help-articles `private, no-cache` prefix header).
+    router.use("/doctors/me/documents", noStore());
+    router.use("/admin/applications", noStore());
     router.post("/doctors/me/documents/uploads", userGuard(), authorize(p.createIntent), intentLimit(), ctrl.createIntent);
     router.post("/doctors/me/documents/uploads/:uploadId/complete", userGuard(), authorize(p.complete), writeLimit(), key(), ctrl.complete);
     router.post("/doctors/me/documents/:documentId/download-url", userGuard(), authorize(p.myDownload), readLimit(), ctrl.myDownload);
