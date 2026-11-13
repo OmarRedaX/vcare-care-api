@@ -6,7 +6,7 @@ module: notifications
 status: implemented
 version: 0.4.0
 diataxis: reference
-last_verified: 2026-10-15
+last_verified: 2026-11-13
 tags: [spec, notifications, outbox, worker, reminders, email-port, templates, identity-contacts, case-5]
 related: [notifications-brainstorm, notifications-tasks, notifications-manual-qa, consultations-spec, admin-doctors-spec, adr-0007-log-derived-metrics, adr-0008-care-worker-component, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping, adr-0018-db-role-split-explicit-grants-partition-function, data-model, resilience, infrastructure, integration, deployment, hub-adr-0010-notification-contact-lookup]
 contracts: [contracts/openapi.yaml]
@@ -478,6 +478,6 @@ Built, unit and integration tested (green), manually QA'd on 2026-10-14 and re-r
 **Open items**
 1. **Purge plan watch item (not a defect).** On a 750 k-row outbox the purge `DELETE ... WHERE id IN (SELECT ... ORDER BY sent_at LIMIT 5000 FOR UPDATE SKIP LOCKED)` is planned as a Hash Semi Join over a sequential scan of the table: about 150 ms per 5 000-row batch while draining a 338 k-row backlog (five ticks cleared 338 k rows in about 20 s); steady state is a bitmap scan plus primary-key probes at 6.4 ms, and 0.15 ms when nothing is eligible. If a faster drain is ever required, rewrite as `DELETE ... USING (subquery)` so the outer relation is not scanned. Claim (0.87 ms), lag (0.03 ms) and guarded finish (0.10 ms) use their indexes with no sequential scan.
 2. **Environment checks still open** (spec section 5 and 11): the deployed `care-service` Identity client must hold `users:contact:read`; until it does, rows are delayed and `NotificationContactsForbidden` and `OutboxPendingStale` fire (not `OutboxLagHigh`: delayed rows are not due). Manual QA used the fake Identity only (cases 54 to 58 verify the delay path for 403 and for a client without the scope).
-3. **Production sends no real email**: only `LogEmailAdapter` exists. A provider ADR (`EMAIL_PROVIDER_*`, `EMAIL_FROM`, DKIM/SPF, bounce handling) is required first (section 11, platform changes 2).
+3. **Real email (updated 2026-11-13, [ADR 0030](../adr/0030-resend-email-adapter.md)):** `ResendEmailAdapter` now exists behind `EmailPort` (`EMAIL_PROVIDER=resend`, `EMAIL_PROVIDER_API_KEY`, `EMAIL_PROVIDER_FROM`, `EMAIL_PROVIDER_BASE_URL`); `LogEmailAdapter` stays the local default and is refused when `NODE_ENV=production`. Still open: DKIM/SPF for the real sender domain and bounce/complaint handling.
 
 **Platform deltas** (listed for the hub; applied directly this session per the three-repo sync rule, see the update-docs report): Case 5 is built (landscape), `care-worker` pool 6 and loops (deployment), outbox volume and pool (capacity).

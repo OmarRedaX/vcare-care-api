@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-10-23
+last_verified: 2026-11-13
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -53,6 +53,7 @@ STORAGE_SECRET_ACCESS_KEY=synthetic-minio-secret
 STORAGE_FORCE_PATH_STYLE=true
 VIDEO_PROVIDER=fake                                                   # only the deterministic fake exists; refused when NODE_ENV=production
 VIDEO_PROVIDER_KEY=synthetic-video-provider-key-0123456789abcdef      # >= 32 chars, no default (signs the fake join tokens)
+EMAIL_PROVIDER=log                                                   # or resend (+ EMAIL_PROVIDER_API_KEY, EMAIL_PROVIDER_FROM); log sends nothing and is refused in production (ADR 0030)
 AUDIT_PARTITION_MONTHS_AHEAD=2
 CORS_ORIGINS=http://localhost:5173                       # honoured only in development
 ```

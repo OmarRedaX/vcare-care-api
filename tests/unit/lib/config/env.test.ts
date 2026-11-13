@@ -9,6 +9,7 @@ const newRequired = { IDENTITY_INTERNAL_URL: "http://localhost:3100", SERVICE_CL
     SERVICE_CLIENT_SECRET: "synthetic-secret", STORAGE_BUCKET: "care-test", STORAGE_REGION: "us-east-1",
     STORAGE_ENDPOINT: "http://localhost:9003", STORAGE_ACCESS_KEY_ID: "synthetic-access", STORAGE_SECRET_ACCESS_KEY: "synthetic-storage-secret",
     VIDEO_PROVIDER: "fake", VIDEO_PROVIDER_KEY: "synthetic-video-provider-key-0123456789abcdef" };
+const resendEmail = { EMAIL_PROVIDER: "resend", EMAIL_PROVIDER_API_KEY: "synthetic-resend-key-0001", EMAIL_PROVIDER_FROM: "care@example.test" };
 const parseEnv = (source: EnvSource) => parseEnvRaw({ ...newRequired, ...source });
 
 const secretsOnly = (): EnvSource => ({ DATABASE_URL: SECRET_DB, REDIS_URL: SECRET_REDIS, IDENTITY_JWKS_URL: JWKS_URL });
@@ -62,6 +63,8 @@ describe("lib/config/env parseEnv", () => {
             WAITING_ROOM_OPEN_MINUTES: 10,
             SESSION_OVERRUN_MINUTES: 15,
             VIDEO_JOIN_TOKEN_TTL_SECONDS: 300,
+            EMAIL_PROVIDER: "log",
+            EMAIL_PROVIDER_BASE_URL: "https://api.resend.com",
             AUDIT_PARTITION_MONTHS_AHEAD: 2,
             CORS_ORIGINS: [],
             LOG_LEVEL: "info",
@@ -124,7 +127,7 @@ describe("lib/config/env parseEnv", () => {
     });
 
     it("should reject LOG_LEVEL debug when NODE_ENV is production", () => {
-        expect(captureInvalid({ ...secretsOnly(), NODE_ENV: "production", LOG_LEVEL: "debug" }).keys).toEqual([
+        expect(captureInvalid({ ...secretsOnly(), ...resendEmail, NODE_ENV: "production", LOG_LEVEL: "debug" }).keys).toEqual([
             "LOG_LEVEL",
         ]);
         expect(parseEnv({ ...secretsOnly(), NODE_ENV: "development", LOG_LEVEL: "debug" }).LOG_LEVEL).toBe("debug");
@@ -362,11 +365,36 @@ describe("verification storage and worker environment", () => {
 
     it("fixes security TTLs outside tests and permits task-role credentials in production", () => {
         expect(captureInvalid({ ...secretsOnly(), UPLOAD_POLICY_TTL_SECONDS: "301" }).keys).toEqual(["UPLOAD_POLICY_TTL_SECONDS"]);
-        const production = parseEnv({ ...secretsOnly(), NODE_ENV: "production", STORAGE_ENDPOINT: "",
+        const production = parseEnv({ ...secretsOnly(), ...resendEmail, NODE_ENV: "production", STORAGE_ENDPOINT: "",
             STORAGE_ACCESS_KEY_ID: "", STORAGE_SECRET_ACCESS_KEY: "" });
         expect(production.STORAGE_ACCESS_KEY_ID).toBeUndefined();
         expect(production.STORAGE_ENDPOINT).toBeUndefined();
         expect(parseEnv({ ...secretsOnly(), NODE_ENV: "test", UPLOAD_POLICY_TTL_SECONDS: "30" }).UPLOAD_POLICY_TTL_SECONDS).toBe(30);
+    });
+
+    describe("notification email provider (ADR 0030)", () => {
+        it("should default to the log adapter and the Resend base URL, with no key and no sender", () => {
+            const env = parseEnv(secretsOnly());
+            expect([env.EMAIL_PROVIDER, env.EMAIL_PROVIDER_BASE_URL, env.EMAIL_PROVIDER_API_KEY, env.EMAIL_PROVIDER_FROM]).toEqual(["log", "https://api.resend.com", undefined, undefined]);
+        });
+        it("should accept resend with a key and a sender address", () => {
+            const env = parseEnv({ ...secretsOnly(), ...resendEmail });
+            expect([env.EMAIL_PROVIDER, env.EMAIL_PROVIDER_API_KEY, env.EMAIL_PROVIDER_FROM]).toEqual(["resend", "synthetic-resend-key-0001", "care@example.test"]);
+        });
+        it.each([["EMAIL_PROVIDER_API_KEY"], ["EMAIL_PROVIDER_FROM"]])("should name %s when resend is selected without it", (key) => {
+            expect(captureInvalid({ ...secretsOnly(), ...resendEmail, [key]: "" }).keys).toEqual([key]);
+        });
+        it.each([["EMAIL_PROVIDER", "smtp"], ["EMAIL_PROVIDER_FROM", "not-an-address"], ["EMAIL_PROVIDER_BASE_URL", "ftp://api.resend.com"]])("should reject %s=%s", (key, value) => {
+            expect(captureInvalid({ ...secretsOnly(), ...resendEmail, [key]: value }).keys).toEqual([key]);
+        });
+        it("should refuse the log adapter and a non-https base URL when NODE_ENV is production", () => {
+            expect(captureInvalid({ ...secretsOnly(), NODE_ENV: "production" }).keys).toEqual(["EMAIL_PROVIDER"]);
+            expect(captureInvalid({ ...secretsOnly(), ...resendEmail, NODE_ENV: "production", EMAIL_PROVIDER_BASE_URL: "http://localhost:4010" }).keys).toEqual(["EMAIL_PROVIDER_BASE_URL"]);
+            expect(parseEnv({ ...secretsOnly(), ...resendEmail, NODE_ENV: "development", EMAIL_PROVIDER_BASE_URL: "http://localhost:4010" }).EMAIL_PROVIDER_BASE_URL).toBe("http://localhost:4010");
+        });
+        it("should never put the API key in the error of an invalid environment", () => {
+            expect(captureInvalid({ ...secretsOnly(), ...resendEmail, EMAIL_PROVIDER_FROM: "bad" }).message).not.toContain("synthetic-resend-key-0001");
+        });
     });
 
     it("should name VIDEO_PROVIDER and VIDEO_PROVIDER_KEY when they are missing (no defaults)", () => {

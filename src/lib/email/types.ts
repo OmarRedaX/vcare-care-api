@@ -11,3 +11,6 @@ export type EmailSendResult =
     | { outcome: "permanent"; errorCode: string };
 
 export interface EmailPort { send(message: EmailMessage, signal: AbortSignal): Promise<EmailSendResult> }
+
+/** Settings of the Resend adapter, read from `EMAIL_PROVIDER_*` (ADR 0030). `apiKey` is a secret: never logged. */
+export interface ResendEmailConfig { apiKey: string; from: string; baseUrl: string }

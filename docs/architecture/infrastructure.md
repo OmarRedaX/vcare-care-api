@@ -46,6 +46,10 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `WAITING_ROOM_OPEN_MINUTES` | `10` | | 0-240; the session window opens this long before the start (Domain rule 12) |
 | `SESSION_OVERRUN_MINUTES` | `15` | | 0-240; the session window stays open this long after the end |
 | `VIDEO_PROVIDER` | — | **yes, no default** | `fake` only; `createVideoProvider` refuses `fake` when `NODE_ENV=production` (sessions S-D1, SS-R22). The provider is registered lazily, so a production boot fails when the sessions router is built (`boot_failed`, `video_provider_fake_not_allowed_in_production`); `care-worker` never resolves it. Until a real adapter lands, `care-api` cannot boot with `NODE_ENV=production`; the local `docker-compose.yml` therefore runs `NODE_ENV=development` (runbook, decided 2026-11-13) |
+| `EMAIL_PROVIDER` | `log` | no | `log` or `resend` (ADR 0030). `log` sends nothing and is refused when `NODE_ENV=production` (boot fails with `invalid_environment` naming `EMAIL_PROVIDER`) |
+| `EMAIL_PROVIDER_API_KEY` | — | only for `resend`, secret, no default | Resend API key; never logged |
+| `EMAIL_PROVIDER_FROM` | — | only for `resend` | sender address; its domain must be verified in Resend (`onboarding@resend.dev` for a first local test) |
+| `EMAIL_PROVIDER_BASE_URL` | `https://api.resend.com` | no | must be `https` in production; override only to point a test at a local fake |
 | `VIDEO_PROVIDER_KEY` | — | **yes, no default, secret** | >= 32 chars; signs the fake provider join tokens; never logged |
 | `VIDEO_JOIN_TOKEN_TTL_SECONDS` | `300` | | 30-3600; join token life, capped at the window close |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10); exactly this many minutes before the start is still allowed; read by `consultations` (built 2026-10-12) |
