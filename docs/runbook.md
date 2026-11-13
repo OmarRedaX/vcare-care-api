@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: how-to
-last_verified: 2026-10-23
+last_verified: 2026-11-13
 tags: [runbook, operations, on-call, care]
 related: [availability-spec, resilience, integration, records-spec, record-attachments-spec, admin-doctors-spec, adr-0021-identity-sync-engine-module, infrastructure, deployment, quickstart, service-card, access-spec, adr-0018-db-role-split-explicit-grants-partition-function]
 ---
@@ -65,7 +65,7 @@ environment or a request.
 | `message` (level) | Meaning | First action |
 |---|---|---|
 | `invalid_environment` (error, stderr) | env validation failed; `keys` lists the offending variables (never values); exit 1 | Fix the named keys in the task definition. When the key is **`DATABASE_URL`**, check its scheme (`postgres:`/`postgresql:`) **and its query string**: it must not carry `options`, `statement_timeout`, `query_timeout`, or `application_name` (Care sets them per pool). `INTERNAL_HOST` must be an IP literal, not a host name. |
-| `boot_failed` (error) | an entrypoint (`care-api`, `care-worker`, `care-migrate`) threw during boot; `error` holds the serialized error (name, code, frames — for a database error, no message); exit 1 | Read `error.name`/`error.code`; a crash loop right after a deploy → roll back. When the error is `video_provider_fake_not_allowed_in_production`: `VIDEO_PROVIDER=fake` with `NODE_ENV=production` is refused by design (sessions SS-R22) because the fake adapter signs tokens with a local key and talks to no real provider. Do not work around it by changing `NODE_ENV`; deploy with the real provider adapter (a later unit). Known consequence: the repo's `docker-compose.yml` sets `NODE_ENV: production` for `care-api` together with `VIDEO_PROVIDER: fake`, so that stack does not boot `care-api` until the owner decides how the local stack selects the fake (open owner decision). |
+| `boot_failed` (error) | an entrypoint (`care-api`, `care-worker`, `care-migrate`) threw during boot; `error` holds the serialized error (name, code, frames — for a database error, no message); exit 1 | Read `error.name`/`error.code`; a crash loop right after a deploy → roll back. When the error is `video_provider_fake_not_allowed_in_production`: `VIDEO_PROVIDER=fake` with `NODE_ENV=production` is refused by design (sessions SS-R22) because the fake adapter signs tokens with a local key and talks to no real provider. Do not work around it by changing `NODE_ENV`; deploy with the real provider adapter (a later unit). Decided 2026-11-13: the repo's `docker-compose.yml` is the local stack and runs `migrate`, `care-api` and `care-worker` with `NODE_ENV: development` (the production guard stays); it boots and passes a live smoke against a local Identity. When Identity runs on the host, `docker compose` reads `IDENTITY_JWKS_URL` and `IDENTITY_INTERNAL_URL` from the repo `.env` first, so export `http://host.docker.internal:3000/.well-known/jwks.json` and `http://host.docker.internal:3100` in the shell, and run Identity with `INTERNAL_HOST=0.0.0.0` so the containers can reach its internal listener. |
 | `server_listen_failed` (error) | a listener could not bind (e.g. `EADDRINUSE`); exit 1 | Check `PORT`/`INTERNAL_PORT`/`INTERNAL_HOST` against the task networking. |
 | `server_started` (info) | both listeners are up (`port`, `internalPort`) | — |
 | `redis_unavailable` (warn) / `redis_recovered` (info) | one line per Redis transition (the first `ready` at boot also logs `redis_recovered`) | Tier 2: requests continue with fallbacks; see `RateLimiterDegraded`. |

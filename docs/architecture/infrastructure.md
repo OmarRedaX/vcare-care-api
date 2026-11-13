@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-11-02
+last_verified: 2026-11-13
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -45,7 +45,7 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `NO_SHOW_GRACE_MINUTES` | `10` | | 0-1440; a no-show may be marked once now >= start + grace (Domain rule 11); read by `sessions` |
 | `WAITING_ROOM_OPEN_MINUTES` | `10` | | 0-240; the session window opens this long before the start (Domain rule 12) |
 | `SESSION_OVERRUN_MINUTES` | `15` | | 0-240; the session window stays open this long after the end |
-| `VIDEO_PROVIDER` | — | **yes, no default** | `fake` only; `createVideoProvider` refuses `fake` when `NODE_ENV=production` (sessions S-D1, SS-R22). The provider is registered lazily, so a production boot fails when the sessions router is built (`boot_failed`, `video_provider_fake_not_allowed_in_production`); `care-worker` never resolves it. Until a real adapter lands, `care-api` cannot boot with `NODE_ENV=production` (see the runbook) |
+| `VIDEO_PROVIDER` | — | **yes, no default** | `fake` only; `createVideoProvider` refuses `fake` when `NODE_ENV=production` (sessions S-D1, SS-R22). The provider is registered lazily, so a production boot fails when the sessions router is built (`boot_failed`, `video_provider_fake_not_allowed_in_production`); `care-worker` never resolves it. Until a real adapter lands, `care-api` cannot boot with `NODE_ENV=production`; the local `docker-compose.yml` therefore runs `NODE_ENV=development` (runbook, decided 2026-11-13) |
 | `VIDEO_PROVIDER_KEY` | — | **yes, no default, secret** | >= 32 chars; signs the fake provider join tokens; never logged |
 | `VIDEO_JOIN_TOKEN_TTL_SECONDS` | `300` | | 30-3600; join token life, capped at the window close |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10); exactly this many minutes before the start is still allowed; read by `consultations` (built 2026-10-12) |

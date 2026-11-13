@@ -1,0 +1,7 @@
+{
+  "app": "npx tsx bin/care-storage.ts",
+  "context": {
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true
+  }
+}

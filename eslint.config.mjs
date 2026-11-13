@@ -93,7 +93,7 @@ function restrictedImports({ paths = [], patterns = [], allowJose = false, allow
 
 export default tseslint.config(
     {
-        ignores: ["dist/", "coverage/", "node_modules/"],
+        ignores: ["dist/", "coverage/", "node_modules/", "infra/"],
     },
     js.configs.recommended,
     ...tseslint.configs.recommendedTypeChecked,
