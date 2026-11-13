@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-10-29
+last_verified: 2026-11-13
 tags: [api, reference, routes, rbac]
 related: [rbac, help-articles-spec, help-articles, record-attachments-spec, consultations-spec, sessions-spec, patients-spec, specialties-spec, doctors-spec, schedules-spec, integration, consultation-lifecycle, clinical-records, scheduling-slots, file-handling, records-spec, availability, availability-spec]
 ---
@@ -179,7 +179,7 @@ Not built yet. Design ([help-articles.md](./help-articles.md), ADR 0027): the li
 ## internal (listener `:3101`, service token)
 | Method | Path | Auth | Scope | Notes |
 |---|---|---|---|---|
-| GET | `/internal/doctors/{userId}/summary` | service token (`typ=service`, `aud` ∋ `vcare-care`) | `doctors:read` | user token → 401 `ServiceTokenRequired`; missing scope → 403 `InsufficientScope`; no MVP client holds the scope |
+| GET | `/internal/doctors/{userId}/summary` | service token (`typ=service`, `aud` ∋ `vcare-care`) | `doctors:read` | user token → 401 `ServiceTokenRequired`; missing scope → 403 `InsufficientScope`; no MVP client holds the scope; **designed, not built**: `internal-routes.ts` mounts nothing (404), deferred with the Phase-2 AI service (2026-11-13) |
 
 ## Future events
 None published in MVP. Reserved names (`x-future-events`): `consultation.booked`, `consultation.rescheduled`,

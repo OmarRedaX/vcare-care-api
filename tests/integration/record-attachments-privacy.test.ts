@@ -15,8 +15,12 @@ import {
 
 jest.setTimeout(180_000);
 
-/** Shapes that only a storage key, a presigned URL or a POST policy field can have. */
-const STORAGE_SHAPES = [/record-attachments\//, /quarantine\//, /storage\.test/, /x-amz-/i, /X-Amz/, /"fields"/];
+/**
+ * Shapes that only a storage key, a presigned URL or a POST policy field can have. The two key shapes include the UUID
+ * (`<prefix>/<uuid>`): the bare text `record-attachments/` also appears in the source path of a logged stack frame
+ * (`src/app/record-attachments/service/...`) on Linux, where CI runs, and that is not a key.
+ */
+const STORAGE_SHAPES = [/record-attachments\/[0-9a-f]{8}-[0-9a-f]{4}-/i, /quarantine\/[0-9a-f]{8}-[0-9a-f]{4}-/i, /storage\.test/, /x-amz-/i, /X-Amz/, /"fields"/];
 
 describe("record attachments privacy: logs, audit metadata, Redis, error bodies and views (integration: real routes, Postgres, Redis; storage faked)", () => {
     const kit = useAttachmentsHarness("record-attachments-privacy");

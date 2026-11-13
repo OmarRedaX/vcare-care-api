@@ -652,12 +652,13 @@ describe("migrations + pool session settings (integration: real Postgres)", () =
             await expect(ownerDb("record_attachments").insert(attachment(recordId, { size_bytes: 10_485_760, file_type: "image/png", description: "SYNTHETIC-ATTACH-DESC-0001" }))).resolves.toBeDefined();
         });
 
-        it("should reject a duplicate object key with 23505, a dangling record with 23503 and a delete of a referenced record with 23001", async () => {
+        it("should reject a duplicate object key with 23505, a dangling record with 23503 and a delete of a referenced record with 23001 or 23503", async () => {
             const recordId = await recordLockingAt(ownerDb, "24 hours");
             await ownerDb("record_attachments").insert(attachment(recordId, { object_key: "record-attachments/dup" }));
             await expect(ownerDb("record_attachments").insert(attachment(recordId, { object_key: "record-attachments/dup" }))).rejects.toMatchObject({ code: "23505", constraint: "uq_record_attachments_object_key" });
             await expect(ownerDb("record_attachments").insert(attachment(999_999))).rejects.toMatchObject({ code: "23503", constraint: "fk_record_attachments_medical_record_id" });
-            await expect(ownerDb("medical_records").where({ id: recordId }).delete()).rejects.toMatchObject({ code: "23001", constraint: "fk_record_attachments_medical_record_id" });
+            // ON DELETE RESTRICT raises restrict_violation (23001) on PostgreSQL 18 and foreign_key_violation (23503) on 17 (the CI image): either way the named FK refuses it.
+            await expect(ownerDb("medical_records").where({ id: recordId }).delete()).rejects.toMatchObject({ code: expect.stringMatching(/^(23001|23503)$/), constraint: "fk_record_attachments_medical_record_id" });
         });
 
         it("should allow a soft delete exactly one microsecond before the lock and refuse it at the lock instant, in one transaction", async () => {
