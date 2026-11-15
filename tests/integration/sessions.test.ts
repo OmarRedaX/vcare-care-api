@@ -29,7 +29,8 @@ describe("sessions lifecycle, windows, concurrency and provider outages (integra
             const join = await patch(h, id, "join", "patient");
             expect(join.status).toBe(200);
             const joined = expectSuccessEnvelope(join.body) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
-            expect(Object.keys(joined).sort()).toEqual(["consultation", "joinToken", "joinTokenExpiresAt", "roomId", "windowClosesAt", "windowOpensAt"].sort());
+            expect(Object.keys(joined).sort()).toEqual(["consultation", "joinToken", "joinTokenExpiresAt", "roomId", "videoServerUrl", "windowClosesAt", "windowOpensAt"].sort());
+            expect(joined.videoServerUrl).toBeNull(); // the fake provider has no server (a real provider returns its ws(s) URL)
             expect(joined.consultation).toMatchObject({ id, status: "waiting", joinedAt: new Date(start - 5 * MINUTE).toISOString() });
             expect(joined.consultation.patient).toEqual({ userId: PATIENT, displayName: null, avatarUrl: null, profileHydrated: false });
             expect(joined.consultation.doctor).toMatchObject({ userId: DOCTOR, profileHydrated: false });

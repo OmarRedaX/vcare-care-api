@@ -8,6 +8,7 @@ import type { RenderedCalendar, SessionJoinResult } from "../types";
 export class SessionJoinResponseDto {
     consultation!: ConsultationResponseDto;
     roomId!: string;
+    videoServerUrl!: string | null;
     joinToken!: string;
     joinTokenExpiresAt!: string;
     windowOpensAt!: string;
@@ -15,7 +16,7 @@ export class SessionJoinResponseDto {
 
     static from(result: SessionJoinResult, viewer: ConsultationViewer, view: ConsultationView): SessionJoinResponseDto {
         return {
-            consultation: ConsultationResponseDto.from(result.consultation, viewer, view), roomId: result.roomId, joinToken: result.joinToken,
+            consultation: ConsultationResponseDto.from(result.consultation, viewer, view), roomId: result.roomId, videoServerUrl: result.videoServerUrl, joinToken: result.joinToken,
             joinTokenExpiresAt: result.joinTokenExpiresAt.toISOString(), windowOpensAt: result.windowOpensAt.toISOString(),
             windowClosesAt: result.windowClosesAt.toISOString(),
         };

@@ -46,9 +46,15 @@ export interface Env {
     NO_SHOW_GRACE_MINUTES: number;
     WAITING_ROOM_OPEN_MINUTES: number;
     SESSION_OVERRUN_MINUTES: number;
-    VIDEO_PROVIDER: "fake";
-    /** SECRET: signs the fake provider join tokens; never logged. */
+    VIDEO_PROVIDER: "fake" | "livekit";
+    /** SECRET: signs the fake join tokens, or is the LiveKit API secret; never logged. */
     VIDEO_PROVIDER_KEY: string;
+    /** LiveKit API key id (`iss` of its tokens); required for `livekit`, not a secret. */
+    VIDEO_PROVIDER_KEY_ID?: string;
+    /** `ws(s)://` address video clients connect to, returned in the join response; required for `livekit` (`wss` in production). */
+    VIDEO_PROVIDER_URL?: string;
+    /** `http(s)://` address of the LiveKit server API; derived from `VIDEO_PROVIDER_URL` when unset (`https` in production). */
+    VIDEO_PROVIDER_API_URL?: string;
     VIDEO_JOIN_TOKEN_TTL_SECONDS: number;
     /** Notification email adapter (ADR 0030): `log` records a send and sends nothing (refused in production); `resend` calls Resend. */
     EMAIL_PROVIDER: "log" | "resend";

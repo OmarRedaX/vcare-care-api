@@ -5426,13 +5426,16 @@ components:
           maxLength: 1000
     SessionJoin:
       type: object
-      required: [consultation, roomId, joinToken, joinTokenExpiresAt, windowOpensAt, windowClosesAt]
+      required: [consultation, roomId, videoServerUrl, joinToken, joinTokenExpiresAt, windowOpensAt, windowClosesAt]
       properties:
         consultation:
           $ref: '#/components/schemas/Consultation'
         roomId:
           type: string
           maxLength: 128
+        videoServerUrl:
+          type: [string, 'null']
+          description: The `ws(s)://` URL a video client connects to with `joinToken` (the LiveKit server URL). `null` for the local fake provider, which has no server. Not a secret.
         joinToken:
           type: string
           description: Short-lived provider token for this participant only. Never logged.

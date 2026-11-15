@@ -78,7 +78,7 @@ describe("sessions contract", () => {
     });
 
     it("should declare the SessionJoin, NoShow and CalendarView shapes the DTOs produce", () => {
-        expect(inlineLists(schemaBlock("SessionJoin"), "required")[0]).toEqual(["consultation", "roomId", "joinToken", "joinTokenExpiresAt", "windowOpensAt", "windowClosesAt"]);
+        expect(inlineLists(schemaBlock("SessionJoin"), "required")[0]).toEqual(["consultation", "roomId", "videoServerUrl", "joinToken", "joinTokenExpiresAt", "windowOpensAt", "windowClosesAt"]);
         expect(inlineLists(schemaBlock("CalendarView"), "required")[0]).toEqual(["from", "to", "timezone", "consultations", "exceptions"]);
         const noShow = schemaBlock("NoShow");
         expect(noShow).toContain("additionalProperties: false");

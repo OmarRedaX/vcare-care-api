@@ -66,6 +66,25 @@ services:
       retries: 30
     restart: "no"
 
+  livekit:
+    # Self-hosted LiveKit for local video (ADR 0031, hub ADR 0007 target: free, Apache-2). Synthetic API key; node_ip 127.0.0.1 so a
+    # browser on this host can connect. Ports are published on host loopback only.
+    image: livekit/livekit-server:v1.13.10
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          node_ip: 127.0.0.1
+          use_external_ip: false
+        keys:
+          care-local: synthetic-livekit-secret-0123456789abcdef
+    ports:
+      - "127.0.0.1:7880:7880"
+      - "127.0.0.1:7881:7881"
+      - "127.0.0.1:7882:7882/udp"
+
   migrate:
     build: .
     # Owner runs the migrations, then creates/updates the app login from DATABASE_URL (ADR 0018).
@@ -85,8 +104,11 @@ services:
       STORAGE_ACCESS_KEY_ID: care-local
       STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
       STORAGE_FORCE_PATH_STYLE: "true"
-      VIDEO_PROVIDER: fake
-      VIDEO_PROVIDER_KEY: synthetic-video-provider-key-0123456789abcdef
+      VIDEO_PROVIDER: livekit
+      VIDEO_PROVIDER_KEY: synthetic-livekit-secret-0123456789abcdef
+      VIDEO_PROVIDER_KEY_ID: care-local
+      VIDEO_PROVIDER_URL: ws://localhost:7880
+      VIDEO_PROVIDER_API_URL: http://livekit:7880
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -114,8 +136,11 @@ services:
       STORAGE_ACCESS_KEY_ID: care-local
       STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
       STORAGE_FORCE_PATH_STYLE: "true"
-      VIDEO_PROVIDER: fake
-      VIDEO_PROVIDER_KEY: synthetic-video-provider-key-0123456789abcdef
+      VIDEO_PROVIDER: livekit
+      VIDEO_PROVIDER_KEY: synthetic-livekit-secret-0123456789abcdef
+      VIDEO_PROVIDER_KEY_ID: care-local
+      VIDEO_PROVIDER_URL: ws://localhost:7880
+      VIDEO_PROVIDER_API_URL: http://livekit:7880
       LOG_LEVEL: info
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -126,6 +151,8 @@ services:
       migrate:
         condition: service_completed_successfully
       redis:
+        condition: service_started
+      livekit:
         condition: service_started
       minio-setup:
         # minio-setup keeps running after it creates the bucket (its healthcheck turns healthy once /tmp/ready exists), so it never "completes".
@@ -154,8 +181,11 @@ services:
       STORAGE_ACCESS_KEY_ID: care-local
       STORAGE_SECRET_ACCESS_KEY: synthetic-minio-secret
       STORAGE_FORCE_PATH_STYLE: "true"
-      VIDEO_PROVIDER: fake
-      VIDEO_PROVIDER_KEY: synthetic-video-provider-key-0123456789abcdef
+      VIDEO_PROVIDER: livekit
+      VIDEO_PROVIDER_KEY: synthetic-livekit-secret-0123456789abcdef
+      VIDEO_PROVIDER_KEY_ID: care-local
+      VIDEO_PROVIDER_URL: ws://localhost:7880
+      VIDEO_PROVIDER_API_URL: http://livekit:7880
       AUDIT_PARTITION_MONTHS_AHEAD: 2
       LOG_LEVEL: info
     extra_hosts:
