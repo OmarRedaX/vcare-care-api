@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: tutorial
-last_verified: 2026-11-13
+last_verified: 2026-11-15
 tags: [tutorial, getting-started, care, docker, health]
 related: [infrastructure, api, integration, scheduling-slots, foundation-spec, access-spec, runbook]
 ---
@@ -51,7 +51,7 @@ STORAGE_ENDPOINT=http://localhost:9002
 STORAGE_ACCESS_KEY_ID=care-local
 STORAGE_SECRET_ACCESS_KEY=synthetic-minio-secret
 STORAGE_FORCE_PATH_STYLE=true
-VIDEO_PROVIDER=fake                                                   # only the deterministic fake exists; refused when NODE_ENV=production
+VIDEO_PROVIDER=fake                                                   # fake (tests) or livekit (+ VIDEO_PROVIDER_KEY_ID, VIDEO_PROVIDER_URL); fake is refused when NODE_ENV=production (ADR 0031)
 VIDEO_PROVIDER_KEY=synthetic-video-provider-key-0123456789abcdef      # >= 32 chars, no default (signs the fake join tokens)
 EMAIL_PROVIDER=log                                                   # or resend (+ EMAIL_PROVIDER_API_KEY, EMAIL_PROVIDER_FROM); log sends nothing and is refused in production (ADR 0030)
 AUDIT_PARTITION_MONTHS_AHEAD=2

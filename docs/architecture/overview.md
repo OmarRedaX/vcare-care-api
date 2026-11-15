@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: explanation
-last_verified: 2026-10-29
+last_verified: 2026-11-15
 tags: [architecture, overview, modules, layering]
 related: [system-design, help-articles, help-articles-spec, record-attachments-spec, data-model, api, integration, infrastructure, foundation-spec, specialties-spec, doctors-spec, adr-0017-generic-helpers-and-transaction-scoping, availability, adr-0024-next-available-rank-index-free-map-and-sweep]
 ---
@@ -113,7 +113,7 @@ src/lib/            built (foundation): config, di, error, logger, request-id, h
                       validation/string-decorators (CodePointLength, NoControlCharacters)
                     built (verification, 2026-10-08): identity-client (service token, setUserStatus, getUsersBatch),
                       storage (S3 port + adapter), knex/session-advisory-lock, http/pagination signed-cursor
-                    built (sessions, 2026-10-15): video (room-provider port, deterministic fake adapter,
+                    built (sessions, 2026-10-15): video (room-provider port, self-hosted LiveKit adapter since 2026-11-15 and a deterministic fake for tests,
                       factory refusing the fake in production), identity-client/hydrate
                     built (help-articles, 2026-10-29): http/private-no-cache (`privateNoCache()`, `Cache-Control: private, no-cache`),
                       http/pagination kind-tagged timestamp cursor (`decodeKindedTimestampCursor`)

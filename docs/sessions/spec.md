@@ -6,7 +6,7 @@ module: sessions
 status: implemented
 version: 0.2.1
 diataxis: reference
-last_verified: 2026-10-18
+last_verified: 2026-11-15
 tags: [spec, sessions, lifecycle, join, start, complete, no-show, waiting-room, calendar, video-port, case-2]
 related: [sessions-brainstorm, consultations-spec, records-spec, schedules-spec, notifications-spec, consultation-lifecycle, data-model, rbac, integration, resilience, infrastructure, adr-0011-notification-outbox-and-reminders, adr-0017-generic-helpers-and-transaction-scoping]
 contracts: [contracts/openapi.yaml]
@@ -131,7 +131,7 @@ Common: `userGuard()` → `authorize(policy)` → limiter → controller. **No `
 - Join/start/complete take no DTO; the controller never reads `req.body`.
 
 **Response shapes**
-- `SessionJoin` (`SessionJoinResponseDto`): `{ consultation, roomId, joinToken, joinTokenExpiresAt, windowOpensAt, windowClosesAt }`. `consultation` = `ConsultationResponseDto.from(entity, viewer, view)` with `view = buildConsultationView(entity, viewer, { timezone: undefined, doctorTimezone }, new Map(), false)`: both participants `{ userId, displayName: null, avatarUrl: null, profileHydrated: false }`, `complaintText` absent, zone defaults patient → `patientTimezone`, doctor → the doctor's zone. `windowOpensAt = startsAt − WAITING_ROOM_OPEN_MINUTES`, `windowClosesAt = endsAt + SESSION_OVERRUN_MINUTES`, UTC ISO `Z`. `joinTokenExpiresAt = min(now + VIDEO_JOIN_TOKEN_TTL_SECONDS, windowClosesAt)`, from the provider result.
+- `SessionJoin` (`SessionJoinResponseDto`): `{ consultation, roomId, videoServerUrl, joinToken, joinTokenExpiresAt, windowOpensAt, windowClosesAt }` (`videoServerUrl` added 2026-11-15, ADR 0031: the `ws(s)://` address to connect to, `null` for the fake). `consultation` = `ConsultationResponseDto.from(entity, viewer, view)` with `view = buildConsultationView(entity, viewer, { timezone: undefined, doctorTimezone }, new Map(), false)`: both participants `{ userId, displayName: null, avatarUrl: null, profileHydrated: false }`, `complaintText` absent, zone defaults patient → `patientTimezone`, doctor → the doctor's zone. `windowOpensAt = startsAt − WAITING_ROOM_OPEN_MINUTES`, `windowClosesAt = endsAt + SESSION_OVERRUN_MINUTES`, UTC ISO `Z`. `joinTokenExpiresAt = min(now + VIDEO_JOIN_TOKEN_TTL_SECONDS, windowClosesAt)`, from the provider result.
 - `complete` / `no-show`: `ConsultationResponseDto` built the same way (`SessionQueriesService.renderOwn`). Admin no-show: zone `UTC`.
 - Waiting room: `Consultation[]` ordered `(startsAt, id)` ascending; patient hydrated (Case 2), doctor side unhydrated own side; `complaintText` absent.
 - Calendar: `CalendarView { from, to, timezone, consultations[], exceptions[] }`; `consultations` in `(startsAt, id)` order, every status, patient hydrated, no `complaintText`; `exceptions` via `ScheduleExceptionResponseDto.from`. `timezone` = query value canonical, else the doctor's profile zone; `from`/`to` echoed as `toIsoInZone(ms, timezone)`.
@@ -168,7 +168,7 @@ src/pkg/utils/session-window.ts          sessionWindow(startsAtMs, endsAtMs, ope
 Edited: `consultations/repository/consultations.repo.ts` (new functions, `TransitionChanges`), `consultations/enums.ts` (`ConsultationChangeKind.Completed|NoShow`, `ConsultationAuditAction.Waiting|Started|Completed|NoShow`), `consultations/types.ts` (`TransitionChanges` fields, `ConsultationChangeKind`), `consultations/service/consultation-queries.service.ts` (private `hydrate` replaced by the lib helper, behavior-preserving), `schedules/service/schedules.service.ts` (+ `listExceptionsForCalendar`), `notifications` (none: `doctor_joined` payload keys `startsAt`, `endsAt`, `recipientRole` are in `OUTBOX_PAYLOAD_KEYS`), `lib/config/env.ts` + `types.ts`, `lib/di/tokens.ts` (`VideoProvider`, `SessionsService`, `SessionQueriesService`, `SessionsController`, `ConsultationRowsService`), `bootstrap.ts`, `src/routes.ts`, `.env.example`, `tests/setup.ts` env fixture, `docker-compose`/quickstart env lists.
 
 ### 3.4 Entity
-No new entity. `Consultation` (existing) already has `roomId`, `joinedAt`, `startedAt`, `completedAt`, `noShowMarkedAt`. `SessionJoinResult` (types.ts): `{ consultation: Consultation; roomId: string; joinToken: string; joinTokenExpiresAt: Date; windowOpensAt: Date; windowClosesAt: Date }`.
+No new entity. `Consultation` (existing) already has `roomId`, `joinedAt`, `startedAt`, `completedAt`, `noShowMarkedAt`. `SessionJoinResult` (types.ts): `{ consultation: Consultation; roomId: string; videoServerUrl: string | null; joinToken: string; joinTokenExpiresAt: Date; windowOpensAt: Date; windowClosesAt: Date }`.
 
 ### 3.5 Repository additions (`consultations.repo.ts`; functions, `conn: Knex = db`, explicit columns, `deleted_at IS NULL`)
 - `TransitionChanges` gains `room_id?: string; joined_at?: Date; started_at?: Date; completed_at?: Date; no_show_marked_at?: Date`. `applyTransition` is reused unchanged.
