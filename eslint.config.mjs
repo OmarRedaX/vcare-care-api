@@ -44,7 +44,7 @@ const FORBIDDEN_PATTERNS = [
 
 /**
  * Narrow homes for two locked-stack libraries (access spec §3.11): `jose` only under `src/lib/auth`, `undici` only in
- * `src/lib/auth/jwks-fetcher.ts` (and later `src/lib/identity-client`). Tests are exempt (they sign tokens with jose).
+ * `src/lib/auth/jwks-fetcher.ts`, `src/lib/identity-client` and `src/lib/email/resend-email.adapter.ts` (ADR 0030). Tests are exempt (they sign tokens with jose).
  */
 const JOSE_RESTRICTION = {
     paths: [{ name: "jose", message: "jose is imported only under src/lib/auth" }],
@@ -54,13 +54,13 @@ const UNDICI_RESTRICTION = {
     paths: [
         {
             name: "undici",
-            message: "undici is imported only in src/lib/auth/jwks-fetcher.ts and src/lib/identity-client",
+            message: "undici is imported only in src/lib/auth/jwks-fetcher.ts, src/lib/identity-client and src/lib/email/resend-email.adapter.ts",
         },
     ],
     patterns: [
         {
             group: ["undici/*"],
-            message: "undici is imported only in src/lib/auth/jwks-fetcher.ts and src/lib/identity-client",
+            message: "undici is imported only in src/lib/auth/jwks-fetcher.ts, src/lib/identity-client and src/lib/email/resend-email.adapter.ts",
         },
     ],
 };
@@ -175,6 +175,13 @@ export default tseslint.config(
     },
     {
         files: ["src/lib/identity-client/**/*.ts"],
+        rules: {
+            "no-restricted-imports": restrictedImports({ patterns: [LIB_NO_APP_PATTERN], allowUndici: true }),
+        },
+    },
+    {
+        // The Resend email adapter (ADR 0030): the one external HTTP call besides Identity and the JWKS fetch.
+        files: ["src/lib/email/resend-email.adapter.ts"],
         rules: {
             "no-restricted-imports": restrictedImports({ patterns: [LIB_NO_APP_PATTERN], allowUndici: true }),
         },

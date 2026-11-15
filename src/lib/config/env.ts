@@ -150,6 +150,11 @@ export const envSchema = z
         VIDEO_PROVIDER: z.enum(["fake"]),
         VIDEO_PROVIDER_KEY: z.string().min(32),
         VIDEO_JOIN_TOKEN_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
+        /** Notification email (ADR 0030): `log` is the local default; the Resend key is a secret and has no default. */
+        EMAIL_PROVIDER: z.enum(["log", "resend"]).default("log"),
+        EMAIL_PROVIDER_API_KEY: z.string().min(1).optional(),
+        EMAIL_PROVIDER_FROM: z.email().optional(),
+        EMAIL_PROVIDER_BASE_URL: urlWithScheme(["http:", "https:"], "http(s)").default("https://api.resend.com"),
         AUDIT_PARTITION_MONTHS_AHEAD: z.coerce.number().int().min(1).max(12).default(2),
         CORS_ORIGINS: corsOrigins,
         LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
@@ -205,6 +210,19 @@ export const envSchema = z
                     path: ["MIGRATION_DATABASE_URL"],
                     message: "must use a different role than DATABASE_URL",
                 });
+            }
+        }
+        if (value.EMAIL_PROVIDER === "resend") {
+            for (const key of ["EMAIL_PROVIDER_API_KEY", "EMAIL_PROVIDER_FROM"] as const) {
+                if (value[key] === undefined) ctx.addIssue({ code: "custom", path: [key], message: "required when EMAIL_PROVIDER is resend" });
+            }
+        }
+        if (value.NODE_ENV === "production") {
+            if (value.EMAIL_PROVIDER === "log") {
+                ctx.addIssue({ code: "custom", path: ["EMAIL_PROVIDER"], message: "log is not allowed when NODE_ENV is production" });
+            }
+            if (!value.EMAIL_PROVIDER_BASE_URL.startsWith("https://")) {
+                ctx.addIssue({ code: "custom", path: ["EMAIL_PROVIDER_BASE_URL"], message: "must be https when NODE_ENV is production" });
             }
         }
         if (value.NODE_ENV === "production" && value.LOG_LEVEL === "debug") {

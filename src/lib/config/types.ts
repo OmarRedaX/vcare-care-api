@@ -50,6 +50,13 @@ export interface Env {
     /** SECRET: signs the fake provider join tokens; never logged. */
     VIDEO_PROVIDER_KEY: string;
     VIDEO_JOIN_TOKEN_TTL_SECONDS: number;
+    /** Notification email adapter (ADR 0030): `log` records a send and sends nothing (refused in production); `resend` calls Resend. */
+    EMAIL_PROVIDER: "log" | "resend";
+    /** SECRET (Resend API key): required for `resend`, never logged, no default. */
+    EMAIL_PROVIDER_API_KEY?: string;
+    /** Sender address for `resend`; must be on a domain verified in Resend (or `onboarding@resend.dev` for a first local test). */
+    EMAIL_PROVIDER_FROM?: string;
+    EMAIL_PROVIDER_BASE_URL: string;
     AUDIT_PARTITION_MONTHS_AHEAD: number;
     CORS_ORIGINS: string[];
     LOG_LEVEL: LogLevel;

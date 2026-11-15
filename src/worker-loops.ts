@@ -22,7 +22,7 @@ import { UploadIntentsService } from "./app/upload-intents/service/upload-intent
 import { buildUploadIntentPurgeLoop } from "./app/upload-intents/worker/upload-intent-purge.loop";
 import { AuditRecorder } from "./lib/audit/audit";
 import { buildAuditPartitionLoop } from "./lib/audit/partition-loop";
-import { LogEmailAdapter } from "./lib/email/log-email.adapter";
+import { createEmailPort } from "./lib/email/create-email-port";
 import type { WorkerLoop, WorkerLoopDeps } from "./lib/worker/types";
 
 /**
@@ -34,7 +34,7 @@ export function buildWorkerLoops(deps: WorkerLoopDeps): WorkerLoop[] {
     const identitySync = new IdentitySyncService(deps.db, audit, deps.identity, deps.env, SYSTEM_SYNC_TIMING);
     const uploadIntents = new UploadIntentsService(deps.db, deps.storage, deps.env);
     const consultations = new ConsultationReminderService();
-    const outboxDelivery = new OutboxDeliveryService(deps.db, deps.identity, new LogEmailAdapter(deps.logger), consultations, deps.env, deps.logger, SYSTEM_NOTIFICATION_TIMING);
+    const outboxDelivery = new OutboxDeliveryService(deps.db, deps.identity, createEmailPort(deps.env, deps.logger), consultations, deps.env, deps.logger, SYSTEM_NOTIFICATION_TIMING);
     const reminderScan = new ReminderScanService(deps.db, consultations, new NotificationsService(), deps.logger, SYSTEM_NOTIFICATION_TIMING);
     const outboxPurge = new OutboxPurgeService(deps.db, deps.env, deps.logger, SYSTEM_NOTIFICATION_TIMING);
     const doctorReader = new DoctorDiscoveryReader(deps.db);
