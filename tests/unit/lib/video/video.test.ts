@@ -1,5 +1,6 @@
 import { createVideoProvider } from "../../../../src/lib/video/create-video-provider";
 import { FakeVideoProvider, verifyFakeJoinToken } from "../../../../src/lib/video/fake-video.adapter";
+import { LiveKitVideoProvider } from "../../../../src/lib/video/livekit-video.adapter";
 import { VideoProviderError } from "../../../../src/lib/video/video-error";
 
 const KEY = "synthetic-video-provider-key-0123456789abcdef";
@@ -52,6 +53,33 @@ describe("lib/video createVideoProvider", () => {
 
     it("should refuse the fake provider when NODE_ENV is production", () => {
         expect(() => createVideoProvider({ NODE_ENV: "production", VIDEO_PROVIDER: "fake", VIDEO_PROVIDER_KEY: KEY })).toThrow("video_provider_fake_not_allowed_in_production");
+    });
+
+    const livekit = { VIDEO_PROVIDER: "livekit", VIDEO_PROVIDER_KEY: KEY, VIDEO_PROVIDER_KEY_ID: "care-local", VIDEO_PROVIDER_URL: "wss://video.example.test" } as const;
+
+    it("should return the LiveKit provider in every environment, production included", () => {
+        for (const NODE_ENV of ["development", "test", "production"] as const) {
+            expect(createVideoProvider({ NODE_ENV, ...livekit })).toBeInstanceOf(LiveKitVideoProvider);
+        }
+    });
+
+    it.each([[{ VIDEO_PROVIDER_KEY_ID: undefined }], [{ VIDEO_PROVIDER_URL: undefined }]])("should refuse livekit without its key id or URL (%j)", (override) => {
+        expect(() => createVideoProvider({ NODE_ENV: "development", ...livekit, ...override })).toThrow("video_provider_livekit_not_configured");
+    });
+
+    it.each([
+        ["wss://video.example.test", undefined, "https://video.example.test"],
+        ["ws://localhost:7880/", undefined, "http://localhost:7880"],
+        ["wss://video.example.test", "https://api.example.test:8443/", "https://api.example.test:8443"],
+    ])("should use the server API address derived from URL %s with API URL %s: %s", (url, apiUrl, expected) => {
+        const provider = createVideoProvider({ NODE_ENV: "development", ...livekit, VIDEO_PROVIDER_URL: url, VIDEO_PROVIDER_API_URL: apiUrl }) as unknown as { config: { apiUrl: string } };
+        expect(provider.config.apiUrl).toBe(expected);
+    });
+});
+
+describe("lib/video FakeVideoProvider join result", () => {
+    it("should carry no server URL, because the fake has no server", async () => {
+        expect((await new FakeVideoProvider(KEY).issueJoinToken({ roomId: "fake-room-1", userId: 1, role: "patient", expiresAtMs: NOW + 1000 })).serverUrl).toBeNull();
     });
 });
 

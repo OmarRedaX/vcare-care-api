@@ -21,7 +21,7 @@ export class FakeVideoProvider implements VideoRoomProvider {
 
     issueJoinToken(input: JoinTokenInput): Promise<VideoJoinToken> {
         const payload = Buffer.from(JSON.stringify({ rid: input.roomId, uid: input.userId, role: input.role, exp: input.expiresAtMs })).toString("base64url");
-        return Promise.resolve({ token: `${payload}.${sign(payload, this.secret)}`, expiresAtMs: input.expiresAtMs });
+        return Promise.resolve({ token: `${payload}.${sign(payload, this.secret)}`, expiresAtMs: input.expiresAtMs, serverUrl: null });
     }
 }
 

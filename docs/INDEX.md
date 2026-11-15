@@ -73,6 +73,7 @@ Diátaxis type — a label, not a folder tree.
 | [adr/0026-discovery-degradation-when-redis-is-down.md](./adr/0026-discovery-degradation-when-redis-is-down.md) | understand what doctor search returns when Redis is down (`meta.degraded`) | explanation |
 | [adr/0027-help-articles-shape-and-access.md](./adr/0027-help-articles-shape-and-access.md) | understand why help articles are Markdown, edited in place, listed as summaries and readable by onboarding doctors | explanation |
 | [adr/0028-help-corpus-read-path-for-phase-2.md](./adr/0028-help-corpus-read-path-for-phase-2.md) | understand how the Phase-2 AI service will read the help corpus (`GET /internal/help-articles`, `help:read`) | explanation |
+| [adr/0031-livekit-video-adapter.md](./adr/0031-livekit-video-adapter.md) | understand why video runs on self-hosted LiveKit behind the room-provider port, what the join token grants, and the new `videoServerUrl` field | explanation |
 | [adr/0030-resend-email-adapter.md](./adr/0030-resend-email-adapter.md) | understand how notification email is sent through Resend behind the email port, what is refused in production and how results map to outbox retries | explanation |
 | [adr/0029-bucket-iac-with-aws-cdk.md](./adr/0029-bucket-iac-with-aws-cdk.md) | understand why the bucket and its task-role policies are AWS CDK in `infra/`, and how the IAM differs from the hub TODO wording | explanation |
 

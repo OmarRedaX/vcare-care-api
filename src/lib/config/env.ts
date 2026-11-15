@@ -147,8 +147,11 @@ export const envSchema = z
         WAITING_ROOM_OPEN_MINUTES: z.coerce.number().int().min(0).max(240).default(10),
         SESSION_OVERRUN_MINUTES: z.coerce.number().int().min(0).max(240).default(15),
         /** Video room provider behind `lib/video`: no default (a wrong provider must fail the boot), and the key is a secret. */
-        VIDEO_PROVIDER: z.enum(["fake"]),
+        VIDEO_PROVIDER: z.enum(["fake", "livekit"]),
         VIDEO_PROVIDER_KEY: z.string().min(32),
+        VIDEO_PROVIDER_KEY_ID: z.string().min(1).max(128).optional(),
+        VIDEO_PROVIDER_URL: urlWithScheme(["ws:", "wss:"], "ws(s)").optional(),
+        VIDEO_PROVIDER_API_URL: urlWithScheme(["http:", "https:"], "http(s)").optional(),
         VIDEO_JOIN_TOKEN_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
         /** Notification email (ADR 0030): `log` is the local default; the Resend key is a secret and has no default. */
         EMAIL_PROVIDER: z.enum(["log", "resend"]).default("log"),
@@ -210,6 +213,19 @@ export const envSchema = z
                     path: ["MIGRATION_DATABASE_URL"],
                     message: "must use a different role than DATABASE_URL",
                 });
+            }
+        }
+        if (value.VIDEO_PROVIDER === "livekit") {
+            for (const key of ["VIDEO_PROVIDER_KEY_ID", "VIDEO_PROVIDER_URL"] as const) {
+                if (value[key] === undefined) ctx.addIssue({ code: "custom", path: [key], message: "required when VIDEO_PROVIDER is livekit" });
+            }
+            if (value.NODE_ENV === "production") {
+                if (value.VIDEO_PROVIDER_URL !== undefined && !value.VIDEO_PROVIDER_URL.startsWith("wss://")) {
+                    ctx.addIssue({ code: "custom", path: ["VIDEO_PROVIDER_URL"], message: "must be wss when NODE_ENV is production" });
+                }
+                if (value.VIDEO_PROVIDER_API_URL !== undefined && !value.VIDEO_PROVIDER_API_URL.startsWith("https://")) {
+                    ctx.addIssue({ code: "custom", path: ["VIDEO_PROVIDER_API_URL"], message: "must be https when NODE_ENV is production" });
+                }
             }
         }
         if (value.EMAIL_PROVIDER === "resend") {

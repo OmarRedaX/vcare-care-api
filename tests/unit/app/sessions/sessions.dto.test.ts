@@ -65,9 +65,9 @@ describe("session response DTOs", () => {
     const unhydrated = (viewer: typeof patientViewer | typeof doctorViewer) => buildConsultationView(entity(), viewer, { timezone: undefined, doctorTimezone: "Africa/Cairo" }, new Map(), false);
 
     it("should render the join result with ISO instants, no complaint text and unhydrated participants", () => {
-        const dto = SessionJoinResponseDto.from({ consultation: entity(), roomId: "room-7", joinToken: TOKEN, joinTokenExpiresAt: new Date(STARTS + 300_000),
+        const dto = SessionJoinResponseDto.from({ consultation: entity(), roomId: "room-7", videoServerUrl: "wss://video.example.test", joinToken: TOKEN, joinTokenExpiresAt: new Date(STARTS + 300_000),
             windowOpensAt: new Date(STARTS - 600_000), windowClosesAt: new Date(STARTS + 2_700_000) }, patientViewer, unhydrated(patientViewer));
-        expect(dto).toMatchObject({ roomId: "room-7", joinToken: TOKEN, joinTokenExpiresAt: "2030-01-01T10:05:00.000Z", windowOpensAt: "2030-01-01T09:50:00.000Z",
+        expect(dto).toMatchObject({ roomId: "room-7", videoServerUrl: "wss://video.example.test", joinToken: TOKEN, joinTokenExpiresAt: "2030-01-01T10:05:00.000Z", windowOpensAt: "2030-01-01T09:50:00.000Z",
             windowClosesAt: "2030-01-01T10:45:00.000Z" });
         expect(dto.consultation).not.toHaveProperty("complaintText");
         expect(dto.consultation.doctor).toEqual({ userId: 202, displayName: null, avatarUrl: null, profileHydrated: false });

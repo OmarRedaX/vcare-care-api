@@ -186,7 +186,7 @@ export class SessionsService {
         const role: VideoParticipantRole = actor.role === "doctor" ? "doctor" : "patient";
         const expiresAtMs = Math.min(now + toMs(this.env.VIDEO_JOIN_TOKEN_TTL_SECONDS, "s"), window.closesAtMs);
         const token = await this.callProvider("issue_token", () => this.video.issueJoinToken({ roomId, userId: actor.userId, role, expiresAtMs }));
-        return { consultation: row, roomId, joinToken: token.token, joinTokenExpiresAt: new Date(token.expiresAtMs),
+        return { consultation: row, roomId, videoServerUrl: token.serverUrl, joinToken: token.token, joinTokenExpiresAt: new Date(token.expiresAtMs),
             windowOpensAt: new Date(window.opensAtMs), windowClosesAt: new Date(window.closesAtMs) };
     }
 

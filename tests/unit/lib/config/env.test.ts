@@ -372,6 +372,29 @@ describe("verification storage and worker environment", () => {
         expect(parseEnv({ ...secretsOnly(), NODE_ENV: "test", UPLOAD_POLICY_TTL_SECONDS: "30" }).UPLOAD_POLICY_TTL_SECONDS).toBe(30);
     });
 
+    describe("video provider (ADR 0031)", () => {
+        const livekit = { VIDEO_PROVIDER: "livekit", VIDEO_PROVIDER_KEY: "synthetic-livekit-secret-0123456789abcdef", VIDEO_PROVIDER_KEY_ID: "care-local", VIDEO_PROVIDER_URL: "ws://localhost:7880" };
+        it("should accept livekit with a key id and a websocket URL, the API URL optional", () => {
+            const env = parseEnv({ ...secretsOnly(), ...livekit });
+            expect([env.VIDEO_PROVIDER, env.VIDEO_PROVIDER_KEY_ID, env.VIDEO_PROVIDER_URL, env.VIDEO_PROVIDER_API_URL]).toEqual(["livekit", "care-local", "ws://localhost:7880", undefined]);
+        });
+        it.each([["VIDEO_PROVIDER_KEY_ID"], ["VIDEO_PROVIDER_URL"]])("should name %s when livekit is selected without it", (key) => {
+            expect(captureInvalid({ ...secretsOnly(), ...livekit, [key]: "" }).keys).toEqual([key]);
+        });
+        it.each([["VIDEO_PROVIDER", "zoom"], ["VIDEO_PROVIDER_URL", "http://localhost:7880"], ["VIDEO_PROVIDER_API_URL", "ws://localhost:7880"], ["VIDEO_PROVIDER_KEY", "too-short"]])("should reject %s=%s", (key, value) => {
+            expect(captureInvalid({ ...secretsOnly(), ...livekit, [key]: value }).keys).toEqual([key]);
+        });
+        it("should require wss and https when NODE_ENV is production", () => {
+            const production = { ...secretsOnly(), ...resendEmail, ...livekit, NODE_ENV: "production" };
+            expect(captureInvalid(production).keys).toEqual(["VIDEO_PROVIDER_URL"]);
+            expect(captureInvalid({ ...production, VIDEO_PROVIDER_URL: "wss://video.example.test", VIDEO_PROVIDER_API_URL: "http://video.example.test" }).keys).toEqual(["VIDEO_PROVIDER_API_URL"]);
+            expect(parseEnv({ ...production, VIDEO_PROVIDER_URL: "wss://video.example.test", VIDEO_PROVIDER_API_URL: "https://video.example.test" }).VIDEO_PROVIDER).toBe("livekit");
+        });
+        it("should never put the API secret in the error of an invalid environment", () => {
+            expect(captureInvalid({ ...secretsOnly(), ...livekit, VIDEO_PROVIDER_URL: "bad" }).message).not.toContain("synthetic-livekit-secret");
+        });
+    });
+
     describe("notification email provider (ADR 0030)", () => {
         it("should default to the log adapter and the Resend base URL, with no key and no sender", () => {
             const env = parseEnv(secretsOnly());

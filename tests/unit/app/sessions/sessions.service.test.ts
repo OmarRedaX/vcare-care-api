@@ -58,7 +58,7 @@ function setup(nowMs: number = STARTS) {
     };
     const video = {
         ensureRoom: jest.fn().mockImplementation((input: { consultationId: number }) => { events.push("ensureRoom"); return Promise.resolve({ roomId: `room-${input.consultationId}` }); }),
-        issueJoinToken: jest.fn().mockImplementation((input: { expiresAtMs: number }) => { events.push("issueToken"); return Promise.resolve({ token: TOKEN, expiresAtMs: input.expiresAtMs }); }),
+        issueJoinToken: jest.fn().mockImplementation((input: { expiresAtMs: number }) => { events.push("issueToken"); return Promise.resolve({ token: TOKEN, expiresAtMs: input.expiresAtMs, serverUrl: "wss://video.example.test" }); }),
     };
     const clock = { now: jest.fn(() => nowMs) };
     const service = new SessionsService(db, { record } as unknown as AuditRecorder, ENV, log.logger, clock, rows as never, { enqueue }, video);
@@ -76,7 +76,7 @@ describe("SessionsService.join", () => {
         expect(record).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "consultation.waiting", entityType: "consultation", entityId: 7,
             metadata: { byRole: "patient", fromStatus: "booked" } }));
         expect(video.issueJoinToken).toHaveBeenCalledWith({ roomId: "room-7", userId: 101, role: "patient", expiresAtMs: STARTS + 300_000 });
-        expect(result).toMatchObject({ roomId: "room-7", joinToken: TOKEN, joinTokenExpiresAt: new Date(STARTS + 300_000),
+        expect(result).toMatchObject({ roomId: "room-7", videoServerUrl: "wss://video.example.test", joinToken: TOKEN, joinTokenExpiresAt: new Date(STARTS + 300_000),
             windowOpensAt: new Date(OPENS), windowClosesAt: new Date(CLOSES) });
         expect(result.consultation.status).toBe("waiting");
     });

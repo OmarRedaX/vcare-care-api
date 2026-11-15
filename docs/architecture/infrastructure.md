@@ -4,7 +4,7 @@ owner: care-team
 service: care-service
 status: draft
 diataxis: reference
-last_verified: 2026-11-13
+last_verified: 2026-11-15
 tags: [infrastructure, env, logging, errors, health, configuration, deployment, shutdown, postgres, redis]
 related: [overview, resilience, runbook, quickstart, deployment, capacity, foundation-spec, access-spec, doctors-spec, adr-0019-luxon-for-doctor-timezone-validation, adr-0018-db-role-split-explicit-grants-partition-function, adr-0006-health-split-redis-tier-2, adr-0016-foundation-runtime-dependencies, hub-deployment, hub-adr-0005-single-origin-edge-routing, hub-adr-0007-managed-container-platform]
 ---
@@ -45,12 +45,15 @@ exit 1. Empty strings count as unset. **Secrets have no defaults.**
 | `NO_SHOW_GRACE_MINUTES` | `10` | | 0-1440; a no-show may be marked once now >= start + grace (Domain rule 11); read by `sessions` |
 | `WAITING_ROOM_OPEN_MINUTES` | `10` | | 0-240; the session window opens this long before the start (Domain rule 12) |
 | `SESSION_OVERRUN_MINUTES` | `15` | | 0-240; the session window stays open this long after the end |
-| `VIDEO_PROVIDER` | — | **yes, no default** | `fake` only; `createVideoProvider` refuses `fake` when `NODE_ENV=production` (sessions S-D1, SS-R22). The provider is registered lazily, so a production boot fails when the sessions router is built (`boot_failed`, `video_provider_fake_not_allowed_in_production`); `care-worker` never resolves it. Until a real adapter lands, `care-api` cannot boot with `NODE_ENV=production`; the local `docker-compose.yml` therefore runs `NODE_ENV=development` (runbook, decided 2026-11-13) |
+| `VIDEO_PROVIDER` | — | **yes, no default** | `fake` or `livekit` (ADR 0031). `createVideoProvider` refuses `fake` when `NODE_ENV=production` (sessions S-D1, SS-R22); the provider is registered lazily, so a production boot with `fake` fails when the sessions router is built (`boot_failed`, `video_provider_fake_not_allowed_in_production`); `care-worker` never resolves it. With `livekit` `care-api` can boot in production. The local `docker-compose.yml` runs a LiveKit container and `NODE_ENV=development` |
 | `EMAIL_PROVIDER` | `log` | no | `log` or `resend` (ADR 0030). `log` sends nothing and is refused when `NODE_ENV=production` (boot fails with `invalid_environment` naming `EMAIL_PROVIDER`) |
 | `EMAIL_PROVIDER_API_KEY` | — | only for `resend`, secret, no default | Resend API key; never logged |
 | `EMAIL_PROVIDER_FROM` | — | only for `resend` | sender address; its domain must be verified in Resend (`onboarding@resend.dev` for a first local test) |
 | `EMAIL_PROVIDER_BASE_URL` | `https://api.resend.com` | no | must be `https` in production; override only to point a test at a local fake |
-| `VIDEO_PROVIDER_KEY` | — | **yes, no default, secret** | >= 32 chars; signs the fake provider join tokens; never logged |
+| `VIDEO_PROVIDER_KEY` | — | **yes, no default, secret** | >= 32 chars; signs the fake join tokens, or is the LiveKit API secret; never logged |
+| `VIDEO_PROVIDER_KEY_ID` | — | only for `livekit` | LiveKit API key id (`iss` of its tokens); not a secret |
+| `VIDEO_PROVIDER_URL` | — | only for `livekit` | `ws(s)://` address video clients connect to, returned as `videoServerUrl`; must be `wss://` in production |
+| `VIDEO_PROVIDER_API_URL` | derived | no | `http(s)://` address of the LiveKit server API; derived from `VIDEO_PROVIDER_URL` (`wss` to `https`, `ws` to `http`); must be `https://` in production |
 | `VIDEO_JOIN_TOKEN_TTL_SECONDS` | `300` | | 30-3600; join token life, capped at the window close |
 | `CANCELLATION_POLICY_MINUTES` | `120` | | 0–10080; a patient cannot cancel or reschedule within this many minutes of the start (Domain rule 10); exactly this many minutes before the start is still allowed; read by `consultations` (built 2026-10-12) |
 | `AUDIT_PARTITION_MONTHS_AHEAD` | `2` | | 1–12; monthly `audit_logs` partitions the worker keeps ahead of the current UTC month ([ADR 0009](../adr/0009-audit-logs-monthly-partitions.md)) |
@@ -79,7 +82,6 @@ Discovery rate limits (60/min per IP, 120/min per user, per route) are module co
 | `DATABASE_READ_URL` | unset | yes | optional read replica for discovery reads |
 | `HYDRATION_CACHE_TTL_SECONDS` | `300` | | Case 2 cache TTL |
 | `UPLOAD_MAX_BYTES` | `10485760` | | 10 MB cap |
-| `VIDEO_PROVIDER_URL` | provider base URL | | room provider behind `lib/video`; declared by the real adapter's unit (sessions ships the fake adapter only) |
 | `EMAIL_PROVIDER_URL` | provider base URL | | behind `lib/email` |
 | `EMAIL_PROVIDER_KEY` | — | **yes, no default** | |
 | `EMAIL_FROM` | `no-reply@vcare.example.test` | | |
